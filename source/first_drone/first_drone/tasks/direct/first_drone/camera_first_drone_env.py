@@ -10,30 +10,32 @@ import torch
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
+from isaaclab.sensors import TiledCamera
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.utils.math import subtract_frame_transforms
 
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
-from .first_drone_env_cfg import FirstDroneEnvCfg
+from .camera_first_drone_env_cfg import CameraFirstDroneEnvCfg
 
 
-class FirstDroneEnv(DirectRLEnv):
-    """First Drone environment with wrench-based quadcopter physics.
+class CameraFirstDroneEnv(DirectRLEnv):
+    """First Drone environment with wrench-based quadcopter physics and camera sensor.
 
-    This environment applies forces and torques directly to the drone's body
-    rather than spinning propellers via joint velocity targets. The RL agent
-    outputs 4 continuous actions:
+    The drone starts at y=+1.0 and must fly to a goal at y=-1.0,
+    navigating through a room with poles in between.
+
+    Actions (4 continuous, clamped to [-1, 1]):
       - action[0]: normalized thrust  (-1..1, mapped to 0..max_thrust)
       - action[1]: roll  moment       (-1..1, scaled by moment_scale)
       - action[2]: pitch moment       (-1..1, scaled by moment_scale)
       - action[3]: yaw   moment       (-1..1, scaled by moment_scale)
     """
 
-    cfg: FirstDroneEnvCfg
+    cfg: CameraFirstDroneEnvCfg
 
-    def __init__(self, cfg: FirstDroneEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: CameraFirstDroneEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----- Action / wrench buffers -----
@@ -63,23 +65,38 @@ class FirstDroneEnv(DirectRLEnv):
         # ----- Debug visualization (goal markers) -----
         self.set_debug_vis(self.cfg.debug_vis)
 
+        if len(self.cfg.tiled_camera.data_types) != 1:
+            raise ValueError(
+                "The camera environment only supports one image type at a time but the following were"
+                f" provided: {self.cfg.tiled_camera.data_types}"
+            )
+
     # ------------------------------------------------------------------
     # Scene setup
     # ------------------------------------------------------------------
     def _setup_scene(self):
-        """Create the drone articulation, terrain, and lighting."""
+        """Create the drone articulation, room, terrain, camera, and lighting."""
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
+
+        # Room with poles — spawned as a static USD prim into env_0 (gets cloned to all envs)
+        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
+        room_cfg.func("/World/envs/env_0/Room", room_cfg)
 
         # Terrain (ground plane)
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
+        # Camera
+        self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+
         # Clone environments
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
+
+        self.scene.sensors["tiled_camera"] = self._tiled_camera
 
         # Lighting
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -179,7 +196,7 @@ class FirstDroneEnv(DirectRLEnv):
         """Determine which environments should reset.
 
         Returns:
-            died: True if drone is too low (<0.1m) or too high (>2.0m)
+            died: True if drone altitude is below 0.1m or above 2.0m
             time_out: True if episode exceeded max length
         """
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -195,12 +212,8 @@ class FirstDroneEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         """Reset environments that terminated or timed out.
 
-        Steps:
-          1. Log episode metrics (avg reward components, termination stats)
-          2. Reset the robot articulation state
-          3. Zero out actions
-          4. Sample a new random goal position
-          5. Write the default robot pose back to sim
+        Drone spawns at y=+1.0 (behind the poles), goal is at y=-1.0 (other side).
+        X is randomized in [-1, 1], Z in [0.5, 1.5].
         """
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
@@ -233,19 +246,28 @@ class FirstDroneEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
 
         # --- Sample new goal position ---
-        # XY: random within ±2m of env origin
-        self._desired_pos_w[env_ids, :2] = torch.zeros_like(self._desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
-        self._desired_pos_w[env_ids, :2] += self._terrain.env_origins[env_ids, :2]
-        # Z: random altitude between 0.5m and 1.5m
+        # Goal: y=-1.0 (far side of poles), x in [-1, 1], z in [0.5, 1.5]
+        self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.0, 1.0)
+        self._desired_pos_w[env_ids, 0] += self._terrain.env_origins[env_ids, 0]
+        self._desired_pos_w[env_ids, 1] = -1.0 + self._terrain.env_origins[env_ids, 1]
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
 
-        # --- Reset robot state to defaults ---
-        joint_pos = self._robot.data.default_joint_pos[env_ids]
-        joint_vel = self._robot.data.default_joint_vel[env_ids]
-        default_root_state = self._robot.data.default_root_state[env_ids]
-        default_root_state[:, :3] += self._terrain.env_origins[env_ids]
+        # --- Reset robot state ---
+        # Drone starts at y=+1.0 (near side), x in [-1, 1], z in [0.5, 1.5]
+        default_root_state = self._robot.data.default_root_state[env_ids].clone()
+        # Randomize starting X
+        default_root_state[:, 0] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
+        default_root_state[:, 0] += self._terrain.env_origins[env_ids, 0]
+        # Y = +1.0 (near side of poles)
+        default_root_state[:, 1] = 1.0 + self._terrain.env_origins[env_ids, 1]
+        # Randomize starting Z
+        default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
+
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
+
+        joint_pos = self._robot.data.default_joint_pos[env_ids]
+        joint_vel = self._robot.data.default_joint_vel[env_ids]
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
     # ------------------------------------------------------------------

@@ -2,6 +2,7 @@ from first_drone.robots.cf2x import DRONE_CONFIG
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
+from isaaclab.sensors import TiledCameraCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -10,7 +11,7 @@ from isaaclab.utils import configclass
 
 
 @configclass
-class FirstDroneEnvCfg(DirectRLEnvCfg):
+class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 10.0
@@ -33,7 +34,7 @@ class FirstDroneEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    # terrain
+    # terrain — ground plane
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -48,14 +49,28 @@ class FirstDroneEnvCfg(DirectRLEnvCfg):
         debug_vis=False,
     )
 
-    # scene
+    # scene — env_spacing must be >= room size (4m) so rooms don't overlap
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=2.5, replicate_physics=True, clone_in_fabric=True
+        num_envs=64, env_spacing=6.0, replicate_physics=True
     )
 
     # robot
     robot_cfg: ArticulationCfg = DRONE_CONFIG.replace(
         prim_path="/World/envs/env_.*/Drone"
+    )
+
+    # room with poles — spawned as a static USD prim per-env (no RigidBodyAPI needed)
+    room_usd_path: str = "C:\\Isaac\\Assets\\room_with_poles.usd"
+
+    tiled_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Drone/body/Camera",
+        height=100,
+        width=100,
+        data_types=["depth"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+        ),
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.0, 0.0), convention="ros"),
     )
 
     # ---------- Physics tuning parameters ----------

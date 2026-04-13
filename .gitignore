@@ -73,3 +73,16 @@ tests/
 # TacSL sensor
 **/tactile_record/*
 **/gelsight_r15_data/*
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+logs/
+*.pt
+*.pth
+
+.env
+.venv
+env_isaaclab/
