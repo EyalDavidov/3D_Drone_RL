@@ -15,10 +15,6 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 10.0
-    # - spaces definition
-    action_space = 4          # [thrust, moment_x, moment_y, moment_z]
-    observation_space = 12    # [lin_vel_b(3), ang_vel_b(3), projected_gravity_b(3), goal_pos_b(3)]
-    state_space = 0
     debug_vis = True
 
     # simulation
@@ -62,6 +58,7 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     # room with poles — spawned as a static USD prim per-env (no RigidBodyAPI needed)
     room_usd_path: str = "C:\\Isaac\\Assets\\room_with_poles.usd"
 
+    # camera — body-mounted depth sensor
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Drone/body/Camera",
         height=100,
@@ -72,6 +69,13 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
         ),
         offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.0, 0.0), convention="ros"),
     )
+
+    # ---------- Spaces ----------
+    # Actor (policy) sees the depth image: (H, W, 1)
+    action_space = 4          # [thrust, moment_x, moment_y, moment_z]
+    observation_space = [tiled_camera.height, tiled_camera.width, 1]
+    # Critic sees the 12-dim body-frame state vector (asymmetric actor-critic)
+    state_space = 12
 
     # ---------- Physics tuning parameters ----------
     # thrust_to_weight: ratio of max thrust to drone weight.

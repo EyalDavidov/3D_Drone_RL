@@ -23,6 +23,10 @@ from .camera_first_drone_env_cfg import CameraFirstDroneEnvCfg
 class CameraFirstDroneEnv(DirectRLEnv):
     """First Drone environment with wrench-based quadcopter physics and camera sensor.
 
+    Uses asymmetric actor-critic:
+      - Actor (policy) receives the depth image from a body-mounted camera.
+      - Critic receives the 12-dim body-frame state vector during training.
+
     The drone starts at y=+1.0 and must fly to a goal at y=-1.0,
     navigating through a room with poles in between.
 
@@ -129,21 +133,40 @@ class CameraFirstDroneEnv(DirectRLEnv):
         )
 
     # ------------------------------------------------------------------
-    # Observations (body-frame)
+    # Observations (asymmetric actor-critic)
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
-        """Build the 12-dim observation vector (all in body frame).
+        """Build observations for asymmetric actor-critic.
 
-        Components (3 each, total 12):
-          1. root_lin_vel_b  — linear velocity in body frame
-          2. root_ang_vel_b  — angular velocity in body frame
-          3. projected_gravity_b — gravity direction in body frame (encodes orientation)
-          4. desired_pos_b   — goal position relative to drone, in body frame
+        Returns a dict with three groups:
+          - "policy": depth image (B, 1, H, W) — body-mounted camera, channels-first.
+          - "imu":    6-dim IMU-like data [ang_vel_b(3), projected_gravity_b(3)].
+                      Paired with "policy" for the actor. Realistic for deployment
+                      (a real drone always has an IMU).
+          - "critic": 12-dim privileged state vector (used only during training):
+                      [lin_vel_b(3), ang_vel_b(3), projected_gravity_b(3), goal_pos_b(3)]
         """
+        # --- Actor observation 1: depth image ---
+        depth_image = self._tiled_camera.data.output["depth"].clone()
+        # Replace inf (no hit / sky) with 0 so the network gets clean inputs
+        depth_image[depth_image == float("inf")] = 0.0
+        # Permute from (B, H, W, 1) → (B, 1, H, W) for RSL-RL CNN
+        depth_image = depth_image.permute(0, 3, 1, 2)
+
+        # --- Actor observation 2: IMU data (available on real hardware) ---
+        imu_obs = torch.cat(
+            [
+                self._robot.data.root_ang_vel_b,
+                self._robot.data.projected_gravity_b,
+            ],
+            dim=-1,
+        )
+
+        # --- Critic observation: full privileged state ---
         desired_pos_b, _ = subtract_frame_transforms(
             self._robot.data.root_pos_w, self._robot.data.root_quat_w, self._desired_pos_w
         )
-        obs = torch.cat(
+        critic_obs = torch.cat(
             [
                 self._robot.data.root_lin_vel_b,
                 self._robot.data.root_ang_vel_b,
@@ -152,7 +175,8 @@ class CameraFirstDroneEnv(DirectRLEnv):
             ],
             dim=-1,
         )
-        return {"policy": obs}
+
+        return {"policy": depth_image, "imu": imu_obs, "critic": critic_obs}
 
     # ------------------------------------------------------------------
     # Rewards
