@@ -18,6 +18,7 @@ parser.add_argument("--checkpoint", type=str, required=True, help="Path to check
 parser.add_argument("--num_envs", type=int, default=4, help="Number of environments.")
 parser.add_argument("--task", type=str, default="SAC-First-Drone-Direct-v0", help="Task name.")
 parser.add_argument("--num_episodes", type=int, default=20, help="Number of episodes to run.")
+parser.add_argument("--viewer", action="store_true", help="Enable OpenCV debug window to view drone camera.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
 
@@ -29,6 +30,7 @@ simulation_app = app_launcher.app
 """Everything after AppLauncher."""
 
 import os
+import cv2
 import gymnasium as gym
 import torch
 
@@ -88,6 +90,21 @@ def main():
         next_obs_dict, rewards, terminated, truncated, infos = env.step(actions)
         obs = next_obs_dict["policy"]
         episode_rewards += rewards
+        
+        # Update debug viewer if enabled
+        if args_cli.viewer:
+            if unwrapped._last_depth_processed is not None:
+                # Get the latest depth from env_0
+                # Shape is (B, 1, 72, 128), we want (72, 128)
+                raw_depth = unwrapped._last_depth_processed[0, 0].clone()
+                # Normalize to 0-255 uint8 format (invert so closer is brighter)
+                normalized_img = ((1.0 - raw_depth) * 255.0).byte().cpu().numpy()
+                
+                # Upscale strictly for the debug viewer (128x72 -> 640x360)
+                display_img = cv2.resize(normalized_img, (640, 360), interpolation=cv2.INTER_NEAREST)
+                
+                cv2.imshow("Drone Env 0 Camera", display_img)
+                cv2.waitKey(1)
 
         dones = terminated | truncated
         done_ids = dones.nonzero(as_tuple=False).squeeze(-1)
@@ -118,6 +135,8 @@ def main():
     success_rate = total_success / max(completed, 1) * 100
     print(f"\n[RESULTS] {completed} episodes | Avg reward: {avg:.2f} | Success rate: {success_rate:.1f}%")
 
+    if args_cli.viewer:
+        cv2.destroyAllWindows()
     env.close()
 
 

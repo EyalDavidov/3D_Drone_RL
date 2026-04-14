@@ -34,6 +34,7 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--viewer", action="store_true", help="Enable OpenCV debug window to view drone camera.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -63,6 +64,7 @@ installed_version = metadata.version("rsl-rl-lib")
 
 import os
 import time
+import cv2
 
 import gymnasium as gym
 import torch
@@ -213,8 +215,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 policy.reset(dones)
             else:
                 policy_nn.reset(dones)
+                
+        # Update debug viewer if enabled
+        if args_cli.viewer and timestep % 2 == 0:
+            if hasattr(env.unwrapped, "_tiled_camera"):
+                raw_depth = env.unwrapped._tiled_camera.data.output["depth"][0, :, :, 0].clone()
+                # Handle inf/nan values maxing at 10.0 meters
+                raw_depth[raw_depth == float("inf")] = 10.0
+                raw_depth[torch.isnan(raw_depth)] = 10.0
+                raw_depth = raw_depth.clamp(0.0, 10.0)
+                # Normalize to 0-255 uint8 format
+                # We invert it (1.0 - raw_depth / max) so closer objects are brighter
+                normalized_img = ((1.0 - raw_depth / 10.0) * 255.0).byte().cpu().numpy()
+                
+                # Upscale strictly for the debug viewer (50x50 -> 500x500)
+                display_img = cv2.resize(normalized_img, (500, 500), interpolation=cv2.INTER_NEAREST)
+                
+                cv2.imshow("Drone Env 0 Camera", display_img)
+                cv2.waitKey(1)
+
+        timestep += 1
+        
         if args_cli.video:
-            timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
@@ -225,6 +247,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             time.sleep(sleep_time)
 
     # close the simulator
+    if args_cli.viewer:
+        cv2.destroyAllWindows()
     env.close()
 
 
