@@ -20,6 +20,10 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "camera_first_drone_direct"
 
+    # Logging — use Weights & Biases for live training dashboards
+    logger = "wandb"
+    wandb_project = "first_drone"
+
     # Actor: CNN processes the 100x100x1 depth image
     actor = RslRlCNNModelCfg(
         cnn_cfg=RslRlCNNModelCfg.CNNCfg(
