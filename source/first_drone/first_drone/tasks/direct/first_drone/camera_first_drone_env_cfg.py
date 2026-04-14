@@ -61,13 +61,13 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     # camera — body-mounted depth sensor
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Drone/body/Camera",
-        height=100,
-        width=100,
+        height=50,
+        width=50,
         data_types=["depth"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
-        offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.0, 0.0), convention="ros"),
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
     )
 
     # ---------- Spaces ----------
@@ -98,3 +98,5 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     ang_vel_reward_scale = -0.01
     # distance_to_goal_reward_scale: rewards being close to the goal position
     distance_to_goal_reward_scale = 15.0
+    # died_reward_scale: one-time penalty when the drone crashes into floor/ceiling/walls
+    died_reward_scale = -10.0

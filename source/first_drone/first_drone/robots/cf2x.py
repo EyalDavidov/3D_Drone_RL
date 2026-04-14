@@ -21,6 +21,7 @@ DRONE_CONFIG = ArticulationCfg(
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 1),
+        rot=(0.7071, 0.0, 0.0, -0.7071),
         joint_pos={
             ".*": 0.0,
         },

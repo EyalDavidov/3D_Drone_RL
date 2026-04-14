@@ -57,6 +57,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
                 "lin_vel",
                 "ang_vel",
                 "distance_to_goal",
+                "died",
             ]
         }
 
@@ -120,6 +121,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
             moment = moment_scale * action[1:4]
             These directly control roll, pitch, and yaw.
         """
+
         self._actions = actions.clone().clamp(-1.0, 1.0)
         self._thrust[:, 0, 2] = (
             self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
@@ -184,16 +186,11 @@ class CameraFirstDroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute the per-step reward.
 
-        Three terms are summed:
+        Four terms are summed:
           1. lin_vel  — penalty for high linear speed (encourages smooth flight)
           2. ang_vel  — penalty for high angular speed (discourages spinning)
           3. distance_to_goal — reward for being close to goal (tanh-shaped)
-
-        The tanh mapping: 1 - tanh(d / 0.8)
-          - At d=0: reward ≈ 1.0  (at goal)
-          - At d=0.8: reward ≈ 0.24
-          - At d=2.0: reward ≈ 0.01 (far away)
-        Each term is multiplied by its scale and by step_dt (time-normalized).
+          4. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
         """
         lin_vel = torch.sum(torch.square(self._robot.data.root_lin_vel_b), dim=1)
         ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
@@ -204,6 +201,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+            "died": self.reset_terminated.float() * self.cfg.died_reward_scale,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -220,14 +218,23 @@ class CameraFirstDroneEnv(DirectRLEnv):
         """Determine which environments should reset.
 
         Returns:
-            died: True if drone altitude is below 0.1m or above 2.0m
+            died: True if drone hits floor (<0.1m), ceiling (>2.0m), or walls (|x|>1.9, |y|>1.9)
             time_out: True if episode exceeded max length
         """
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        died = torch.logical_or(
-            self._robot.data.root_pos_w[:, 2] < 0.1,
-            self._robot.data.root_pos_w[:, 2] > 2.0,
+
+        # Compute position relative to env origin (so wall checks work across the grid)
+        pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
+
+        # Floor / ceiling
+        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.0)
+        # Walls (room is 4×4 centered at origin → walls at ±2, trigger slightly inside)
+        hit_wall = (
+            (pos_local[:, 0] > 1.9) | (pos_local[:, 0] < -1.9)
+            | (pos_local[:, 1] > 1.9) | (pos_local[:, 1] < -1.9)
         )
+
+        died = hit_floor_or_ceiling | hit_wall
         return died, time_out
 
     # ------------------------------------------------------------------

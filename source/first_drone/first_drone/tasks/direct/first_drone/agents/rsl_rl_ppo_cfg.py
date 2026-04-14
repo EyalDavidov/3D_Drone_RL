@@ -16,7 +16,7 @@ from isaaclab_rl.rsl_rl import (
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
-    max_iterations = 400
+    max_iterations = 1000
     save_interval = 50
     experiment_name = "camera_first_drone_direct"
 
