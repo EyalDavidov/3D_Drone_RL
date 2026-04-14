@@ -58,6 +58,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
                 "ang_vel",
                 "distance_to_goal",
                 "died",
+                "reached_goal",
             ]
         }
 
@@ -121,6 +122,16 @@ class CameraFirstDroneEnv(DirectRLEnv):
             moment = moment_scale * action[1:4]
             These directly control roll, pitch, and yaw.
         """
+
+        # # לא משתמשים ב־actions
+        # self._actions = torch.zeros_like(actions)
+
+        # # איפוס
+        # self._thrust[:, 0, :] = 0.0
+        # self._moment[:, 0, :] = 0.0
+
+        # # thrust קבוע = משקל → hover
+        # self._thrust[:, 0, 2] = 1.00 * self._robot_weight  # 1.05 ליציבות
 
         self._actions = actions.clone().clamp(-1.0, 1.0)
         self._thrust[:, 0, 2] = (
@@ -186,22 +197,31 @@ class CameraFirstDroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute the per-step reward.
 
-        Four terms are summed:
+        Five terms are summed:
           1. lin_vel  — penalty for high linear speed (encourages smooth flight)
           2. ang_vel  — penalty for high angular speed (discourages spinning)
           3. distance_to_goal — reward for being close to goal (tanh-shaped)
           4. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
+          5. reached_goal - one-time huge bonus for successfully reaching the target
         """
         lin_vel = torch.sum(torch.square(self._robot.data.root_lin_vel_b), dim=1)
         ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
 
+        # Check if reached goal this step
+        reached_goal = (distance_to_goal < self.cfg.goal_radius).float()
+        
+        # Check if died from collision (which is reset_terminated AND NOT reached_goal)
+        # because we will make reached_goal trigger reset_terminated in _get_dones
+        died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
+
         rewards = {
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
-            "died": self.reset_terminated.float() * self.cfg.died_reward_scale,
+            "died": died_from_crash * self.cfg.died_reward_scale,
+            "reached_goal": reached_goal * self.cfg.reached_goal_reward_scale,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -218,7 +238,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
         """Determine which environments should reset.
 
         Returns:
-            died: True if drone hits floor (<0.1m), ceiling (>2.0m), or walls (|x|>1.9, |y|>1.9)
+            died: True if drone hits obstacles OR reaches the goal
             time_out: True if episode exceeded max length
         """
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -233,8 +253,13 @@ class CameraFirstDroneEnv(DirectRLEnv):
             (pos_local[:, 0] > 1.9) | (pos_local[:, 0] < -1.9)
             | (pos_local[:, 1] > 1.9) | (pos_local[:, 1] < -1.9)
         )
+        
+        # Check if reached goal
+        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
+        reached_goal = distance_to_goal < self.cfg.goal_radius
 
-        died = hit_floor_or_ceiling | hit_wall
+        # Terminate if crashed OR reached goal
+        died = hit_floor_or_ceiling | hit_wall | reached_goal
         return died, time_out
 
     # ------------------------------------------------------------------

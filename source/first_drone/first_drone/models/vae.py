@@ -63,13 +63,16 @@ class VAE(nn.Module):
         self.fc_decode = nn.Linear(latent_dim, self._encoder_out_dim)
 
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # → (B, 128, 8, 16)
+            # Reverse the encoder path: (B, 256, 4, 8) → (B, 1, 72, 128)
+            # Encoder spatial: 72→36→18→9→4  (note: 9 is odd, causes asymmetry)
+            # Decoder must go:  4→9→18→36→72
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1, output_padding=(1, 0)),  # → (B, 128, 9, 16)
             nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # → (B, 64, 16, 32)
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # → (B, 64, 18, 32)
             nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, kernel_size=(5, 4), stride=2, padding=1),  # → (B, 32, 35, 64)
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),    # → (B, 32, 36, 64)
             nn.ReLU(),
-            nn.ConvTranspose2d(32, 1, kernel_size=(6, 4), stride=2, padding=1),   # → (B, 1, 72, 128)
+            nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),     # → (B, 1, 72, 128)
             nn.Sigmoid(),  # Output normalized to [0, 1] to match normalized depth input
         )
 
