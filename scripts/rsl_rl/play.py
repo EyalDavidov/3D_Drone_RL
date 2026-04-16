@@ -220,13 +220,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.viewer and timestep % 2 == 0:
             if hasattr(env.unwrapped, "_tiled_camera"):
                 raw_depth = env.unwrapped._tiled_camera.data.output["depth"][0, :, :, 0].clone()
-                # Handle inf/nan values maxing at 10.0 meters
-                raw_depth[raw_depth == float("inf")] = 10.0
-                raw_depth[torch.isnan(raw_depth)] = 10.0
-                raw_depth = raw_depth.clamp(0.0, 10.0)
+                # print("-----------------------------------------------")
+                # print("Linear velocity (body frame): ")
+                # print(env.unwrapped._robot.data.root_lin_vel_b[0, :2])
+                # print("-----------------------------------------------")
+
+                # User defined min (w) and max (b) limits for depth mapping
+                w = 0.1
+                b = 5.0
+                
+                # Map inf/nan depending on user b value (maximum expected distance)
+                raw_depth[raw_depth == float("inf")] = b
+                raw_depth[torch.isnan(raw_depth)] = b
+                
+                # Clamp within user-defined range [w, b]
+                raw_depth = raw_depth.clamp(w, b)
+                
                 # Normalize to 0-255 uint8 format
-                # We invert it (1.0 - raw_depth / max) so closer objects are brighter
-                normalized_img = ((1.0 - raw_depth / 10.0) * 255.0).byte().cpu().numpy()
+                # We invert it so closer objects (w) are brighter and farther (b) are darker
+                depth_range = max(b - w, 1e-6)
+                normalized_img = (((raw_depth - w) / depth_range) * 255.0).byte().cpu().numpy()
                 
                 # Upscale strictly for the debug viewer (50x50 -> 500x500)
                 display_img = cv2.resize(normalized_img, (500, 500), interpolation=cv2.INTER_NEAREST)

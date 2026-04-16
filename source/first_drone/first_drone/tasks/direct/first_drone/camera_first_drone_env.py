@@ -54,8 +54,6 @@ class CameraFirstDroneEnv(DirectRLEnv):
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
-                "lin_vel",
-                "ang_vel",
                 "distance_to_goal",
                 "died",
                 "reached_goal",
@@ -197,17 +195,14 @@ class CameraFirstDroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute the per-step reward.
 
-        Five terms are summed:
-          1. lin_vel  — penalty for high linear speed (encourages smooth flight)
-          2. ang_vel  — penalty for high angular speed (discourages spinning)
-          3. distance_to_goal — reward for being close to goal (tanh-shaped)
-          4. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
-          5. reached_goal - one-time huge bonus for successfully reaching the target
+        Three terms are summed:
+          1. distance_to_goal — penalty for being far from goal
+          2. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
+          3. reached_goal - one-time huge bonus for successfully reaching the target
         """
-        lin_vel = torch.sum(torch.square(self._robot.data.root_lin_vel_b), dim=1)
-        ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
-        distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
+        # distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 1.6)
+        distance_to_goal_mapped = 0.1 * distance_to_goal
 
         # Check if reached goal this step
         reached_goal = (distance_to_goal < self.cfg.goal_radius).float()
@@ -217,8 +212,6 @@ class CameraFirstDroneEnv(DirectRLEnv):
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
 
         rewards = {
-            "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
-            "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
             "died": died_from_crash * self.cfg.died_reward_scale,
             "reached_goal": reached_goal * self.cfg.reached_goal_reward_scale,
@@ -250,8 +243,8 @@ class CameraFirstDroneEnv(DirectRLEnv):
         hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.0)
         # Walls (room is 4×4 centered at origin → walls at ±2, trigger slightly inside)
         hit_wall = (
-            (pos_local[:, 0] > 1.9) | (pos_local[:, 0] < -1.9)
-            | (pos_local[:, 1] > 1.9) | (pos_local[:, 1] < -1.9)
+            (pos_local[:, 0] > 1.85) | (pos_local[:, 0] < -1.85)
+            | (pos_local[:, 1] > 1.85) | (pos_local[:, 1] < -1.85)
         )
         
         # Check if reached goal

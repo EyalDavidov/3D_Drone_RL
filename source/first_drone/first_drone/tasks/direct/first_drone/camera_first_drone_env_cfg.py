@@ -56,7 +56,7 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room with poles — spawned as a static USD prim per-env (no RigidBodyAPI needed)
-    room_usd_path: str = "C:\\Isaac\\Assets\\room_1_pole.usd"
+    room_usd_path: str = "C:\\Isaac\\Assets\\Empty_Room.usd"
 
     # camera — body-mounted depth sensor
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -65,7 +65,7 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
         width=50,
         data_types=["depth"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e2)
+            focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 5.0)
         ),
         offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
     )
@@ -92,15 +92,11 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     # These control the relative importance of each reward term.
     # Negative = penalty, Positive = reward.
     #
-    # lin_vel_reward_scale: penalizes high linear velocities (encourages smooth flight)
-    lin_vel_reward_scale = -0.05
-    # ang_vel_reward_scale: penalizes high angular velocities (discourages spinning)
-    ang_vel_reward_scale = -0.01
-    # distance_to_goal_reward_scale: rewards being close to the goal position
-    distance_to_goal_reward_scale = 15.0
-    # died_reward_scale: one-time penalty when the drone crashes into floor/ceiling/walls
-    died_reward_scale = -10.0
-    # reached_goal_reward_scale: one-time huge bonus when reaching the goal
-    reached_goal_reward_scale = 50.0
     # True if distance to goal is less than this
     goal_radius = 0.4
+    # distance_to_goal_reward_scale: rewards being close to the goal position
+    distance_to_goal_reward_scale = -10.0
+    # died_reward_scale: one-time penalty when the drone crashes into floor/ceiling/walls
+    died_reward_scale = -50.0
+    # reached_goal_reward_scale: one-time huge bonus when reaching the goal
+    reached_goal_reward_scale = 250.0
