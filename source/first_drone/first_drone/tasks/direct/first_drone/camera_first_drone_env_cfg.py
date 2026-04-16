@@ -100,3 +100,5 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     died_reward_scale = -50.0
     # reached_goal_reward_scale: one-time huge bonus when reaching the goal
     reached_goal_reward_scale = 250.0
+    # survive_reward_scale: constant positive reward given for staying alive
+    survive_reward_scale = 1.0

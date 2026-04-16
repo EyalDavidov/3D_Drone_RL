@@ -57,6 +57,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
                 "distance_to_goal",
                 "died",
                 "reached_goal",
+                "survive",
             ]
         }
 
@@ -195,10 +196,11 @@ class CameraFirstDroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute the per-step reward.
 
-        Three terms are summed:
+        Four terms are summed:
           1. distance_to_goal — penalty for being far from goal
           2. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
           3. reached_goal - one-time huge bonus for successfully reaching the target
+          4. survive  - small continuous reward for not crashing
         """
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         # distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 1.6)
@@ -211,10 +213,14 @@ class CameraFirstDroneEnv(DirectRLEnv):
         # because we will make reached_goal trigger reset_terminated in _get_dones
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
 
+        # Survival reward: constant 1.0 for every step it's alive (doesn't crash)
+        survive = 1.0 - died_from_crash
+
         rewards = {
             "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
             "died": died_from_crash * self.cfg.died_reward_scale,
             "reached_goal": reached_goal * self.cfg.reached_goal_reward_scale,
+            "survive": survive * self.cfg.survive_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
