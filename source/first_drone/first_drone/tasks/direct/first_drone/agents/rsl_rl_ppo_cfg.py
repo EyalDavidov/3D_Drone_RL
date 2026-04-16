@@ -55,16 +55,16 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     }
 
     algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.005,
-        num_learning_epochs=5,
-        num_mini_batches=4,
+        value_loss_coef=1.0, #משקל הניקוד של ה critic
+        use_clipped_value_loss=True, # 
+        clip_param=0.2, #הגבלת צעד למידה בגג 20%
+        entropy_coef=0.005, #כמה אקראיות נרצה שיהיה
+        num_learning_epochs=5, #כמה פעמים נעבור על כל המידע
+        num_mini_batches=4, #כמה חבילות מידע נחלק כל פעם
         learning_rate=1.0e-3,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
+        schedule="adaptive", #שינוי קצב למידה
+        gamma=0.99, #מקדם דעיכה גבוה זה אומר רחוק יותר חשוב
+        lam=0.95, #כמה נרצה שהרשת תהיה בטוחה
+        desired_kl=0.01, #כמה נרצה שהרשת תהיה בטוחה
         max_grad_norm=1.0,
     )

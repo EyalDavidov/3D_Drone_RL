@@ -94,8 +94,8 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     #
     # True if distance to goal is less than this
     goal_radius = 0.4
-    # distance_to_goal_reward_scale: rewards being close to the goal position
-    distance_to_goal_reward_scale = -10.0
+    # distance_to_goal_reward_scale: gives reward based on progress (prev_dist - current_dist)
+    distance_to_goal_reward_scale = 50.0
     # died_reward_scale: one-time penalty when the drone crashes into floor/ceiling/walls
     died_reward_scale = -50.0
     # reached_goal_reward_scale: one-time huge bonus when reaching the goal

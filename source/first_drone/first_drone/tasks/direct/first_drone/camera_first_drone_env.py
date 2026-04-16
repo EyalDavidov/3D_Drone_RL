@@ -49,6 +49,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
 
         # ----- Goal position (world frame) -----
         self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._previous_distance_to_goal = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Episode reward logging -----
         self._episode_sums = {
@@ -164,20 +165,22 @@ class CameraFirstDroneEnv(DirectRLEnv):
         depth_image[depth_image == float("inf")] = 0.0
         # Permute from (B, H, W, 1) → (B, 1, H, W) for RSL-RL CNN
         depth_image = depth_image.permute(0, 3, 1, 2)
-
-        # --- Actor observation 2: IMU data (available on real hardware) ---
-        imu_obs = torch.cat(
-            [
-                self._robot.data.root_ang_vel_b,
-                self._robot.data.projected_gravity_b,
-            ],
-            dim=-1,
-        )
-
         # --- Critic observation: full privileged state ---
         desired_pos_b, _ = subtract_frame_transforms(
             self._robot.data.root_pos_w, self._robot.data.root_quat_w, self._desired_pos_w
         )
+
+        # --- Actor observation 2: IMU data (available on real hardware) ---
+        imu_obs = torch.cat(
+            [
+                self._robot.data.root_lin_vel_b,
+                self._robot.data.root_ang_vel_b,
+                self._robot.data.projected_gravity_b,
+                desired_pos_b
+            ],
+            dim=-1,
+        )
+       
         critic_obs = torch.cat(
             [
                 self._robot.data.root_lin_vel_b,
@@ -197,17 +200,21 @@ class CameraFirstDroneEnv(DirectRLEnv):
         """Compute the per-step reward.
 
         Four terms are summed:
-          1. distance_to_goal — penalty for being far from goal
+          1. distance_to_goal — progress reward for moving closer to the goal
           2. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
           3. reached_goal - one-time huge bonus for successfully reaching the target
           4. survive  - small continuous reward for not crashing
         """
-        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
-        # distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 1.6)
-        distance_to_goal_mapped = 0.1 * distance_to_goal
+        current_distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
+        
+        # Calculate progress (positive if moving closer, negative if moving away)
+        progress_to_goal = self._previous_distance_to_goal - current_distance_to_goal
+        
+        # Update previous distance to goal for the next step
+        self._previous_distance_to_goal = current_distance_to_goal.clone()
 
         # Check if reached goal this step
-        reached_goal = (distance_to_goal < self.cfg.goal_radius).float()
+        reached_goal = (current_distance_to_goal < self.cfg.goal_radius).float()
         
         # Check if died from collision (which is reset_terminated AND NOT reached_goal)
         # because we will make reached_goal trigger reset_terminated in _get_dones
@@ -217,7 +224,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
         survive = 1.0 - died_from_crash
 
         rewards = {
-            "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+            "distance_to_goal": progress_to_goal * self.cfg.distance_to_goal_reward_scale * self.step_dt,
             "died": died_from_crash * self.cfg.died_reward_scale,
             "reached_goal": reached_goal * self.cfg.reached_goal_reward_scale,
             "survive": survive * self.cfg.survive_reward_scale * self.step_dt,
@@ -324,6 +331,11 @@ class CameraFirstDroneEnv(DirectRLEnv):
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        
+        # Refresh the progress tracker for reset environments
+        self._previous_distance_to_goal[env_ids] = torch.linalg.norm(
+            self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+        )
 
     # ------------------------------------------------------------------
     # Debug visualization (goal markers)
