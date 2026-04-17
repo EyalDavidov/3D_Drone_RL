@@ -16,8 +16,8 @@ from isaaclab_rl.rsl_rl import (
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
-    max_iterations = 1000
-    save_interval = 100
+    max_iterations = 400
+    save_interval = 50
     experiment_name = "camera_drone_direct"
 
     # Logging — use Weights & Biases for live training dashboards

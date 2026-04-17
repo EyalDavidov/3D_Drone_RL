@@ -49,7 +49,6 @@ class CameraFirstDroneEnv(DirectRLEnv):
 
         # ----- Goal position (world frame) -----
         self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
-        self._previous_distance_to_goal = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Episode reward logging -----
         self._episode_sums = {
@@ -57,8 +56,9 @@ class CameraFirstDroneEnv(DirectRLEnv):
             for key in [
                 "distance_to_goal",
                 "died",
-                "reached_goal",
                 "survive",
+                "ang_vel",
+                "lin_vel",
             ]
         }
 
@@ -199,35 +199,34 @@ class CameraFirstDroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute the per-step reward.
 
-        Four terms are summed:
-          1. distance_to_goal — progress reward for moving closer to the goal
+        Five terms are summed:
+          1. distance_to_goal — continuous reward for being close to the goal (1 - tanh)
           2. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
-          3. reached_goal - one-time huge bonus for successfully reaching the target
-          4. survive  - small continuous reward for not crashing
+          3. survive  - small continuous reward for not crashing
+          4. ang_vel  - continuous penalty for high rotational speeds
+          5. lin_vel  - continuous penalty for high linear speeds (encourages smooth flight)
         """
         current_distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         
-        # Calculate progress (positive if moving closer, negative if moving away)
-        progress_to_goal = self._previous_distance_to_goal - current_distance_to_goal
+        # Smoothly map distance to a reward [0, 1] using tanh
+        distance_to_goal_mapped = 1.0 - torch.tanh(current_distance_to_goal / 1.6)
         
-        # Update previous distance to goal for the next step
-        self._previous_distance_to_goal = current_distance_to_goal.clone()
-
-        # Check if reached goal this step
-        reached_goal = (current_distance_to_goal < self.cfg.goal_radius).float()
+        # Calculate Angular and Linear Velocity penalties
+        ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
+        lin_vel = torch.sum(torch.square(self._robot.data.root_lin_vel_b), dim=1)
         
-        # Check if died from collision (which is reset_terminated AND NOT reached_goal)
-        # because we will make reached_goal trigger reset_terminated in _get_dones
-        died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
+        # Check if died from collision (which is exactly reset_terminated now)
+        died_from_crash = self.reset_terminated.float()
 
         # Survival reward: constant 1.0 for every step it's alive (doesn't crash)
         survive = 1.0 - died_from_crash
 
         rewards = {
-            "distance_to_goal": progress_to_goal * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+            "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
             "died": died_from_crash * self.cfg.died_reward_scale,
-            "reached_goal": reached_goal * self.cfg.reached_goal_reward_scale,
             "survive": survive * self.cfg.survive_reward_scale * self.step_dt,
+            "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
+            "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -254,18 +253,21 @@ class CameraFirstDroneEnv(DirectRLEnv):
 
         # Floor / ceiling
         hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.0)
-        # Walls (room is 4×4 centered at origin → walls at ±2, trigger slightly inside)
+        # Walls (room is 4×4 centered at origin → walls at ±2)
+        # We subtract the drone radius to trigger a crash when the drone's edge touches the wall
+        wall_bound = 1.9 - self.cfg.drone_radius
         hit_wall = (
-            (pos_local[:, 0] > 1.85) | (pos_local[:, 0] < -1.85)
-            | (pos_local[:, 1] > 1.85) | (pos_local[:, 1] < -1.85)
+            (pos_local[:, 0] > wall_bound) | (pos_local[:, 0] < -wall_bound)
+            | (pos_local[:, 1] > wall_bound) | (pos_local[:, 1] < -wall_bound)
         )
+        # Poles detection
+        hit_pole = torch.zeros_like(hit_floor_or_ceiling)
+        for px, py in self.cfg.pole_positions:
+            dist_sq = torch.square(pos_local[:, 0] - px) + torch.square(pos_local[:, 1] - py)
+            hit_pole |= (dist_sq < ((self.cfg.pole_radius + self.cfg.drone_radius) ** 2))
         
-        # Check if reached goal
-        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
-        reached_goal = distance_to_goal < self.cfg.goal_radius
-
-        # Terminate if crashed OR reached goal
-        died = hit_floor_or_ceiling | hit_wall | reached_goal
+        # Terminate if crashed (time_out handles reaching the target naturally)
+        died = hit_floor_or_ceiling | hit_wall | hit_pole
         return died, time_out
 
     # ------------------------------------------------------------------
@@ -331,11 +333,6 @@ class CameraFirstDroneEnv(DirectRLEnv):
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
-        
-        # Refresh the progress tracker for reset environments
-        self._previous_distance_to_goal[env_ids] = torch.linalg.norm(
-            self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
-        )
 
     # ------------------------------------------------------------------
     # Debug visualization (goal markers)

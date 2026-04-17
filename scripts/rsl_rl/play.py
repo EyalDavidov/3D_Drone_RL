@@ -221,8 +221,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if hasattr(env.unwrapped, "_tiled_camera"):
                 raw_depth = env.unwrapped._tiled_camera.data.output["depth"][0, :, :, 0].clone()
                 # print("-----------------------------------------------")
-                # print("Linear velocity (body frame): ")
-                # print(env.unwrapped._robot.data.root_lin_vel_b[0, :2])
+                # print("Linear velocity (body frame): ", torch.sum(torch.square(env.unwrapped._robot.data.root_lin_vel_b[0, :3])).item())
+                # print("Angular velocity (body frame): ", torch.sum(torch.square(env.unwrapped._robot.data.root_ang_vel_b[0, :3])).item())
                 # print("-----------------------------------------------")
 
                 # User defined min (w) and max (b) limits for depth mapping

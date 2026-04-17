@@ -56,7 +56,7 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room with poles — spawned as a static USD prim per-env (no RigidBodyAPI needed)
-    room_usd_path: str = "C:\\Isaac\\Assets\\Empty_Room.usd"
+    room_usd_path: str = "C:\\Isaac\\Assets\\room_with_poles.usd"
 
     # camera — body-mounted depth sensor
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -93,12 +93,22 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     # Negative = penalty, Positive = reward.
     #
     # True if distance to goal is less than this
-    goal_radius = 0.4
-    # distance_to_goal_reward_scale: gives reward based on progress (prev_dist - current_dist)
-    distance_to_goal_reward_scale = 50.0
+    goal_radius = 0.1
+    # Drone's circumscribed radius (10x10cm square -> ~7.07cm from center)
+    drone_radius = 0.0707
+    # Virtual bound indicating collision with the poles
+    pole_radius = 0.15
+    # List of (x, y) coordinates for all poles in the USD room
+    pole_positions = [(0.0, 0.0), (0.5,0.0), (1.0, 0.0), (1.5, 0.0), (-0.5, 00.0), (-1.0, 0.0), (-1.5, 0.0)]
+
+
+    # distance_to_goal_reward_scale: gives smooth continuous reward based on proximity (1 - tanh(dist/1.6))
+    distance_to_goal_reward_scale = 15.0
     # died_reward_scale: one-time penalty when the drone crashes into floor/ceiling/walls
     died_reward_scale = -50.0
-    # reached_goal_reward_scale: one-time huge bonus when reaching the goal
-    reached_goal_reward_scale = 250.0
     # survive_reward_scale: constant positive reward given for staying alive
     survive_reward_scale = 1.0
+    # ang_vel_reward_scale: penalizes high angular velocities (discourages spinning/wobbling)
+    ang_vel_reward_scale = -0.1
+    # lin_vel_reward_scale: penalizes high linear velocities (encourages smooth flight)
+    lin_vel_reward_scale = -0.05
