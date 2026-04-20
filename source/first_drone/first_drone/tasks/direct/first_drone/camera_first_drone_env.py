@@ -49,14 +49,16 @@ class CameraFirstDroneEnv(DirectRLEnv):
 
         # ----- Goal position (world frame) -----
         self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._previous_distance_to_goal = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Episode reward logging -----
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
                 "distance_to_goal",
+                "progress",
                 "died",
-                "survive",
+                "hit_pole",
                 "ang_vel",
                 "lin_vel",
             ]
@@ -162,7 +164,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
         # --- Actor observation 1: depth image ---
         depth_image = self._tiled_camera.data.output["depth"].clone()
         # Replace inf (no hit / sky) with 0 so the network gets clean inputs
-        depth_image[depth_image == float("inf")] = 0.0
+        depth_image[depth_image == float("inf")] = 10.0
         # Permute from (B, H, W, 1) → (B, 1, H, W) for RSL-RL CNN
         depth_image = depth_image.permute(0, 3, 1, 2)
         # --- Critic observation: full privileged state ---
@@ -181,15 +183,7 @@ class CameraFirstDroneEnv(DirectRLEnv):
             dim=-1,
         )
        
-        critic_obs = torch.cat(
-            [
-                self._robot.data.root_lin_vel_b,
-                self._robot.data.root_ang_vel_b,
-                self._robot.data.projected_gravity_b,
-                desired_pos_b,
-            ],
-            dim=-1,
-        )
+        critic_obs = imu_obs
 
         return {"policy": depth_image, "imu": imu_obs, "critic": critic_obs}
 
@@ -199,12 +193,13 @@ class CameraFirstDroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute the per-step reward.
 
-        Five terms are summed:
+        Six terms are summed:
           1. distance_to_goal — continuous reward for being close to the goal (1 - tanh)
-          2. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
-          3. survive  - small continuous reward for not crashing
-          4. ang_vel  - continuous penalty for high rotational speeds
-          5. lin_vel  - continuous penalty for high linear speeds (encourages smooth flight)
+          2. progress — reward based on the distance progress made in the current step
+          3. died     — one-time penalty when the drone crashes (floor/ceiling/walls)
+          4. hit_pole - continuous penalty for hitting/intersecting with poles
+          5. ang_vel  - continuous penalty for high rotational speeds
+          6. lin_vel  - continuous penalty for high linear speeds (encourages smooth flight)
         """
         current_distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         
@@ -215,16 +210,26 @@ class CameraFirstDroneEnv(DirectRLEnv):
         ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
         lin_vel = torch.sum(torch.square(self._robot.data.root_lin_vel_b), dim=1)
         
+        # Calculate Pole hitting punishment
+        pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
+        hit_pole = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        for px, py in self.cfg.pole_positions:
+            dist_sq = torch.square(pos_local[:, 0] - px) + torch.square(pos_local[:, 1] - py)
+            hit_pole |= (dist_sq < ((self.cfg.pole_radius + self.cfg.drone_radius) ** 2))
+        
         # Check if died from collision (which is exactly reset_terminated now)
         died_from_crash = self.reset_terminated.float()
 
-        # Survival reward: constant 1.0 for every step it's alive (doesn't crash)
-        survive = 1.0 - died_from_crash
+        # Calculate progress (positive if moving closer, negative if moving away)
+        progress = self._previous_distance_to_goal - current_distance_to_goal
+        # Update previous distance to goal for the next step
+        self._previous_distance_to_goal = current_distance_to_goal.clone()
 
         rewards = {
             "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+            "progress": progress * self.cfg.progress_reward_scale,
             "died": died_from_crash * self.cfg.died_reward_scale,
-            "survive": survive * self.cfg.survive_reward_scale * self.step_dt,
+            "hit_pole": hit_pole.float() * self.cfg.hit_pole_reward_scale * self.step_dt,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
         }
@@ -260,14 +265,9 @@ class CameraFirstDroneEnv(DirectRLEnv):
             (pos_local[:, 0] > wall_bound) | (pos_local[:, 0] < -wall_bound)
             | (pos_local[:, 1] > wall_bound) | (pos_local[:, 1] < -wall_bound)
         )
-        # Poles detection
-        hit_pole = torch.zeros_like(hit_floor_or_ceiling)
-        for px, py in self.cfg.pole_positions:
-            dist_sq = torch.square(pos_local[:, 0] - px) + torch.square(pos_local[:, 1] - py)
-            hit_pole |= (dist_sq < ((self.cfg.pole_radius + self.cfg.drone_radius) ** 2))
-        
         # Terminate if crashed (time_out handles reaching the target naturally)
-        died = hit_floor_or_ceiling | hit_wall | hit_pole
+        # Note: Poles no longer cause death, only continuous punishment.
+        died = hit_floor_or_ceiling | hit_wall
         return died, time_out
 
     # ------------------------------------------------------------------
@@ -333,6 +333,11 @@ class CameraFirstDroneEnv(DirectRLEnv):
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        
+        # Refresh the progress tracker for reset environments
+        self._previous_distance_to_goal[env_ids] = torch.linalg.norm(
+            self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+        )
 
     # ------------------------------------------------------------------
     # Debug visualization (goal markers)

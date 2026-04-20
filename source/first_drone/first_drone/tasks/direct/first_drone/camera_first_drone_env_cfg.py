@@ -106,8 +106,10 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     distance_to_goal_reward_scale = 15.0
     # died_reward_scale: one-time penalty when the drone crashes into floor/ceiling/walls
     died_reward_scale = -50.0
-    # survive_reward_scale: constant positive reward given for staying alive
-    survive_reward_scale = 1.0
+    # hit_pole_reward_scale: continuous penalty while intersecting with a pole
+    hit_pole_reward_scale = -100.0
+    # progress_reward_scale: gives reward based on progress made each step (d_prev - d_now)
+    progress_reward_scale = 50.0
     # ang_vel_reward_scale: penalizes high angular velocities (discourages spinning/wobbling)
     ang_vel_reward_scale = -0.1
     # lin_vel_reward_scale: penalizes high linear velocities (encourages smooth flight)

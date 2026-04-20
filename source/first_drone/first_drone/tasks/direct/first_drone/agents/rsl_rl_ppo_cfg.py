@@ -58,7 +58,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0, #משקל הניקוד של ה critic
         use_clipped_value_loss=True, # 
         clip_param=0.2, #הגבלת צעד למידה בגג 20%
-        entropy_coef=0.005, #כמה אקראיות נרצה שיהיה
+        entropy_coef=0.01, #כמה אקראיות נרצה שיהיה
         num_learning_epochs=5, #כמה פעמים נעבור על כל המידע
         num_mini_batches=4, #כמה חבילות מידע נחלק כל פעם
         learning_rate=1.0e-3,
