@@ -19,11 +19,27 @@ class FlightControllerDroneEnv(CameraFirstDroneEnv):
         self._vel_limit = torch.tensor([3.0, 3.0, 2.0], device=self.device)
         self._yaw_rate_limit = 3.0
 
+        # ----- Episode reward logging -----
+        self._episode_sums = {
+            key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            for key in [
+                "distance_to_goal",
+                "progress",
+                "died",
+                "hit_pole",
+                "ang_vel",
+                "lin_vel",
+            ]
+        }
+        
         # ----- Physical constants (computed once) -----
         self._body_id = self._robot.find_bodies("body")[0]
         self._robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
         self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
         self._robot_weight = (self._robot_mass * self._gravity_magnitude).item()
+
+        # ----- Debug visualization (goal markers) -----
+        self.set_debug_vis(self.cfg.debug_vis)
 
     # Override scene setup to avoid creating a camera
     def _setup_scene(self):
@@ -127,19 +143,12 @@ class FlightControllerDroneEnv(CameraFirstDroneEnv):
         ang_vel = torch.sum(torch.square(cur_wb), dim=1)
         lin_vel = torch.sum(torch.square(cur_vb), dim=1)
 
-        pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
-        hit_pole = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        for px, py in self.cfg.pole_positions:
-            dist_sq = torch.square(pos_local[:, 0] - px) + torch.square(pos_local[:, 1] - py)
-            hit_pole |= (dist_sq < ((self.cfg.pole_radius + self.cfg.drone_radius) ** 2))
-
         died_from_crash = self.reset_terminated.float()
 
         rewards = {
             "vel_match": vel_match_reward,
             "yaw_match": yaw_match_reward,
             "died": died_from_crash * self.cfg.died_reward_scale,
-            "hit_pole": hit_pole.float() * self.cfg.hit_pole_reward_scale * self.step_dt,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
         }
@@ -221,3 +230,23 @@ class FlightControllerDroneEnv(CameraFirstDroneEnv):
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         # no previous-distance tracking for velocity task
+
+    # ------------------------------------------------------------------
+    # Debug visualization (goal markers)
+    # ------------------------------------------------------------------
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        """Create or toggle visibility of goal position markers."""
+        if debug_vis:
+            if not hasattr(self, "goal_pos_visualizer"):
+                marker_cfg = CUBOID_MARKER_CFG.copy()
+                marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
+                marker_cfg.prim_path = "/Visuals/Command/goal_position"
+                self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
+            self.goal_pos_visualizer.set_visibility(True)
+        else:
+            if hasattr(self, "goal_pos_visualizer"):
+                self.goal_pos_visualizer.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        """Update goal marker positions each frame."""
+        self.goal_pos_visualizer.visualize(self._desired_pos_w)

@@ -73,14 +73,8 @@ class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     moment_scale = 0.01
 
     # ---------- Reward scales (reuse from camera config) ----------
-    goal_radius = 0.1
     drone_radius = 0.0707
-    pole_radius = 0.15
-    pole_positions = [(0.0, 0.0), (0.5,0.0), (1.0, 0.0), (1.5, 0.0), (-0.5, 00.0), (-1.0, 0.0), (-1.5, 0.0)]
-
-    distance_to_goal_reward_scale = 15.0
+ 
     died_reward_scale = -50.0
-    hit_pole_reward_scale = -100.0
-    progress_reward_scale = 50.0
     ang_vel_reward_scale = -0.1
     lin_vel_reward_scale = -0.05
