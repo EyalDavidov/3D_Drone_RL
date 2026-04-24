@@ -11,7 +11,7 @@ from isaaclab.utils import configclass
 
 
 @configclass
-class CameraVelocityDroneEnvCfg(DirectRLEnvCfg):
+class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 10.0

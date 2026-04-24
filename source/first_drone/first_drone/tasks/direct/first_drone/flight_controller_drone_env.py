@@ -3,9 +3,9 @@ from __future__ import annotations
 import torch
 
 from .camera_first_drone_env import CameraFirstDroneEnv
+import isaaclab.sim as sim_utils
 
-
-class CameraVelocityDroneEnv(CameraFirstDroneEnv):
+class FlightControllerDroneEnv(CameraFirstDroneEnv):
     """Environment variant where the agent commands body-frame velocities
     and a yaw rate: action = [vx, vy, vz, yaw_rate]. The env uses a simple
     PD-style controller to convert velocity errors into forces and a P
@@ -172,13 +172,11 @@ class CameraVelocityDroneEnv(CameraFirstDroneEnv):
     # Override scene setup to avoid creating a camera
     def _setup_scene(self):
         """Create the drone articulation, room (floor), terrain, and lighting — no camera."""
-        self._robot = self._robot = __import__(
-            "isaaclab.assets", fromlist=["Articulation"]
-        ).Articulation(self.cfg.robot_cfg)
+        self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
         # Room (floor) — spawn the provided USD file into env_0 (cloned to all envs)
-        room_cfg = __import__("isaaclab.sim", fromlist=["UsdFileCfg"]).UsdFileCfg(usd_path=self.cfg.room_usd_path)
+        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
         room_cfg.func("/World/envs/env_0/Room", room_cfg)
 
         # Terrain (ground plane)
@@ -192,7 +190,7 @@ class CameraVelocityDroneEnv(CameraFirstDroneEnv):
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
         # Lighting
-        light_cfg = __import__("isaaclab.sim", fromlist=["DomeLightCfg"]).DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _get_observations(self) -> dict:
