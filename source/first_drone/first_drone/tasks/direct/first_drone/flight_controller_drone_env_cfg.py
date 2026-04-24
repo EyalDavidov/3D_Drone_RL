@@ -63,8 +63,8 @@ class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     # ---------- Spaces ----------
     # Actor (policy) action commands: motor-level controls (thrust, moment_x, moment_y, moment_z)
     action_space = 4          # [thrust, moment_x, moment_y, moment_z]
-    # Policy (for velocity-controller task) receives desired velocity target: [vx, vy, vz, yaw_rate]
-    observation_space = [4]
+    # Policy receives concatenated desired velocities (4) and IMU data (9) = 13 total features
+    observation_space = 13
     # Critic sees the 12-dim body-frame state vector
     state_space = 12
 

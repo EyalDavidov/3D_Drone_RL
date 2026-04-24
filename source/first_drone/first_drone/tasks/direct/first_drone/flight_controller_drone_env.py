@@ -102,8 +102,8 @@ class FlightControllerDroneEnv(CameraFirstDroneEnv):
         projected_gravity_b = self._robot.data.projected_gravity_b
 
         # desired velocity target (body frame + yaw_rate) previously sampled in reset
-        desired_vb = getattr(self, "_desired_vel_b", torch.zeros_like(lin_vel_b))
-        desired_yaw = getattr(self, "_desired_yaw_rate", torch.zeros(self.num_envs, device=self.device))
+        desired_vb = self._desired_vel_b
+        desired_yaw = self._desired_yaw_rate
 
         # Policy observation: the agent receives the desired velocities as its input
         # shape: (B, 4) -> [vx, vy, vz, yaw_rate]
