@@ -15,16 +15,40 @@ class FlightControllerDroneEnv(CameraFirstDroneEnv):
     def __init__(self, cfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        # Controller gains (tunable)
-        self._kp_lin = 5.0
-        self._kd_lin = 1.0
-        self._kp_yaw = 2.0
-        self._kd_ang_xy = 0.1
-
         # Limits for commanded velocities (safety clipping)
         self._vel_limit = torch.tensor([3.0, 3.0, 2.0], device=self.device)
         self._yaw_rate_limit = 3.0
 
+        # ----- Physical constants (computed once) -----
+        self._body_id = self._robot.find_bodies("body")[0]
+        self._robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
+        self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
+        self._robot_weight = (self._robot_mass * self._gravity_magnitude).item()
+
+    # Override scene setup to avoid creating a camera
+    def _setup_scene(self):
+        """Create the drone articulation, room (floor), terrain, and lighting — no camera."""
+        self._robot = Articulation(self.cfg.robot_cfg)
+        self.scene.articulations["robot"] = self._robot
+
+        # Room (floor) — spawn the provided USD file into env_0 (cloned to all envs)
+        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
+        room_cfg.func("/World/envs/env_0/Room", room_cfg)
+
+        # Terrain (ground plane)
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+
+        # Clone environments
+        self.scene.clone_environments(copy_from_source=False)
+        if self.device == "cpu":
+            self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
+
+        # Lighting
+        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg.func("/World/Light", light_cfg)
+    
     def _pre_physics_step(self, actions: torch.Tensor):
         """Interpret actions as motor-level commands and apply as forces/torques.
 
@@ -47,6 +71,35 @@ class FlightControllerDroneEnv(CameraFirstDroneEnv):
         self._robot.permanent_wrench_composer.set_forces_and_torques(
             body_ids=self._body_id, forces=self._thrust, torques=self._moment
         )
+
+    def _get_observations(self) -> dict:
+        """Return observations for the velocity-control policy.
+
+        Observations returned:
+          - "policy": body-frame linear and angular velocities (B, 6)
+          - "imu": same as policy (kept for compatibility)
+          - "critic": privileged state (lin_vel_b(3), ang_vel_b(3), projected_gravity_b(3), desired_vel_b(3))
+        """
+        # Body velocities
+        lin_vel_b = self._robot.data.root_lin_vel_b
+        ang_vel_b = self._robot.data.root_ang_vel_b
+        projected_gravity_b = self._robot.data.projected_gravity_b
+
+        # desired velocity target (body frame + yaw_rate) previously sampled in reset
+        desired_vb = getattr(self, "_desired_vel_b", torch.zeros_like(lin_vel_b))
+        desired_yaw = getattr(self, "_desired_yaw_rate", torch.zeros(self.num_envs, device=self.device))
+
+        # Policy observation: the agent receives the desired velocities as its input
+        # shape: (B, 4) -> [vx, vy, vz, yaw_rate]
+        policy_obs = torch.cat([desired_vb, desired_yaw.unsqueeze(-1)], dim=-1)
+
+        # IMU observation (kept for compatibility): current body lin/ang vel
+        imu_obs = torch.cat([lin_vel_b, ang_vel_b, projected_gravity_b], dim=-1)
+
+        # Critic: privileged state includes current velocities, projected gravity, and desired target
+        critic_obs = torch.cat([lin_vel_b, ang_vel_b, projected_gravity_b, desired_vb], dim=-1)
+
+        return {"policy": policy_obs, "imu": imu_obs, "critic": critic_obs}
 
     # ------------------------------------------------------------------
     # Rewards / dones / reset (copied/adapted from CameraFirstDroneEnv)
@@ -168,55 +221,3 @@ class FlightControllerDroneEnv(CameraFirstDroneEnv):
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         # no previous-distance tracking for velocity task
-
-    # Override scene setup to avoid creating a camera
-    def _setup_scene(self):
-        """Create the drone articulation, room (floor), terrain, and lighting — no camera."""
-        self._robot = Articulation(self.cfg.robot_cfg)
-        self.scene.articulations["robot"] = self._robot
-
-        # Room (floor) — spawn the provided USD file into env_0 (cloned to all envs)
-        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
-        room_cfg.func("/World/envs/env_0/Room", room_cfg)
-
-        # Terrain (ground plane)
-        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
-        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-
-        # Clone environments
-        self.scene.clone_environments(copy_from_source=False)
-        if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
-
-        # Lighting
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
-        light_cfg.func("/World/Light", light_cfg)
-
-    def _get_observations(self) -> dict:
-        """Return observations for the velocity-control policy.
-
-        Observations returned:
-          - "policy": body-frame linear and angular velocities (B, 6)
-          - "imu": same as policy (kept for compatibility)
-          - "critic": privileged state (lin_vel_b(3), ang_vel_b(3), projected_gravity_b(3), desired_vel_b(3))
-        """
-        # Body velocities
-        lin_vel_b = self._robot.data.root_lin_vel_b
-        ang_vel_b = self._robot.data.root_ang_vel_b
-
-        # desired velocity target (body frame + yaw_rate) previously sampled in reset
-        desired_vb = getattr(self, "_desired_vel_b", torch.zeros_like(lin_vel_b))
-        desired_yaw = getattr(self, "_desired_yaw_rate", torch.zeros(self.num_envs, device=self.device))
-
-        # Policy observation: the agent receives the desired velocities as its input
-        # shape: (B, 4) -> [vx, vy, vz, yaw_rate]
-        policy_obs = torch.cat([desired_vb, desired_yaw.unsqueeze(-1)], dim=-1)
-
-        # IMU observation (kept for compatibility): current body lin/ang vel
-        imu_obs = torch.cat([lin_vel_b, ang_vel_b], dim=-1)
-
-        # Critic: privileged state includes current velocities, projected gravity, and desired target
-        critic_obs = torch.cat([lin_vel_b, ang_vel_b, self._robot.data.projected_gravity_b, desired_vb], dim=-1)
-
-        return {"policy": policy_obs, "imu": imu_obs, "critic": critic_obs}
