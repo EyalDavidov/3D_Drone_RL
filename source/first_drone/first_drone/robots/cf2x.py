@@ -1,10 +1,11 @@
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 DRONE_CONFIG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"C:\\Isaac\\Assets\\cf2x\\cf2x.usd",
+        usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=10.0,

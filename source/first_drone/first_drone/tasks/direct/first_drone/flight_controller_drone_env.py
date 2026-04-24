@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import torch
 
-from .camera_first_drone_env import CameraFirstDroneEnv
+from isaaclab.envs import DirectRLEnv
 import isaaclab.sim as sim_utils
+from isaaclab.assets import Articulation
+from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
+from isaaclab.markers import VisualizationMarkers
 
-class FlightControllerDroneEnv(CameraFirstDroneEnv):
+class FlightControllerDroneEnv(DirectRLEnv):
     """Environment variant where the agent commands body-frame velocities
     and a yaw rate: action = [vx, vy, vz, yaw_rate]. The env uses a simple
     PD-style controller to convert velocity errors into forces and a P
