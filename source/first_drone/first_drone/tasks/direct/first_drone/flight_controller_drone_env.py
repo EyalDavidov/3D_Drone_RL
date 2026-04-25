@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gymnasium as gym
 import torch
 
 from isaaclab.envs import DirectRLEnv
@@ -21,6 +22,16 @@ class FlightControllerDroneEnv(DirectRLEnv):
         # Limits for commanded velocities (safety clipping)
         self._vel_limit = torch.tensor([3.0, 3.0, 2.0], device=self.device)
         self._yaw_rate_limit = 3.0
+
+        # ----- Action / wrench buffers -----
+        self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
+        self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)   # force applied to body (only Z used)
+        self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)   # torque applied to body (x, y, z)
+
+        # ----- Goal position (world frame) (for debug visualization) -----
+        self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._desired_vel_b = torch.zeros(self.num_envs, 3, device=self.device)
+        self._desired_yaw_rate = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Episode reward logging -----
         self._episode_sums = {
@@ -212,11 +223,9 @@ class FlightControllerDroneEnv(DirectRLEnv):
 
         # --- Sample new desired velocity target (body frame) ---
         # vx, vy in [-1, 1] m/s, vz in [-0.5, 0.5] m/s, yaw_rate in [-1.0, 1.0] rad/s
-        self._desired_vel_b = torch.zeros(self.num_envs, 3, device=self.device)
         self._desired_vel_b[env_ids, 0] = torch.zeros_like(self._desired_vel_b[env_ids, 0]).uniform_(-1.0, 1.0)
         self._desired_vel_b[env_ids, 1] = torch.zeros_like(self._desired_vel_b[env_ids, 1]).uniform_(-1.0, 1.0)
         self._desired_vel_b[env_ids, 2] = torch.zeros_like(self._desired_vel_b[env_ids, 2]).uniform_(-0.5, 0.5)
-        self._desired_yaw_rate = torch.zeros(self.num_envs, device=self.device)
         self._desired_yaw_rate[env_ids] = torch.zeros_like(self._desired_yaw_rate[env_ids]).uniform_(-1.0, 1.0)
 
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
