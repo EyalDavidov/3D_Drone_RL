@@ -76,5 +76,8 @@ class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     drone_radius = 0.0707
  
     died_reward_scale = -50.0
-    ang_vel_reward_scale = -0.1
+    ang_vel_reward_scale = -0.001
     lin_vel_reward_scale = -0.05
+
+    vel_match_reward_scale = -5.0
+    yaw_match_reward_scale = -0.2

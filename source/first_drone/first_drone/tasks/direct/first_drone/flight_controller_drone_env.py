@@ -6,8 +6,6 @@ import torch
 from isaaclab.envs import DirectRLEnv
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
-from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
-from isaaclab.markers import VisualizationMarkers
 
 class FlightControllerDroneEnv(DirectRLEnv):
     """Environment variant where the agent commands body-frame velocities
@@ -37,10 +35,8 @@ class FlightControllerDroneEnv(DirectRLEnv):
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
-                "distance_to_goal",
                 "progress",
                 "died",
-                "hit_pole",
                 "ang_vel",
                 "lin_vel",
             ]
@@ -62,8 +58,8 @@ class FlightControllerDroneEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self._robot
 
         # Room (floor) — spawn the provided USD file into env_0 (cloned to all envs)
-        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
-        room_cfg.func("/World/envs/env_0/Room", room_cfg)
+        # room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
+        # room_cfg.func("/World/envs/env_0/Room", room_cfg)
 
         # Terrain (ground plane)
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
@@ -149,9 +145,6 @@ class FlightControllerDroneEnv(DirectRLEnv):
         vel_err_sq = torch.sum(torch.square(cur_vb - desired_vb), dim=1)
         yaw_err_sq = torch.square(cur_wb[:, 2] - desired_yaw)
 
-        # velocity-match reward (negative squared error scaled)
-        vel_match_reward = -5.0 * vel_err_sq * self.step_dt
-        yaw_match_reward = -2.0 * yaw_err_sq * self.step_dt
 
         # stability penalties (as before)
         ang_vel = torch.sum(torch.square(cur_wb), dim=1)
@@ -160,8 +153,8 @@ class FlightControllerDroneEnv(DirectRLEnv):
         died_from_crash = self.reset_terminated.float()
 
         rewards = {
-            "vel_match": vel_match_reward,
-            "yaw_match": yaw_match_reward,
+            "vel_match": self.cfg.vel_match_reward_scale * vel_err_sq * self.step_dt,
+            "yaw_match": self.cfg.yaw_match_reward_scale * yaw_err_sq * self.step_dt,
             "died": died_from_crash * self.cfg.died_reward_scale,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
@@ -222,11 +215,10 @@ class FlightControllerDroneEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
 
         # --- Sample new desired velocity target (body frame) ---
-        # vx, vy in [-1, 1] m/s, vz in [-0.5, 0.5] m/s, yaw_rate in [-1.0, 1.0] rad/s
-        self._desired_vel_b[env_ids, 0] = torch.zeros_like(self._desired_vel_b[env_ids, 0]).uniform_(-1.0, 1.0)
-        self._desired_vel_b[env_ids, 1] = torch.zeros_like(self._desired_vel_b[env_ids, 1]).uniform_(-1.0, 1.0)
-        self._desired_vel_b[env_ids, 2] = torch.zeros_like(self._desired_vel_b[env_ids, 2]).uniform_(-0.5, 0.5)
-        self._desired_yaw_rate[env_ids] = torch.zeros_like(self._desired_yaw_rate[env_ids]).uniform_(-1.0, 1.0)
+        self._desired_vel_b[env_ids, 0] = 0.0
+        self._desired_vel_b[env_ids, 1] = 0.0
+        self._desired_vel_b[env_ids, 2] = 0.0
+        self._desired_yaw_rate[env_ids] = 0.0
 
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
         default_root_state[:, 0] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
@@ -248,17 +240,8 @@ class FlightControllerDroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _set_debug_vis_impl(self, debug_vis: bool):
         """Create or toggle visibility of goal position markers."""
-        if debug_vis:
-            if not hasattr(self, "goal_pos_visualizer"):
-                marker_cfg = CUBOID_MARKER_CFG.copy()
-                marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
-                marker_cfg.prim_path = "/Visuals/Command/goal_position"
-                self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
-            self.goal_pos_visualizer.set_visibility(True)
-        else:
-            if hasattr(self, "goal_pos_visualizer"):
-                self.goal_pos_visualizer.set_visibility(False)
+        pass
 
     def _debug_vis_callback(self, event):
         """Update goal marker positions each frame."""
-        self.goal_pos_visualizer.visualize(self._desired_pos_w)
+        pass
