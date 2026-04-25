@@ -6,6 +6,9 @@ import torch
 from isaaclab.envs import DirectRLEnv
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
+from isaaclab.utils.math import wrap_to_pi, quat_from_euler_xyz, euler_xyz_from_quat
+from isaaclab.markers import RED_ARROW_X_MARKER_CFG
+from isaaclab.markers import VisualizationMarkers
 
 class FlightControllerDroneEnv(DirectRLEnv):
     """Environment variant where the agent commands body-frame velocities
@@ -29,7 +32,6 @@ class FlightControllerDroneEnv(DirectRLEnv):
         # ----- Goal position (world frame) (for debug visualization) -----
         self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._desired_vel_b = torch.zeros(self.num_envs, 3, device=self.device)
-        self._desired_yaw_rate = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Episode reward logging -----
         self._episode_sums = {
@@ -92,6 +94,11 @@ class FlightControllerDroneEnv(DirectRLEnv):
         # moments scaled by cfg.moment_scale
         self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
 
+    def _get_drone_yaw(self) -> torch.Tensor:
+        """Returns the drone's current yaw angle in world frame."""
+        _, _, yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
+        return yaw
+
     def _apply_action(self):
         """Apply the computed thrust and moment as an external wrench on the drone body."""
         self._robot.permanent_wrench_composer.set_forces_and_torques(
@@ -111,19 +118,23 @@ class FlightControllerDroneEnv(DirectRLEnv):
         ang_vel_b = self._robot.data.root_ang_vel_b
         projected_gravity_b = self._robot.data.projected_gravity_b
 
-        # desired velocity target (body frame + yaw_rate) previously sampled in reset
+        # desired velocity target (body frame) and absolute yaw error
         desired_vb = self._desired_vel_b
-        desired_yaw = self._desired_yaw_rate
 
-        # Policy observation: the agent receives the desired velocities as its input
-        # shape: (B, 4) -> [vx, vy, vz, yaw_rate]
-        policy_obs = torch.cat([desired_vb, desired_yaw.unsqueeze(-1)], dim=-1)
+        # Compute the error between the target absolute yaw and the current yaw
+        current_yaw = self._get_drone_yaw()
+        target_yaw_tensor = torch.full_like(current_yaw, self.cfg.target_yaw)
+        yaw_err = wrap_to_pi(target_yaw_tensor - current_yaw)
+
+        # Policy observation: the agent receives the desired velocities and the yaw error to correct.
+        # shape: (B, 4) -> [vx, vy, vz, yaw_err]
+        policy_obs = torch.cat([desired_vb, yaw_err.unsqueeze(-1)], dim=-1)
 
         # IMU observation (kept for compatibility): current body lin/ang vel
         imu_obs = torch.cat([lin_vel_b, ang_vel_b, projected_gravity_b], dim=-1)
 
-        # Critic: privileged state includes current velocities, projected gravity, and desired target
-        critic_obs = torch.cat([lin_vel_b, ang_vel_b, projected_gravity_b, desired_vb], dim=-1)
+        # Critic: privileged state includes current velocities, projected gravity, desired target and current yaw error
+        critic_obs = torch.cat([lin_vel_b, ang_vel_b, projected_gravity_b, desired_vb, yaw_err.unsqueeze(-1)], dim=-1)
 
         return {"policy": policy_obs, "imu": imu_obs, "critic": critic_obs}
 
@@ -140,10 +151,14 @@ class FlightControllerDroneEnv(DirectRLEnv):
         cur_wb = self._robot.data.root_ang_vel_b
 
         desired_vb = getattr(self, "_desired_vel_b", torch.zeros_like(cur_vb))
-        desired_yaw = getattr(self, "_desired_yaw_rate", torch.zeros(self.num_envs, device=self.device))
+
+        current_yaw = self._get_drone_yaw()
+        target_yaw_tensor = torch.full_like(current_yaw, self.cfg.target_yaw)
+        yaw_err = wrap_to_pi(target_yaw_tensor - current_yaw)
 
         vel_err_sq = torch.sum(torch.square(cur_vb - desired_vb), dim=1)
-        yaw_err_sq = torch.square(cur_wb[:, 2] - desired_yaw)
+        # yaw_match penalizes absolute yaw error (squared) rather than just yaw rate
+        yaw_err_sq = torch.square(yaw_err)
 
 
         # stability penalties (as before)
@@ -218,13 +233,20 @@ class FlightControllerDroneEnv(DirectRLEnv):
         self._desired_vel_b[env_ids, 0] = 0.0
         self._desired_vel_b[env_ids, 1] = 0.0
         self._desired_vel_b[env_ids, 2] = 0.0
-        self._desired_yaw_rate[env_ids] = 0.0
+        # No more _desired_yaw_rate, we use cfg.target_yaw
 
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
+
+        # Randomize spawn location
         default_root_state[:, 0] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
         default_root_state[:, 0] += self._terrain.env_origins[env_ids, 0]
         default_root_state[:, 1] = 1.0 + self._terrain.env_origins[env_ids, 1]
         default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
+
+        # Randomize initial yaw
+        rand_yaw = torch.zeros(len(env_ids), device=self.device).uniform_(-torch.pi, torch.pi)
+        rand_roll_pitch = torch.zeros(len(env_ids), 2, device=self.device)  # roll=0, pitch=0
+        default_root_state[:, 3:7] = quat_from_euler_xyz(rand_roll_pitch[:, 0], rand_roll_pitch[:, 1], rand_yaw)
 
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
@@ -240,8 +262,32 @@ class FlightControllerDroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _set_debug_vis_impl(self, debug_vis: bool):
         """Create or toggle visibility of goal position markers."""
-        pass
+        if debug_vis:
+            if not hasattr(self, "yaw_arrow_visualizer"):
+                marker_cfg = RED_ARROW_X_MARKER_CFG.copy()
+                marker_cfg.prim_path = "/Visuals/Command/target_yaw"
+                marker_cfg.markers["arrow"].scale = (0.5, 0.5, 0.5)
+                # You might need to adjust the arrow's orientation if it points up by default
+                self.yaw_arrow_visualizer = VisualizationMarkers(marker_cfg)
+            self.yaw_arrow_visualizer.set_visibility(True)
+        else:
+            if hasattr(self, "yaw_arrow_visualizer"):
+                self.yaw_arrow_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
         """Update goal marker positions each frame."""
-        pass
+        if hasattr(self, "yaw_arrow_visualizer") and self.yaw_arrow_visualizer is not None:
+            if not hasattr(self, "scene"):
+                return
+            # Place the arrow above the drone, pointing in the target yaw direction
+            marker_pos = self._robot.data.root_pos_w.clone()
+            marker_pos[:, 2] += 0.3  # Offset 0.3m above the drone
+            
+            # The arrow points along the local X-axis. Create a quaternion for target yaw.
+            target_yaw_tensor = torch.full((marker_pos.shape[0],), self.cfg.target_yaw, device=self.device)
+            zeros = torch.zeros_like(target_yaw_tensor)
+            
+            # Construct a quaternion that rotates the local X-axis (the arrow) to match the target yaw
+            marker_quat = quat_from_euler_xyz(zeros, zeros, target_yaw_tensor)
+            
+            self.yaw_arrow_visualizer.visualize(marker_pos, marker_quat)

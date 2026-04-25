@@ -8,6 +8,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
+import math
 
 
 @configclass
@@ -61,12 +62,9 @@ class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # ---------- Spaces ----------
-    # Actor (policy) action commands: motor-level controls (thrust, moment_x, moment_y, moment_z)
     action_space = 4          # [thrust, moment_x, moment_y, moment_z]
-    # Policy receives concatenated desired velocities (4) and IMU data (9) = 13 total features
-    observation_space = 13
-    # Critic sees the 12-dim body-frame state vector
-    state_space = 12
+    observation_space = 13    # policy_obs (4) + imu (9)
+    state_space = 13          # Lin_vel(3) + Ang_vel(3) + Gravity(3) + Desired_vel(3) + yaw_err(1)
 
     # ---------- Physics tuning parameters ----------
     thrust_to_weight = 1.9
@@ -80,4 +78,7 @@ class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     lin_vel_reward_scale = -0.05
 
     vel_match_reward_scale = -5.0
-    yaw_match_reward_scale = -0.2
+    yaw_match_reward_scale = -2.0
+
+    # Target yaw absolute angle (e.g., pi/2 = 90 degrees) Let's make it user configurable here
+    target_yaw = math.pi / 4.0  # 45 degrees as default hardcoded
