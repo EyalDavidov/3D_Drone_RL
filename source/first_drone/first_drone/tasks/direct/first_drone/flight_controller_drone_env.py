@@ -53,6 +53,37 @@ class FlightControllerDroneEnv(DirectRLEnv):
         # ----- Debug visualization (goal markers) -----
         self.set_debug_vis(self.cfg.debug_vis)
 
+        # ----- Color front propellers -----
+        self._color_front_propellers()
+
+    def _color_front_propellers(self):
+        """Paint the front propellers (m1 and m4) bright green so the front is identifiable."""
+        import isaaclab.sim as sim_utils
+        from isaaclab.sim.utils import bind_visual_material
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()
+        
+        # Create a bright green material
+        green_material_path = "/World/Materials/BrightGreen"
+        green_material_cfg = sim_utils.PreviewSurfaceCfg(
+            diffuse_color=(0.0, 1.0, 0.0),  # Bright green
+            metallic=0.1,
+            roughness=0.4
+        )
+        
+        if not stage.GetPrimAtPath(green_material_path).IsValid():
+            green_material_cfg.func(green_material_path, green_material_cfg)
+
+        # Iterate over all environments and apply the material
+        for env_id in range(self.num_envs):
+            # Front propellers for X-configuration CF2X are typically m1_prop and m4_prop
+            for prop in ["m1_prop", "m4_prop"]:
+                prop_path = f"/World/envs/env_{env_id}/Drone/{prop}"
+                if stage.GetPrimAtPath(prop_path).IsValid():
+                    # Set stronger_than_descendants to True to override existing colors
+                    bind_visual_material(prop_path, green_material_path, stage=stage, stronger_than_descendants=True)
+
     # Override scene setup to avoid creating a camera
     def _setup_scene(self):
         """Create the drone articulation, room (floor), terrain, and lighting — no camera."""
