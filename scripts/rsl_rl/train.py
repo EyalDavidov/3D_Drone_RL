@@ -10,6 +10,12 @@
 import argparse
 import sys
 
+try:
+    import dotenv
+    dotenv.load_dotenv()
+except ImportError:
+    pass
+
 from isaaclab.app import AppLauncher
 
 # local imports
@@ -116,6 +122,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+
+    # Fallback to tensorboard if wandb API key is invalid (missing or too short)
+    if getattr(agent_cfg, "logger", None) == "wandb":
+        wandb_key = os.environ.get("WANDB_API_KEY", "")
+        if len(wandb_key) < 40:
+            logger.warning("WANDB_API_KEY is invalid or missing (less than 40 characters). Falling back to 'tensorboard' logger.")
+            agent_cfg.logger = "tensorboard"
+
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations

@@ -44,3 +44,16 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.sac_drone_env_cfg:SACDroneEnvCfg",
     },
 )
+
+
+gym.register(
+    id="Flight-Controller-Drone-Direct-v0",
+    entry_point=f"{__name__}.flight_controller_drone_env:FlightControllerDroneEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.flight_controller_drone_env_cfg:FlightControllerDroneEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_mlp_cfg:PPORunnerMLPCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+    },
+)
