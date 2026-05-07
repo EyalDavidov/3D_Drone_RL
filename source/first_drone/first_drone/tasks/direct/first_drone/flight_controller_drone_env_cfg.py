@@ -15,7 +15,7 @@ import math
 class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 5.0
+    episode_length_s = 10.0
     debug_vis = True
 
     # simulation
@@ -76,10 +76,13 @@ class FlightControllerDroneEnvCfg(DirectRLEnvCfg):
     died_reward_scale = -50.0
     
     ang_vel_reward_scale = -0.001
-    lin_vel_reward_scale = -0.05
+    lin_vel_reward_scale = 0.0  # Removing penalty since we WANT it to fly
+    
+    action_rate_reward_scale = -0.5
+    action_effort_reward_scale = -0.1
 
-    vel_match_reward_scale = -5.0
-    yaw_match_reward_scale = -2.0
+    vel_match_reward_scale = 5.0  # Positive reward (Gaussian)
+    yaw_match_reward_scale = 2.0  # Positive reward (Gaussian)
 
     # Target yaw absolute angle (e.g., pi/2 = 90 degrees) Let's make it user configurable here
     target_yaw = math.pi / 4.0  # 45 degrees as default hardcoded

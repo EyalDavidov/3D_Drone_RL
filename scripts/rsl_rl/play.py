@@ -208,6 +208,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             # agent stepping
             actions = policy(obs)
+            
+            # --- START LOGGING ACTIONS FOR ANALYSIS ---
+            log_path = "C:/Isaac/Projects/first_drone/action_log.csv"
+            if timestep == 0:
+                with open(log_path, "w") as f:
+                    f.write("timestep,thrust,moment_x,moment_y,moment_z\n")
+            if timestep < 500:  # log first 500 steps (about 5-10 seconds of flight)
+                with open(log_path, "a") as f:
+                    act = actions[0].cpu().numpy()
+                    f.write(f"{timestep},{act[0]:.4f},{act[1]:.4f},{act[2]:.4f},{act[3]:.4f}\n")
+            # --- END LOGGING ---
+            
             # env stepping
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated

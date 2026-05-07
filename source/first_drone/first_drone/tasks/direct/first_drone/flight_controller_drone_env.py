@@ -21,11 +21,12 @@ class FlightControllerDroneEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         # Limits for commanded velocities (safety clipping)
-        self._vel_limit = torch.tensor([3.0, 3.0, 2.0], device=self.device)
+        self._vel_limit = torch.tensor([1.0, 1.0, 0.5], device=self.device)
         self._yaw_rate_limit = 3.0
 
         # ----- Action / wrench buffers -----
         self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
+        self._previous_actions = torch.zeros_like(self._actions)
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)   # force applied to body (only Z used)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)   # torque applied to body (x, y, z)
 
@@ -118,6 +119,7 @@ class FlightControllerDroneEnv(DirectRLEnv):
           - action[2]: pitch moment
           - action[3]: yaw moment
         """
+        self._previous_actions = self._actions.clone()
         self._actions = actions.clone().clamp(-1.0, 1.0)
         # thrust (Z) mapping -> 0..max_thrust
         self._thrust[:, 0, 2] = (
@@ -126,9 +128,17 @@ class FlightControllerDroneEnv(DirectRLEnv):
         # moments scaled by cfg.moment_scale
         self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
 
-        # Random walk for dynamic target yaw (updated every step!)
-        self._target_yaw += torch.zeros_like(self._target_yaw).uniform_(-0.5, 0.5)
-        self._target_yaw = wrap_to_pi(self._target_yaw)
+        # Determine which environments should get a new navigation decision (every 5 steps)
+        update_mask = (self.episode_length_buf % 10 == 0)
+
+        # Random walk for dynamic target yaw (updated every 5 steps)
+        yaw_drift = torch.zeros_like(self._target_yaw).uniform_(-0.5, 0.5)
+        self._target_yaw = torch.where(update_mask, wrap_to_pi(self._target_yaw + yaw_drift), self._target_yaw)
+
+        # Random walk for dynamic desired velocity (updated every 5 steps)
+        vel_drift = torch.zeros_like(self._desired_vel_b).uniform_(-0.05, 0.05)
+        new_vel = torch.clamp(self._desired_vel_b + vel_drift, min=-self._vel_limit, max=self._vel_limit)
+        self._desired_vel_b[update_mask] = new_vel[update_mask]
 
     def _get_drone_yaw(self) -> torch.Tensor:
         """Returns the drone's current yaw angle in world frame."""
@@ -195,20 +205,35 @@ class FlightControllerDroneEnv(DirectRLEnv):
         vel_err_sq = torch.sum(torch.square(cur_vb - desired_vb), dim=1)
         # yaw_match penalizes absolute yaw error (squared) rather than just yaw rate
         yaw_err_sq = torch.square(yaw_err)
+        
+        # Gaussian rewards for tracking
+        vel_match_reward = torch.exp(-vel_err_sq / 0.5)
+        yaw_match_reward = torch.exp(-yaw_err_sq / 0.5)
 
+        # Action penalties
+        action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
+        action_effort = torch.sum(torch.square(self._actions), dim=1)
 
         # stability penalties (as before)
         ang_vel = torch.sum(torch.square(cur_wb), dim=1)
         lin_vel = torch.sum(torch.square(cur_vb), dim=1)
 
-        died_from_crash = self.reset_terminated.float()
+        # Distinguish between "loss of control" crash vs "navigation" crash
+        # If projected gravity Z is > -0.5, it means drone is tilted more than 60 degrees.
+        unstable = self._robot.data.projected_gravity_b[:, 2] > -0.5
+        
+        # Only apply the -50 died penalty if it crashed because it lost control.
+        # If it hits a wall/floor while upright, we just reset (from _get_dones) but don't penalize!
+        died_from_instability = (self.reset_terminated & unstable).float()
 
         rewards = {
-            "vel_match": self.cfg.vel_match_reward_scale * vel_err_sq * self.step_dt,
-            "yaw_match": self.cfg.yaw_match_reward_scale * yaw_err_sq * self.step_dt,
-            "died": died_from_crash * self.cfg.died_reward_scale,
+            "vel_match": self.cfg.vel_match_reward_scale * vel_match_reward * self.step_dt,
+            "yaw_match": self.cfg.yaw_match_reward_scale * yaw_match_reward * self.step_dt,
+            "died": died_from_instability * self.cfg.died_reward_scale,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
+            "action_rate": action_rate * getattr(self.cfg, "action_rate_reward_scale", 0.0) * self.step_dt,
+            "action_effort": action_effort * getattr(self.cfg, "action_effort_reward_scale", 0.0) * self.step_dt,
         }
 
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -268,9 +293,9 @@ class FlightControllerDroneEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
 
         # --- Sample new desired velocity target (body frame) ---
-        self._desired_vel_b[env_ids, 0] = 0.0
-        self._desired_vel_b[env_ids, 1] = 0.0
-        self._desired_vel_b[env_ids, 2] = 0.0
+        self._desired_vel_b[env_ids, 0] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
+        self._desired_vel_b[env_ids, 1] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
+        self._desired_vel_b[env_ids, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(-0.5, 0.5)
         self._target_yaw[env_ids] = self.cfg.target_yaw
         # No more _desired_yaw_rate, we use cfg.target_yaw
 
