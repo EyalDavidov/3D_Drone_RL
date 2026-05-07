@@ -327,52 +327,81 @@ class FlightControllerDroneEnv(DirectRLEnv):
     def _set_debug_vis_impl(self, debug_vis: bool):
         """Create or toggle visibility of goal position markers."""
         if debug_vis:
-            if not hasattr(self, "yaw_arrow_visualizer"):
+            if not hasattr(self, "target_vel_visualizer"):
                 marker_cfg = RED_ARROW_X_MARKER_CFG.copy()
-                marker_cfg.prim_path = "/Visuals/Command/target_yaw"
-                marker_cfg.markers["arrow"].scale = (0.1, 0.1, 0.3)
-                # You might need to adjust the arrow's orientation if it points up by default
-                self.yaw_arrow_visualizer = VisualizationMarkers(marker_cfg)
-            self.yaw_arrow_visualizer.set_visibility(True)
+                marker_cfg.prim_path = "/Visuals/Command/target_vel"
+                marker_cfg.markers["arrow"].scale = (0.2, 0.2, 0.2)
+                self.target_vel_visualizer = VisualizationMarkers(marker_cfg)
+            self.target_vel_visualizer.set_visibility(True)
 
-            if not hasattr(self, "current_yaw_arrow_visualizer"):
+            if not hasattr(self, "current_vel_visualizer"):
                 marker_cfg_current = BLUE_ARROW_X_MARKER_CFG.copy()
-                marker_cfg_current.prim_path = "/Visuals/Command/current_yaw"
-                marker_cfg_current.markers["arrow"].scale = (0.1, 0.1, 0.3)
-                self.current_yaw_arrow_visualizer = VisualizationMarkers(marker_cfg_current)
-            self.current_yaw_arrow_visualizer.set_visibility(True)
+                marker_cfg_current.prim_path = "/Visuals/Command/current_vel"
+                marker_cfg_current.markers["arrow"].scale = (0.2, 0.2, 0.2)
+                self.current_vel_visualizer = VisualizationMarkers(marker_cfg_current)
+            self.current_vel_visualizer.set_visibility(True)
         else:
-            if hasattr(self, "yaw_arrow_visualizer"):
-                self.yaw_arrow_visualizer.set_visibility(False)
-            if hasattr(self, "current_yaw_arrow_visualizer"):
-                self.current_yaw_arrow_visualizer.set_visibility(False)
+            if hasattr(self, "target_vel_visualizer"):
+                self.target_vel_visualizer.set_visibility(False)
+            if hasattr(self, "current_vel_visualizer"):
+                self.current_vel_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
         """Update goal marker positions each frame."""
-        if hasattr(self, "yaw_arrow_visualizer") and self.yaw_arrow_visualizer is not None:
-            if not hasattr(self, "scene"):
-                return
-            # Place the arrow above the drone, pointing in the target yaw direction
-            marker_pos = self._robot.data.root_pos_w.clone()
-            marker_pos[:, 2] += 0.3  # Offset 0.3m above the drone
+        if not hasattr(self, "scene"):
+            return
             
-            # The arrow points along the local X-axis. Create a quaternion for target yaw.
-            target_yaw_tensor = self._target_yaw.clone()
-            zeros = torch.zeros_like(target_yaw_tensor)
-            
-            # Construct a quaternion that rotates the local X-axis (the arrow) to match the target yaw
-            marker_quat = quat_from_euler_xyz(zeros, zeros, target_yaw_tensor)
-            
-            self.yaw_arrow_visualizer.visualize(marker_pos, marker_quat)
+        current_yaw = self._get_drone_yaw()
+        zeros = torch.zeros_like(current_yaw)
 
-        if hasattr(self, "current_yaw_arrow_visualizer") and self.current_yaw_arrow_visualizer is not None:
-            if not hasattr(self, "scene"):
-                return
-            marker_pos = self._robot.data.root_pos_w.clone()
-            marker_pos[:, 2] += 0.5  # Offset 0.5m above the drone to differentiate
+        if hasattr(self, "target_vel_visualizer") and self.target_vel_visualizer is not None:
+            # target velocity in body frame
+            des_vb = self._desired_vel_b
             
-            current_yaw = self._get_drone_yaw()
-            zeros = torch.zeros_like(current_yaw)
-            marker_quat = quat_from_euler_xyz(zeros, zeros, current_yaw)
+            # Rotate body frame desired velocity by drone's yaw to get world frame vector
+            cos_yaw = torch.cos(current_yaw)
+            sin_yaw = torch.sin(current_yaw)
             
-            self.current_yaw_arrow_visualizer.visualize(marker_pos, marker_quat)
+            vx_w = des_vb[:, 0] * cos_yaw - des_vb[:, 1] * sin_yaw
+            vy_w = des_vb[:, 0] * sin_yaw + des_vb[:, 1] * cos_yaw
+            vz_w = des_vb[:, 2]
+            
+            target_vel_mag = torch.sqrt(vx_w**2 + vy_w**2 + vz_w**2) + 1e-6
+            target_yaw_dir = torch.atan2(vy_w, vx_w)
+            target_pitch = torch.atan2(-vz_w, torch.sqrt(vx_w**2 + vy_w**2))
+            
+            target_quat = quat_from_euler_xyz(zeros, target_pitch, target_yaw_dir)
+            
+            marker_pos_target = self._robot.data.root_pos_w.clone()
+            marker_pos_target[:, 2] += 0.3  # Offset 0.3m above the drone
+            
+            scale_target = torch.ones(self.num_envs, 3, device=self.device)
+            scale_target[:, 0] = target_vel_mag * 1.5  # Stretch arrow length proportional to velocity
+            scale_target[:, 1] = 0.15 # Thickness
+            scale_target[:, 2] = 0.15
+            
+            self.target_vel_visualizer.visualize(marker_pos_target, target_quat, scales=scale_target)
+
+        if hasattr(self, "current_vel_visualizer") and self.current_vel_visualizer is not None:
+            # Current velocity in world frame
+            cur_vw = self._robot.data.root_lin_vel_w
+            
+            vx_c = cur_vw[:, 0]
+            vy_c = cur_vw[:, 1]
+            vz_c = cur_vw[:, 2]
+            
+            current_vel_mag = torch.sqrt(vx_c**2 + vy_c**2 + vz_c**2) + 1e-6
+            current_yaw_dir = torch.atan2(vy_c, vx_c)
+            current_pitch_dir = torch.atan2(-vz_c, torch.sqrt(vx_c**2 + vy_c**2))
+            
+            current_quat = quat_from_euler_xyz(zeros, current_pitch_dir, current_yaw_dir)
+            
+            marker_pos_current = self._robot.data.root_pos_w.clone()
+            marker_pos_current[:, 2] += 0.35  # Offset slightly higher to avoid Z-fighting with red arrow
+            
+            scale_current = torch.ones(self.num_envs, 3, device=self.device)
+            scale_current[:, 0] = current_vel_mag * 1.5
+            scale_current[:, 1] = 0.15
+            scale_current[:, 2] = 0.15
+            
+            self.current_vel_visualizer.visualize(marker_pos_current, current_quat, scales=scale_current)
