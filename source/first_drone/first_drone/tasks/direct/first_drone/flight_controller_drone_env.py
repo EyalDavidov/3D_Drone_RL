@@ -30,10 +30,9 @@ class FlightControllerDroneEnv(DirectRLEnv):
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)   # force applied to body (only Z used)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)   # torque applied to body (x, y, z)
 
-        # ----- Goal position (world frame) (for debug visualization) -----
-        self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        # ----- Target velocity and yaw -----
         self._desired_vel_b = torch.zeros(self.num_envs, 3, device=self.device)
-        self._target_yaw = torch.full((self.num_envs,), self.cfg.target_yaw, device=self.device)
+        self._target_yaw = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Episode reward logging -----
         self._episode_sums = {
@@ -42,7 +41,6 @@ class FlightControllerDroneEnv(DirectRLEnv):
                 "progress",
                 "died",
                 "ang_vel",
-                "lin_vel",
             ]
         }
         
@@ -91,10 +89,6 @@ class FlightControllerDroneEnv(DirectRLEnv):
         """Create the drone articulation, room (floor), terrain, and lighting — no camera."""
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
-
-        # Room (floor) — spawn the provided USD file into env_0 (cloned to all envs)
-        # room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
-        # room_cfg.func("/World/envs/env_0/Room", room_cfg)
 
         # Terrain (ground plane)
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
@@ -212,11 +206,9 @@ class FlightControllerDroneEnv(DirectRLEnv):
 
         # Action penalties
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
-        action_effort = torch.sum(torch.square(self._actions), dim=1)
 
-        # stability penalties (as before)
+        # stability penalties
         ang_vel = torch.sum(torch.square(cur_wb), dim=1)
-        lin_vel = torch.sum(torch.square(cur_vb), dim=1)
 
         # Distinguish between "loss of control" crash vs "navigation" crash
         # If projected gravity Z is > -0.5, it means drone is tilted more than 60 degrees.
@@ -231,9 +223,7 @@ class FlightControllerDroneEnv(DirectRLEnv):
             "yaw_match": self.cfg.yaw_match_reward_scale * yaw_match_reward * self.step_dt,
             "died": died_from_instability * self.cfg.died_reward_scale,
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
-            "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
             "action_rate": action_rate * getattr(self.cfg, "action_rate_reward_scale", 0.0) * self.step_dt,
-            "action_effort": action_effort * getattr(self.cfg, "action_effort_reward_scale", 0.0) * self.step_dt,
         }
 
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -251,14 +241,10 @@ class FlightControllerDroneEnv(DirectRLEnv):
 
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
-        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.0)
-        wall_bound = 1.9 - self.cfg.drone_radius
-        hit_wall = (
-            (pos_local[:, 0] > wall_bound) | (pos_local[:, 0] < -wall_bound)
-            | (pos_local[:, 1] > wall_bound) | (pos_local[:, 1] < -wall_bound)
-        )
-        died = hit_floor_or_ceiling | hit_wall
-        return died, time_out
+        # The drone only "dies" (terminates) if it hits the floor. No walls or ceiling.
+        hit_floor = (pos_local[:, 2] < 0.1)
+        
+        return hit_floor, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -296,7 +282,7 @@ class FlightControllerDroneEnv(DirectRLEnv):
         self._desired_vel_b[env_ids, 0] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
         self._desired_vel_b[env_ids, 1] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
         self._desired_vel_b[env_ids, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(-0.5, 0.5)
-        self._target_yaw[env_ids] = self.cfg.target_yaw
+        self._target_yaw[env_ids] = torch.zeros(len(env_ids), device=self.device).uniform_(-torch.pi, torch.pi)
         # No more _desired_yaw_rate, we use cfg.target_yaw
 
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
@@ -373,7 +359,7 @@ class FlightControllerDroneEnv(DirectRLEnv):
             target_quat = quat_from_euler_xyz(zeros, target_pitch, target_yaw_dir)
             
             marker_pos_target = self._robot.data.root_pos_w.clone()
-            marker_pos_target[:, 2] += 0.3  # Offset 0.3m above the drone
+            marker_pos_target[:, 2] += 0.1  # Offset 0.1m above the drone
             
             scale_target = torch.ones(self.num_envs, 3, device=self.device)
             scale_target[:, 0] = target_vel_mag * 1.5  # Stretch arrow length proportional to velocity
@@ -397,7 +383,7 @@ class FlightControllerDroneEnv(DirectRLEnv):
             current_quat = quat_from_euler_xyz(zeros, current_pitch_dir, current_yaw_dir)
             
             marker_pos_current = self._robot.data.root_pos_w.clone()
-            marker_pos_current[:, 2] += 0.35  # Offset slightly higher to avoid Z-fighting with red arrow
+            marker_pos_current[:, 2] += 0.11  # Offset slightly higher to avoid Z-fighting with red arrow
             
             scale_current = torch.ones(self.num_envs, 3, device=self.device)
             scale_current[:, 0] = current_vel_mag * 1.5

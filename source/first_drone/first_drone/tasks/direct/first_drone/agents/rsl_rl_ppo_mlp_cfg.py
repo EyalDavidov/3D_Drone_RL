@@ -15,7 +15,7 @@ from isaaclab_rl.rsl_rl import (
 @configclass
 class PPORunnerMLPCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 400
+    max_iterations = 300
     save_interval = 50
     experiment_name = "flight_controller_drone_direct"
 
@@ -25,7 +25,9 @@ class PPORunnerMLPCfg(RslRlOnPolicyRunnerCfg):
 
     # Actor: MLP processes the standard observation vector (no camera)
     actor = RslRlMLPModelCfg(
-        hidden_dims=[256, 128, 64],
+        # hidden_dims=[256, 128, 64],
+        # hidden_dims=[64, 32],
+        hidden_dims=[32, 16], # MICRO NETWORK
         activation="elu",
         obs_normalization=False,
         stochastic=True,
@@ -34,7 +36,9 @@ class PPORunnerMLPCfg(RslRlOnPolicyRunnerCfg):
 
     # Critic: MLP processes the 12-dim state vector
     critic = RslRlMLPModelCfg(
-        hidden_dims=[256, 128, 64],
+        # hidden_dims=[256, 128, 64], 
+        # hidden_dims=[64, 32],
+        hidden_dims=[32, 16], # MICRO NETWORK
         activation="elu",
         obs_normalization=False,
         stochastic=False,
