@@ -39,7 +39,10 @@ class NavigationDroneEnv(DirectRLEnv):
         self._episode_sums = {
             "progress": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
             "reached_goal": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
-            "died": torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            "died": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
+#"died_unstable": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
+            "died_hit_floor": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
+            "distance_to_goal_mapped": torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         }
 
         self.set_debug_vis(self.cfg.debug_vis)
@@ -83,7 +86,7 @@ class NavigationDroneEnv(DirectRLEnv):
         yaw_err = wrap_to_pi(self._target_yaw - current_yaw)
         
         # 1. Prepare 13-dim observation for Low-Level Controller (MUST MATCH EXACT TRAINING ORDER!)
-        ll_obs = torch.cat([self._desired_vel_b, yaw_err.unsqueeze(-1), lin_vel_b, ang_vel_b, projected_gravity_b], dim=-1)
+        ll_obs = torch.cat([lin_vel_b, ang_vel_b, projected_gravity_b, self._desired_vel_b, yaw_err.unsqueeze(-1)], dim=-1)
         
         # 2. Ask the frozen Flight Controller for motor actions
         ll_actions = self.llc(ll_obs)
@@ -120,6 +123,7 @@ class NavigationDroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         pos_w = self._robot.data.root_pos_w[:, :3]
         self._distance_to_goal = torch.norm(self._goal_pos_w - pos_w, dim=1)
+        distance_to_goal_mapped = 1.0 - torch.tanh(self._distance_to_goal / 5.0)
         
         # 1. Progress reward (Reward it for getting closer to the goal)
         progress = self._previous_distance - self._distance_to_goal
@@ -130,9 +134,10 @@ class NavigationDroneEnv(DirectRLEnv):
         goal_reward = reached_goal.float() * self.cfg.reached_goal_reward
         
         # 3. Crash penalty
-        unstable = self._robot.data.projected_gravity_b[:, 2] > -0.5
+      #  unstable = self._robot.data.projected_gravity_b[:, 2] > -0.5
         hit_floor = (pos_w[:, 2] - self._terrain.env_origins[:, 2]) < 0.1
-        died = (unstable | hit_floor)
+        #died = (unstable | hit_floor)
+        died = (hit_floor)
         died_reward = died.float() * self.cfg.died_reward_scale
         
         self._previous_distance = self._distance_to_goal.clone()
@@ -140,7 +145,8 @@ class NavigationDroneEnv(DirectRLEnv):
         rewards = {
             "progress": progress_reward,
             "reached_goal": goal_reward,
-            "died": died_reward
+            "died": died_reward,
+            "distance_to_goal_mapped": distance_to_goal_mapped * self.cfg.distance_to_goal_mapped_reward_scale * self.step_dt,  # Just to have a nice number to log for this metric
         }
         
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -148,14 +154,19 @@ class NavigationDroneEnv(DirectRLEnv):
         for key, value in rewards.items():
             self._episode_sums[key] += value
             
+        #self._episode_sums["died_unstable"] += unstable.float()
+        self._episode_sums["died_hit_floor"] += hit_floor.float()
+            
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_w = self._robot.data.root_pos_w[:, :3]
-        unstable = self._robot.data.projected_gravity_b[:, 2] > -0.5
+        #unstable = self._robot.data.projected_gravity_b[:, 2] > -0.5
         hit_floor = (pos_w[:, 2] - self._terrain.env_origins[:, 2]) < 0.1
-        died = (unstable | hit_floor)
+        #died = (unstable | hit_floor)
+        died = (hit_floor)
+
         
         success = self._distance_to_goal < self.cfg.goal_radius
         

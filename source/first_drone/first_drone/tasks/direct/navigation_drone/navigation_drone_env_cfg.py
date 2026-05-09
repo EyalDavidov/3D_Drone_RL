@@ -60,14 +60,15 @@ class NavigationDroneEnvCfg(DirectRLEnvCfg):
     state_space = 0           
 
     # ---------- Reward scales ----------
-    progress_reward_scale = 10.0
-    reached_goal_reward = 200.0
+    progress_reward_scale = 50.0
+    reached_goal_reward = 500.0
     died_reward_scale = -50.0
+    distance_to_goal_mapped_reward_scale = 15.0
 
     # ---------- Navigation Settings ----------
     goal_radius = 0.1
 
     # ---------- Low Level Integration ----------
-    llc_checkpoint_path = r"C:\Isaac\Projects\first_drone\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\model_299.pt"
+    llc_checkpoint_path = r"D:\isaac\3D_Drone_RL\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
     thrust_to_weight = 1.9
     moment_scale = 0.01

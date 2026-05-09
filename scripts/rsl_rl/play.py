@@ -210,7 +210,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = policy(obs)
             
             # --- START LOGGING ACTIONS FOR ANALYSIS ---
-            log_path = "C:/Isaac/Projects/first_drone/action_log.csv"
+            log_path = r"D:\isaac\3D_Drone_RL\action_log.csv"
             if timestep == 0:
                 with open(log_path, "w") as f:
                     f.write("timestep,thrust,moment_x,moment_y,moment_z\n")

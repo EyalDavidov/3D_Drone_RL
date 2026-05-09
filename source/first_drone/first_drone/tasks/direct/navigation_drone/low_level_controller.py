@@ -20,8 +20,8 @@ class LowLevelController(nn.Module):
             raise FileNotFoundError(f"[Error] Low Level Checkpoint not found at: {checkpoint_path}")
             
         print(f"[NavigationDroneEnv] Successfully loaded Flight Controller weights from: {checkpoint_path}")
-        ckpt = torch.load(checkpoint_path, map_location=self.device)
-        actor_state = ckpt['actor_state_dict']
+        self.model = torch.jit.load(checkpoint_path, map_location=self.device)
+        actor_state = self.model.state_dict()
         
         # Extract only the weights belonging to the MLP and strip the "mlp." prefix
         filtered_state = {k.replace("mlp.", ""): v for k, v in actor_state.items() if k.startswith("mlp.")}
