@@ -63,6 +63,7 @@ class NavigationDroneEnvCfg(DirectRLEnvCfg):
     progress_reward_scale = 10.0
     reached_goal_reward = 200.0
     died_reward_scale = -50.0
+    ang_vel_reward_scale = -0.05
 
     # ---------- Navigation Settings ----------
     goal_radius = 0.1

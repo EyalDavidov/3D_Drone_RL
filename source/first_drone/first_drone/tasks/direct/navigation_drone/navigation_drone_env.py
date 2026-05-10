@@ -42,7 +42,8 @@ class NavigationDroneEnv(DirectRLEnv):
         self._episode_sums = {
             "progress": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
             "reached_goal": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
-            "died": torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            "died": torch.zeros(self.num_envs, dtype=torch.float, device=self.device),
+            "ang_vel": torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         }
 
         self.set_debug_vis(self.cfg.debug_vis)
@@ -143,12 +144,17 @@ class NavigationDroneEnv(DirectRLEnv):
         died = (unstable | hit_floor)
         died_reward = died.float() * self.cfg.died_reward_scale
         
+        # 4. Angular velocity penalty
+        ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
+        ang_vel_reward = ang_vel * self.cfg.ang_vel_reward_scale
+
         self._previous_distance = self._distance_to_goal.clone()
         
         rewards = {
             "progress": progress_reward,
             "reached_goal": goal_reward,
-            "died": died_reward
+            "died": died_reward,
+            "ang_vel": ang_vel_reward
         }
         
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -165,9 +171,9 @@ class NavigationDroneEnv(DirectRLEnv):
         hit_floor = (pos_w[:, 2] - self._terrain.env_origins[:, 2]) < 0.1
         died = (unstable | hit_floor)
         
-        success = self._distance_to_goal < self.cfg.goal_radius
+        # success = self._distance_to_goal < self.cfg.goal_radius
         
-        return (died | success), time_out
+        return died, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -205,6 +211,11 @@ class NavigationDroneEnv(DirectRLEnv):
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
 
+        # Reset joint states (so propellers keep spinning at their default speed after env reset)
+        joint_pos = self._robot.data.default_joint_pos[env_ids]
+        joint_vel = self._robot.data.default_joint_vel[env_ids]
+        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
         # Randomize target goal
         self._goal_pos_w[env_ids, 0] = self._terrain.env_origins[env_ids, 0] + torch.zeros(len(env_ids), device=self.device).uniform_(-3.0, 3.0)
         self._goal_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + torch.zeros(len(env_ids), device=self.device).uniform_(-3.0, 3.0)
@@ -219,7 +230,7 @@ class NavigationDroneEnv(DirectRLEnv):
         if debug_vis:
             if not hasattr(self, "goal_pos_visualizer"):
                 marker_cfg = CUBOID_MARKER_CFG.copy()
-                marker_cfg.markers["cuboid"].size = (0.1, 0.1, 0.1) # A bit larger so it's easier to see
+                marker_cfg.markers["cuboid"].size = (0.02, 0.02, 0.02) # A bit larger so it's easier to see
                 marker_cfg.prim_path = "/Visuals/Command/goal_position"
                 self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
             self.goal_pos_visualizer.set_visibility(True)
