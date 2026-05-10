@@ -6,14 +6,17 @@ from isaaclab.assets import Articulation
 from isaaclab.utils.math import wrap_to_pi, quat_from_euler_xyz, euler_xyz_from_quat, quat_rotate_inverse
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaaclab.markers import VisualizationMarkers
-from .low_level_controller import LowLevelController
 
 class NavigationDroneEnv(DirectRLEnv):
     def __init__(self, cfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        # 1. Load the frozen Flight Controller!
-        self.llc = LowLevelController(cfg.llc_checkpoint_path, device=self.device)
+        # 1. Load the frozen Flight Controller (Exported TorchScript Policy)
+        self.llc = torch.jit.load(cfg.llc_checkpoint_path, map_location=self.device)
+        self.llc.eval()
+        for param in self.llc.parameters():
+            param.requires_grad = False
+        print(f"[NavigationDroneEnv] Successfully loaded JIT Policy from: {cfg.llc_checkpoint_path}")
         
         # 2. Limits for High-Level agent's commands
         self._vel_limit = torch.tensor([1.0, 1.0, 0.5], device=self.device)
@@ -83,10 +86,15 @@ class NavigationDroneEnv(DirectRLEnv):
         yaw_err = wrap_to_pi(self._target_yaw - current_yaw)
         
         # 1. Prepare 13-dim observation for Low-Level Controller (MUST MATCH EXACT TRAINING ORDER!)
+        # According to rsl_rl_ppo_mlp_cfg.py, obs_groups["actor"] = ["policy", "imu"].
+        # policy_obs (4-dim): [desired_vel_b, yaw_err]
+        # imu_obs (9-dim): [lin_vel_b, ang_vel_b, projected_gravity_b]
         ll_obs = torch.cat([self._desired_vel_b, yaw_err.unsqueeze(-1), lin_vel_b, ang_vel_b, projected_gravity_b], dim=-1)
         
-        # 2. Ask the frozen Flight Controller for motor actions
-        ll_actions = self.llc(ll_obs)
+        # 2. Ask the frozen Flight Controller for motor actions (and clamp them to valid range)
+        with torch.no_grad():
+            ll_actions = self.llc(ll_obs)
+            ll_actions = torch.clamp(ll_actions, -1.0, 1.0)
         
         # 3. Calculate forces and torques
         self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (ll_actions[:, 0] + 1.0) / 2.0
@@ -183,10 +191,10 @@ class NavigationDroneEnv(DirectRLEnv):
         
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
         
-        # Spawn random offset
-        default_root_state[:, 0] += torch.zeros(len(env_ids), device=self.device).uniform_(-2.0, 2.0)
-        default_root_state[:, 1] += torch.zeros(len(env_ids), device=self.device).uniform_(-2.0, 2.0)
-        default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
+        # Spawn at environment origin + random offset
+        default_root_state[:, 0] = self._terrain.env_origins[env_ids, 0] + torch.zeros(len(env_ids), device=self.device).uniform_(-2.0, 2.0)
+        default_root_state[:, 1] = self._terrain.env_origins[env_ids, 1] + torch.zeros(len(env_ids), device=self.device).uniform_(-2.0, 2.0)
+        default_root_state[:, 2] = self._terrain.env_origins[env_ids, 2] + torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
         
         # Random initial yaw
         rand_yaw = torch.zeros(len(env_ids), device=self.device).uniform_(-torch.pi, torch.pi)

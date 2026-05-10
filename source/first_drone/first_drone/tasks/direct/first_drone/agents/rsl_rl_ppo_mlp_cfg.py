@@ -25,8 +25,6 @@ class PPORunnerMLPCfg(RslRlOnPolicyRunnerCfg):
 
     # Actor: MLP processes the standard observation vector (no camera)
     actor = RslRlMLPModelCfg(
-        # hidden_dims=[256, 128, 64],
-        # hidden_dims=[64, 32],
         hidden_dims=[32, 16], # MICRO NETWORK
         activation="elu",
         obs_normalization=False,
@@ -36,8 +34,6 @@ class PPORunnerMLPCfg(RslRlOnPolicyRunnerCfg):
 
     # Critic: MLP processes the 12-dim state vector
     critic = RslRlMLPModelCfg(
-        # hidden_dims=[256, 128, 64], 
-        # hidden_dims=[64, 32],
         hidden_dims=[32, 16], # MICRO NETWORK
         activation="elu",
         obs_normalization=False,
