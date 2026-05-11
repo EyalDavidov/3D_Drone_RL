@@ -1,6 +1,8 @@
 import numpy as np
 import torch
+import os
 from ultralytics import YOLO
+from pathlib import Path
 
 class PerceptionModule:
     def __init__(self, use_mock=False):
@@ -9,9 +11,16 @@ class PerceptionModule:
         :param use_mock: If True, uses dummy data. If False, runs real YOLO.
         """
         self.use_mock = use_mock
+        self.detection_count = 0  # Counter for saved detections
+        
+        # Create output directory for successful detections
+        self.output_dir = Path("debug_yolo_detections")
+        self.output_dir.mkdir(exist_ok=True)
         
         if not self.use_mock:
-            self.yolo_model = YOLO('yolo11n.pt')
+            # נתיב אבסולוטי כדי להבטיח שהוא מוצא את המודל ללא קשר מאיפה מריצים
+            yolo_path = r'D:\isaac\3D_Drone_RL\YOLO\yolo11n.pt'
+            self.yolo_model = YOLO(yolo_path)
 
     def process_camera_data(self, rgb_image, depth_image):
         """
@@ -52,12 +61,46 @@ class PerceptionModule:
 
         # IMPORTANT: Running YOLO on 4096 images simultaneously will crash the GPU memory.
         # For this integration phase, we will only run YOLO on the camera of drone 0.
-        single_env_image = rgb_array[0]
+        single_env_image_rgb = rgb_array[0]
+        # YOLO (via Ultralytics) expects numpy arrays in BGR format (like OpenCV).
+        # We must convert Isaac Sim's RGB array to BGR before passing it to the model.
+        single_env_image_bgr = single_env_image_rgb[:, :, ::-1]
 
         # ---------------------------------------------------------
         # 2. Run Real YOLO Detection
         # ---------------------------------------------------------
-        results = self.yolo_model(single_env_image, verbose=False)
+        results = self.yolo_model(single_env_image_bgr, verbose=False)
+        
+        # Extract detection info and save successful detections
+        has_persons = False
+        for box in results[0].boxes:
+            # Class 0 is 'person'.
+            if int(box.cls[0]) == 0 and float(box.conf[0]) > 0.80:
+                has_persons = True
+                break
+        
+        self.detection_count += 1
+        
+        # --- Live OpenCV Window Display ---
+        import cv2
+        annotated_frame = results[0].plot()  # Returns BGR format array
+        cv2.imshow("Isaac Sim POV - Live YOLO", annotated_frame)
+        cv2.waitKey(1) # 1 millisecond delay to update the live frame
+        # ----------------------------------
+        
+        # User requested to only save up to 3 successful pictures to avoid spam
+        if not hasattr(self, 'saved_good_pictures'):
+            self.saved_good_pictures = 0
+            
+        if has_persons and self.saved_good_pictures < 3:
+            self.saved_good_pictures += 1
+            output_path = self.output_dir / f"detection_{self.saved_good_pictures:02d}.jpg"
+            # Convert BGR to RGB for proper color display
+            annotated_frame_rgb = annotated_frame[:, :, ::-1]
+            # Save using PIL or opencv
+            from PIL import Image
+            Image.fromarray(annotated_frame_rgb).save(str(output_path))
+            print(f"[YOLO] ✓ Detected persons! Saved: {output_path} ({self.saved_good_pictures}/3)")
         
         # Prepare output tensors for the RL team
         target_found_batch = torch.zeros(batch_size, dtype=torch.bool, device=rgb_image.device)
