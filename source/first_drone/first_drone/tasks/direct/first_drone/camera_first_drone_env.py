@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import gymnasium as gym
 import torch
+from first_drone.models.perception import PerceptionModule
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
@@ -73,12 +74,8 @@ class CameraFirstDroneEnv(DirectRLEnv):
         # ----- Debug visualization (goal markers) -----
         self.set_debug_vis(self.cfg.debug_vis)
 
-        if len(self.cfg.tiled_camera.data_types) != 1:
-            raise ValueError(
-                "The camera environment only supports one image type at a time but the following were"
-                f" provided: {self.cfg.tiled_camera.data_types}"
-            )
-
+        # Initialize the perception module in MOCK mode
+        self.perception = PerceptionModule(use_mock=True)
     # ------------------------------------------------------------------
     # Scene setup
     # ------------------------------------------------------------------
@@ -152,27 +149,30 @@ class CameraFirstDroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
         """Build observations for asymmetric actor-critic.
-
-        Returns a dict with three groups:
-          - "policy": depth image (B, 1, H, W) — body-mounted camera, channels-first.
-          - "imu":    6-dim IMU-like data [ang_vel_b(3), projected_gravity_b(3)].
-                      Paired with "policy" for the actor. Realistic for deployment
-                      (a real drone always has an IMU).
-          - "critic": 12-dim privileged state vector (used only during training):
-                      [lin_vel_b(3), ang_vel_b(3), projected_gravity_b(3), goal_pos_b(3)]
+        
+        Integrates the Perception Module (CV) to process RGB and Depth images
+        before passing the required state to the RL agent.
         """
-        # --- Actor observation 1: depth image ---
+        # 1. Extract depth image from the simulator
         depth_image = self._tiled_camera.data.output["depth"].clone()
-        # Replace inf (no hit / sky) with 0 so the network gets clean inputs
+        
+        # Replace inf (no hit / sky) with 10.0 so the network gets clean inputs
         depth_image[depth_image == float("inf")] = 10.0
-        # Permute from (B, H, W, 1) → (B, 1, H, W) for RSL-RL CNN
-        depth_image = depth_image.permute(0, 3, 1, 2)
+        
+        # 2. Extract RGB image 
+        # (RL Team: Ensure "rgb" is included in cfg.tiled_camera.data_types)
+        rgb_image = self._tiled_camera.data.output["rgb"].clone()
+        
+        # 3. Pass images to the Perception Module (Currently running as Mock)
+        # Returns: target detected (bool), target coordinates (x,y), and latent depth (vector)
+        target_found, target_coords, latent_depth_vector = self.perception.process_camera_data(rgb_image, depth_image)
+        
         # --- Critic observation: full privileged state ---
         desired_pos_b, _ = subtract_frame_transforms(
             self._robot.data.root_pos_w, self._robot.data.root_quat_w, self._desired_pos_w
         )
 
-        # --- Actor observation 2: IMU data (available on real hardware) ---
+        # --- Actor observation: IMU data ---
         imu_obs = torch.cat(
             [
                 self._robot.data.root_lin_vel_b,
@@ -185,6 +185,10 @@ class CameraFirstDroneEnv(DirectRLEnv):
        
         critic_obs = imu_obs
 
+        # RL Team Note: For now, we still return the raw depth_image to avoid breaking existing models.
+        # Once the VAE is ready, 'policy' should receive 'latent_depth_vector' instead.
+        depth_image = depth_image.permute(0, 3, 1, 2)
+        
         return {"policy": depth_image, "imu": imu_obs, "critic": critic_obs}
 
     # ------------------------------------------------------------------

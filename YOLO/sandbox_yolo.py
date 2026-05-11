@@ -6,7 +6,7 @@ model = YOLO('yolo11n.pt')
 
 print("Analyzing the image...")
 # אנחנו נותנים למודל את התמונה שהורדת
-results = model('test_image.jpg') 
+results = model(r'D:\isaac\3D_Drone_RL\YOLO\test_image.jpg') 
 
 print("Showing results!")
 # הפקודה הזו תפתח את התמונה עם הריבועים שהמודל צייר
