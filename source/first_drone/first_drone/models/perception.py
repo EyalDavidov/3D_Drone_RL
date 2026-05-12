@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 import os
@@ -21,6 +22,13 @@ class PerceptionModule:
             # נתיב אבסולוטי כדי להבטיח שהוא מוצא את המודל ללא קשר מאיפה מריצים
             yolo_path = r'D:\isaac\3D_Drone_RL\YOLO\yolo11n.pt'
             self.yolo_model = YOLO(yolo_path)
+            
+            # Initialize VAE for depth compression
+            try:
+                from .vae import VAE
+                self.vae = VAE(latent_dim=32)
+            except ImportError:
+                print("[WARNING] Could not load VAE module. Using zeroed latents.")
 
     def process_camera_data(self, rgb_image, depth_image, drone_pos=None, drone_quat=None):
         """
@@ -247,7 +255,6 @@ class PerceptionModule:
                     qz = float(drone_quat[0, 3].item())
                     
                     # Convert quaternion to yaw angle (heading)
-                    import math
                     yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
                     
                     # Calculate target's position RELATIVE TO THE ENTRANCE (0,0,0)
@@ -267,8 +274,36 @@ class PerceptionModule:
                 break 
 
         # ---------------------------------------------------------
-        # 3. VAE Section (Placeholder)
+        # 3. VAE Section (Depth Compression)
         # ---------------------------------------------------------
-        latent_depth_vector = torch.zeros((batch_size, 32), dtype=torch.float32, device=rgb_image.device)
+        if hasattr(self, 'vae'):
+            device = depth_image.device if isinstance(depth_image, torch.Tensor) else 'cpu'
+            self.vae.to(device)
+            
+            # depth_image from Isaac is usually (B, H, W, 1) or (B, H, W).
+            if isinstance(depth_image, torch.Tensor):
+                dt = depth_image.clone()
+            else:
+                dt = torch.tensor(depth_image, device=device, dtype=torch.float32)
+                
+            if dt.dim() == 4 and dt.shape[-1] == 1:
+                dt = dt.permute(0, 3, 1, 2)  # into (B, 1, H, W)
+            elif dt.dim() == 3:
+                dt = dt.unsqueeze(1)
+                
+            # Replace infinity/sky with standard max distance (10.0m constraint)
+            dt = torch.nan_to_num(dt, posinf=10.0)
+            
+            # Normalize to [0, 1] range based on max 10m
+            dt_norm = torch.clamp(dt / 10.0, 0.0, 1.0)
+            
+            # VAE expects (B, 1, 72, 128)
+            dt_resized = torch.nn.functional.interpolate(dt_norm, size=(72, 128), mode='bilinear', align_corners=False)
+            
+            # Extract the 32D latent vector to pass to the RL agent. 
+            # We use encode_detached so RL doesn't ruin the VAE gradients.
+            latent_depth_vector = self.vae.encode_detached(dt_resized)
+        else:
+            latent_depth_vector = torch.zeros((batch_size, 32), dtype=torch.float32, device=rgb_image.device)
         
         return target_found_batch, target_coords_batch, latent_depth_vector

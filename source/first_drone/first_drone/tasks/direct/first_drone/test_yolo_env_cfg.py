@@ -58,7 +58,7 @@ class TestYoloEnvCfg(DirectRLEnvCfg):
 
     # room with poles — spawned as a static USD prim per-env (no RigidBodyAPI needed)
     # Using the local floor that exists instead of the missing room_with_poles
-    room_usd_path: str = f"{os.path.dirname(__file__)}/assets/floor.usd"
+    room_usd_path: str = f"{os.path.dirname(__file__)}/assets/fps_shooter_game_arena_map_v4.usdz"
 
     # camera — body-mounted depth sensor
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
