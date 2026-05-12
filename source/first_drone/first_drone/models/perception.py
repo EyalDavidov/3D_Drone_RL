@@ -69,13 +69,16 @@ class PerceptionModule:
         # ---------------------------------------------------------
         # 2. Run Real YOLO Detection
         # ---------------------------------------------------------
-        results = self.yolo_model(single_env_image_bgr, verbose=False)
+        # Run YOLO with a base threshold of 0.50 to filter out weak detections natively
+        results = self.yolo_model(single_env_image_bgr, verbose=False, conf=0.50)
         
-        # Extract detection info and save successful detections
+        # We keep all objects because the model internally filtered EVERYTHING > 0.50
+        filtered_results = results[0]
+        
+        # Check if we found any persons for RL and saving logic
         has_persons = False
-        for box in results[0].boxes:
-            # Class 0 is 'person'.
-            if int(box.cls[0]) == 0 and float(box.conf[0]) > 0.80:
+        for box in filtered_results.boxes:
+            if int(box.cls[0]) == 0:
                 has_persons = True
                 break
         
@@ -83,7 +86,7 @@ class PerceptionModule:
         
         # --- Live OpenCV Window Display ---
         import cv2
-        annotated_frame = results[0].plot()  # Returns BGR format array
+        annotated_frame = filtered_results.plot()  # Returns BGR format array with ONLY filtered boxes
         cv2.imshow("Isaac Sim POV - Live YOLO", annotated_frame)
         cv2.waitKey(1) # 1 millisecond delay to update the live frame
         # ----------------------------------
@@ -107,7 +110,7 @@ class PerceptionModule:
         target_coords_batch = torch.zeros((batch_size, 2), dtype=torch.float32, device=rgb_image.device)
         
         # Extract detection results for drone 0
-        for box in results[0].boxes:
+        for box in filtered_results.boxes:
             if int(box.cls[0]) == 0:  # Class 0 is 'person'
                 target_found_batch[0] = True
                 x_center, y_center, _, _ = box.xywh[0].tolist()

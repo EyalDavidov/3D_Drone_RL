@@ -71,8 +71,8 @@ def main():
             center_x, center_y = 3.5, 0.0  # Person location
             r = 3.5  # Radius of orbit
             
-            # Change angle slowly over time
-            theta = math.pi - (step_count * 0.005)
+            # Change angle slowly over time (Increased speed from 0.005 to 0.02)
+            theta = math.pi - (step_count * 0.02)
             
             x = center_x + r * math.cos(theta)
             y = center_y + r * math.sin(theta)

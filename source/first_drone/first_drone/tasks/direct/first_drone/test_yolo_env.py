@@ -104,6 +104,41 @@ class TestYoloEnv(DirectRLEnv):
         # Rotated 90 degrees right -> Quaternion: W=0.7071, X=0, Y=0, Z=-0.7071 (Testing this so they face the right way)
         person_cfg.func("/World/envs/env_0/Person0", person_cfg, translation=(3.5, 0.0, 0.0), orientation=(0.7071, 0.0, 0.0, -0.7071))
 
+        # --- Spawn a wall with a hole for the face ---
+        # The wall is placed at X=2.5 (between the drone starting point and the person at X=3.5)
+        # Made of 4 parts to leave exactly a window/hole in the middle around Z=1.65 (Face height)
+        wall_color = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.5, 0.5))
+        
+        # Bottom wall (Ground to neck, Z=0.0 to 1.4 -> Center=0.7, Height=1.4, Width=2.0)
+        wall_bottom = sim_utils.CuboidCfg(size=(0.1, 2.0, 1.4), visual_material=wall_color)
+        wall_bottom.func("/World/envs/env_0/Wall_Bottom", wall_bottom, translation=(2.5, 0.0, 0.7))
+        
+        # Top wall (Above head, Z=1.9 to 2.6 -> Center=2.25, Height=0.7, Width=2.0)
+        wall_top = sim_utils.CuboidCfg(size=(0.1, 2.0, 0.7), visual_material=wall_color)
+        wall_top.func("/World/envs/env_0/Wall_Top", wall_top, translation=(2.5, 0.0, 2.25))
+        
+        # Left wall (Blocks sides of the face, leaving a 0.6m wide hole in the middle)
+        wall_left = sim_utils.CuboidCfg(size=(0.1, 0.7, 0.5), visual_material=wall_color)
+        wall_left.func("/World/envs/env_0/Wall_Left", wall_left, translation=(2.5, 0.65, 1.65))
+        
+        # Right wall
+        wall_right = sim_utils.CuboidCfg(size=(0.1, 0.7, 0.5), visual_material=wall_color)
+        wall_right.func("/World/envs/env_0/Wall_Right", wall_right, translation=(2.5, -0.65, 1.65))
+        
+        # --- Previous partial occlusion obstacles ---
+        # 1. A tall pillar blocking the view from one side (left front)
+        pillar_cfg = sim_utils.CuboidCfg(size=(0.3, 0.3, 2.0), visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 0.7)))
+        pillar_cfg.func("/World/envs/env_0/Obstacle1", pillar_cfg, translation=(4.5, 1.2, 1.0))
+
+        # 2. A half-wall that hides the lower body from another angle
+        half_wall_cfg = sim_utils.CuboidCfg(size=(0.2, 1.5, 1.0), visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.7, 0.2, 0.2)))
+        half_wall_cfg.func("/World/envs/env_0/Obstacle2", half_wall_cfg, translation=(2.5, -1.0, 0.5))
+
+        # 3. A floating box or another block just to mess with the top view a bit
+        box_cfg = sim_utils.CuboidCfg(size=(0.8, 0.8, 0.4), visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.7, 0.2)))
+        box_cfg.func("/World/envs/env_0/Obstacle3", box_cfg, translation=(3.5, -1.5, 1.5))
+        # -----------------------------------------
+
         # Terrain (ground plane)
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
