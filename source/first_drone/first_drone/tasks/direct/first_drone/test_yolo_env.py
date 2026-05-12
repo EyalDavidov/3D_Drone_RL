@@ -216,7 +216,11 @@ class TestYoloEnv(DirectRLEnv):
         
         # 3. Pass images to the Perception Module (Currently running as Mock)
         # Returns: target detected (bool), target coordinates (x,y), and latent depth (vector)
-        target_found, target_coords, latent_depth_vector = self.perception.process_camera_data(rgb_image, depth_image)
+        drone_pos = self._robot.data.root_pos_w.clone()
+        drone_quat = self._robot.data.root_quat_w.clone()
+        target_found, target_coords, latent_depth_vector = self.perception.process_camera_data(
+            rgb_image, depth_image, drone_pos=drone_pos, drone_quat=drone_quat
+        )
         
         # --- Critic observation: full privileged state ---
         desired_pos_b, _ = subtract_frame_transforms(
