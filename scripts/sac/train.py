@@ -103,6 +103,9 @@ def main():
         device=device,
     )
 
+    # VAE warmup / SAC startup
+    vae_training_steps = getattr(env_cfg, "vae_training_steps", env_cfg.sac_warmup_steps)
+
     # ---- Logging ----
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -156,8 +159,8 @@ def main():
 
     for step in range(start_step, max_steps):
         # ---- Act ----
-        if step < env_cfg.sac_warmup_steps:
-            # Random actions during warmup (explore & collect VAE data)
+        if step < vae_training_steps:
+            # Random actions during VAE warmup (collect depth frames and fill buffer)
             actions = torch.rand(num_envs, action_dim, device=device) * 2 - 1
         else:
             actions = sac.act(obs)
@@ -196,39 +199,15 @@ def main():
             episode_lengths[done_mask] = 0.0
 
         # ---- Update networks ----
-        if step >= env_cfg.sac_warmup_steps and step % env_cfg.sac_update_every == 0:
-            if replay.can_sample(env_cfg.sac_batch_size):
-                sac_logs = {}
-                vae_logs = {}
+        if step % env_cfg.sac_update_every == 0:
+            sac_logs = {}
+            vae_logs = {}
 
-                for _ in range(env_cfg.sac_gradient_steps):
-                    batch = replay.sample(env_cfg.sac_batch_size)
-
-                    # Update SAC critic
-                    critic_info = sac.update_critic(
-                        batch["obs"], batch["action"], batch["reward"],
-                        batch["next_obs"], batch["done"],
-                    )
-
-                    # Update SAC actor + alpha
-                    actor_info = sac.update_actor_and_alpha(batch["obs"])
-
-                    # Soft update target
-                    sac.soft_update_target()
-
-                    # Accumulate logs
-                    for k, v in {**critic_info, **actor_info}.items():
-                        sac_logs[k] = sac_logs.get(k, 0.0) + v
-
-                # Average over gradient steps
-                for k in sac_logs:
-                    sac_logs[k] /= env_cfg.sac_gradient_steps
-
-                # ---- Train VAE ----
+            if step < vae_training_steps:
+                # VAE-only warmup: gather depth frames and train the VAE while the replay buffer fills
                 if len(depth_buffer) >= 4:
-                    # Sample a random batch of depth frames
                     n_vae = min(env_cfg.sac_batch_size, len(depth_buffer) * num_envs)
-                    depth_all = torch.cat(depth_buffer[-8:], dim=0)  # recent frames
+                    depth_all = torch.cat(depth_buffer[-8:], dim=0)
                     idx = torch.randint(0, depth_all.shape[0], (n_vae,))
                     depth_batch = depth_all[idx]
 
@@ -244,35 +223,55 @@ def main():
                         "vae_recon_loss": recon_loss.item(),
                         "vae_kl_loss": kl_loss.item(),
                     }
+            else:
+                # SAC training begins once VAE warmup is finished
+                if replay.can_sample(env_cfg.sac_batch_size):
+                    for _ in range(env_cfg.sac_gradient_steps):
+                        batch = replay.sample(env_cfg.sac_batch_size)
 
-                # ---- Log ----
-                if step % 500 == 0:
-                    elapsed = time.time() - start_time
-                    fps = step / max(elapsed, 1)
-                    avg_reward = total_reward_sum / max(completed_episodes, 1)
+                        critic_info = sac.update_critic(
+                            batch["obs"], batch["action"], batch["reward"],
+                            batch["next_obs"], batch["done"],
+                        )
 
-                    print(
-                        f"Step {step:>7d}/{max_steps} | "
-                        f"Ep: {completed_episodes:>5d} | "
-                        f"Avg R: {avg_reward:>7.2f} | "
-                        f"Alpha: {sac.alpha.item():.3f} | "
-                        f"FPS: {fps:.0f}"
-                    )
+                        actor_info = sac.update_actor_and_alpha(batch["obs"])
+                        sac.soft_update_target()
 
-                    if wandb_run:
-                        log_data = {
-                            "step": step,
-                            "episode/avg_reward": avg_reward,
-                            "episode/completed": completed_episodes,
-                            "fps": fps,
-                            **{f"sac/{k}": v for k, v in sac_logs.items()},
-                            **{f"vae/{k}": v for k, v in vae_logs.items()},
-                        }
-                        # Include env extras if available
-                        if "log" in unwrapped.extras:
-                            for k, v in unwrapped.extras["log"].items():
-                                log_data[k] = v if isinstance(v, (int, float)) else v
-                        wandb.log(log_data, step=step)
+                        for k, v in {**critic_info, **actor_info}.items():
+                            sac_logs[k] = sac_logs.get(k, 0.0) + v
+
+                    for k in sac_logs:
+                        sac_logs[k] /= env_cfg.sac_gradient_steps
+
+            # ---- Log ----
+            if step % 500 == 0:
+                elapsed = time.time() - start_time
+                fps = step / max(elapsed, 1)
+                avg_reward = total_reward_sum / max(completed_episodes, 1)
+
+                phase = "VAE warmup" if step < vae_training_steps else "SAC train"
+                print(
+                    f"Step {step:>7d}/{max_steps} | "
+                    f"Phase: {phase} | "
+                    f"Ep: {completed_episodes:>5d} | "
+                    f"Avg R: {avg_reward:>7.2f} | "
+                    f"Alpha: {sac.alpha.item():.3f} | "
+                    f"FPS: {fps:.0f}"
+                )
+
+                if wandb_run:
+                    log_data = {
+                        "step": step,
+                        "episode/avg_reward": avg_reward,
+                        "episode/completed": completed_episodes,
+                        "fps": fps,
+                        **{f"sac/{k}": v for k, v in sac_logs.items()},
+                        **{f"vae/{k}": v for k, v in vae_logs.items()},
+                    }
+                    if "log" in unwrapped.extras:
+                        for k, v in unwrapped.extras["log"].items():
+                            log_data[k] = v if isinstance(v, (int, float)) else v
+                    wandb.log(log_data, step=step)
 
         # ---- Save checkpoint ----
         if step > 0 and step % env_cfg.save_interval == 0:
