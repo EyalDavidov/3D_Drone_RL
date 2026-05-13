@@ -228,10 +228,14 @@ class SACDroneEnv(DirectRLEnv):
         depth_vis = np.uint8(np.clip(depth_img * 255.0, 0, 255))
         recon_vis = np.uint8(np.clip(recon_img * 255.0, 0, 255))
         combined = np.hstack([depth_vis, recon_vis])
+        # Scale up 4x so the window is clearly visible (128+128=256 wide, 72 tall → 1024x288)
+        scale = 4
+        combined = cv2.resize(combined, (combined.shape[1] * scale, combined.shape[0] * scale),
+                              interpolation=cv2.INTER_NEAREST)
         combined = cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR)
 
-        label = f"VAE depth input (left) | reconstruction (right)"
-        cv2.putText(combined, label, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        label = "VAE depth input (left) | reconstruction (right)"
+        cv2.putText(combined, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.imshow("VAE Input/Output", combined)
 
         # Allow window to refresh without blocking simulation

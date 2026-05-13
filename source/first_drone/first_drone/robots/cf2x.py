@@ -5,7 +5,8 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 DRONE_CONFIG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
+        # usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
+        usd_path="C:\\Isaac\\Assets\\cf2x\\cf2x.usd",
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=10.0,
@@ -21,7 +22,7 @@ DRONE_CONFIG = ArticulationCfg(
         copy_from_source=False,
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 1),
+        pos=(0.0, 0.0, 1.7),
         rot=(0.7071, 0.0, 0.0, -0.7071),
         joint_pos={
             ".*": 0.0,

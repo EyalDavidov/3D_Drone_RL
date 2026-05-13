@@ -81,35 +81,19 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     # Policy sees the 45-dim flat vector (VAE latent + state features)
     # The env returns this as "policy" key after internal VAE encoding
     action_space = 4
-    # z_img(32) + target_rel_body(3) + target_dist(1) + lin_vel(3) + ang_vel(3) + gravity(3) = 45
-    observation_space = 45
+    # z_img(8) + target_rel_body(3) + target_dist(1) + lin_vel(3) + ang_vel(3) + gravity(3) = 21
+    observation_space = 21
     # No separate state_space needed — SAC uses the same obs for actor and critic
     state_space = 0
 
     # ---------- VAE ----------
-    vae_latent_dim: int = 32
+    vae_latent_dim: int = 8
     vae_beta: float = 1e-3
-    vae_lr: float = 1e-4
     depth_max: float = 10.0  # max depth clamp in meters
-
-    # ---------- SAC ----------
-    sac_actor_lr: float = 3e-4
-    sac_critic_lr: float = 3e-4
-    sac_alpha_lr: float = 3e-4
-    sac_gamma: float = 0.99
-    sac_tau: float = 0.005
-    sac_batch_size: int = 256
-    sac_replay_size: int = 200_000
-    sac_warmup_steps: int = 10_000
-    vae_training_steps: int = 10_000  # number of env steps to train VAE only before SAC starts
-    sac_update_every: int = 64       # update SAC every N env steps
-    sac_gradient_steps: int = 4      # number of gradient updates per update phase
-    sac_success_ratio: float = 0.25  # fraction of batch from success buffer
-    sac_max_iterations: int = 500_000  # total env steps
 
     # ---------- Visualization ----------
     show_vae_images: bool = True
-    vae_image_display_interval: int = 20
+    vae_image_display_interval: int = 100
 
     # ---------- Physics tuning ----------
     thrust_to_weight = 1.9
@@ -134,8 +118,3 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     collision_penalty: float = -8.0
     # Goal radius (meters) — drone is "at goal" when closer than this
     goal_radius: float = 0.4
-
-    # ---------- Logging ----------
-    wandb_project: str = "first_drone"
-    experiment_name: str = "sac_drone"
-    save_interval: int = 10_000  # save model every N env steps

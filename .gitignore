@@ -87,3 +87,4 @@ logs/
 .venv
 env_isaaclab/
 action_log.csv
+data/

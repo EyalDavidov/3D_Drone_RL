@@ -1,7 +1,7 @@
-"""Variational Autoencoder for depth image compression.
+"""Tiny Variational Autoencoder for simple geometric depth image compression.
 
-Encodes 128×72 grayscale depth images into a compact 32-dimensional latent code.
-Based on the architecture from "Vision Based Drone Obstacle Avoidance by Deep RL".
+Optimized for 128×72 grayscale depth images containing basic geometric structures.
+Extremely lightweight (2 layers) for fast training and RL efficiency.
 
 Usage:
     vae = VAE(latent_dim=32).to(device)

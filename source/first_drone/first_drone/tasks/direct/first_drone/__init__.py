@@ -45,14 +45,7 @@ gym.register(
     },
 )
 
-gym.register(
-    id="VAE-SAC-First-Drone-Direct-v0",
-    entry_point=f"{__name__}.vae_sac_drone_env:SACDroneEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.vae_sac_drone_env_cfg:SACDroneEnvCfg",
-    },
-)
+
 
 
 gym.register(
