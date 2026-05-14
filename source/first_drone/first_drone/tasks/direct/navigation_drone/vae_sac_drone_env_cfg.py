@@ -92,7 +92,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     depth_max: float = 10.0  # max depth clamp in meters
 
     # ---------- Visualization ----------
-    show_vae_images: bool = True
+    show_vae_images: bool = False
     vae_image_display_interval: int = 100
 
     # ---------- Physics tuning ----------

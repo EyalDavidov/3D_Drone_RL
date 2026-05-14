@@ -51,6 +51,8 @@ def main():
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = device
 
+    if args_cli.viewer:
+        env_cfg.show_vae_images = True
     env = gym.make(args_cli.task, cfg=env_cfg)
     unwrapped = env.unwrapped
 

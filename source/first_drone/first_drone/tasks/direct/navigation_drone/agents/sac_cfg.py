@@ -26,6 +26,7 @@ class SACAgentCfg:
     sac_gradient_steps: int = 4      # gradient updates per update phase
     sac_success_ratio: float = 0.25  # fraction of batch from success buffer
     sac_max_iterations: int = 500_000  # total env steps
+    train_vae: bool = True  # whether the VAE should be updated during training
 
     # ---------- Logging ----------
     wandb_project: str = "first_drone"

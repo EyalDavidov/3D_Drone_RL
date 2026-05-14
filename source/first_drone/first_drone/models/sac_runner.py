@@ -253,6 +253,8 @@ class SACRunner:
     # ------------------------------------------------------------------
     def _update_vae(self, depth_buffer: list) -> dict:
         """Run one VAE training step on collected depth frames."""
+        if not getattr(self.cfg, "train_vae", True):
+            return {}
         if len(depth_buffer) < 4:
             return {}
 
