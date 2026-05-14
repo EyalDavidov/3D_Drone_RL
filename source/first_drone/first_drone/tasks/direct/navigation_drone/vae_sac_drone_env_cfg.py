@@ -81,15 +81,20 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     # Policy sees the 45-dim flat vector (VAE latent + state features)
     # The env returns this as "policy" key after internal VAE encoding
     action_space = 4
-    # z_img(8) + target_rel_body(3) + target_dist(1) + lin_vel(3) + ang_vel(3) + gravity(3) = 21
-    observation_space = 21
+    # z_img(32) + target_rel_body(3) + target_dist(1) + lin_vel(3) + ang_vel(3) + gravity(3) = 45
+    observation_space = 45
     # No separate state_space needed — SAC uses the same obs for actor and critic
     state_space = 0
 
     # ---------- VAE ----------
-    vae_latent_dim: int = 8
+    vae_latent_dim: int = 32
     vae_beta: float = 1e-3
     depth_max: float = 10.0  # max depth clamp in meters
+
+    # ---------- Flight controller ----------
+    llc_checkpoint_path: str = r"C:\Isaac\Projects\first_drone\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
+    vel_limit: tuple[float, float, float] = (1.0, 1.0, 0.5)
+    yaw_rate_limit: float = 0.05
 
     # ---------- Visualization ----------
     show_vae_images: bool = False

@@ -35,7 +35,13 @@ from isaaclab.assets import Articulation
 from isaaclab.sensors import TiledCamera
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.utils.math import (
+    subtract_frame_transforms,
+    wrap_to_pi,
+    quat_from_euler_xyz,
+    euler_xyz_from_quat,
+    quat_rotate_inverse,
+)
 
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
@@ -47,10 +53,13 @@ class SACDroneEnv(DirectRLEnv):
     """SAC+VAE drone navigation environment.
 
     Actions (4 continuous, clamped to [-1, 1]):
-      - action[0]: z_thrust (mapped to hover ± scale)
-      - action[1]: roll moment
-      - action[2]: pitch moment
-      - action[3]: yaw moment
+      - action[0]: desired body x velocity
+      - action[1]: desired body y velocity
+      - action[2]: desired body z velocity
+      - action[3]: desired yaw rate
+
+    The SAC agent is a high-level navigator. A frozen low-level flight
+    controller converts the SAC actions into thrust/moment commands.
     """
 
     cfg: SACDroneEnvCfg
@@ -77,6 +86,16 @@ class SACDroneEnv(DirectRLEnv):
 
         # ----- VAE (owned by env, trained externally) -----
         self.vae = VAE(latent_dim=self.cfg.vae_latent_dim, beta=self.cfg.vae_beta).to(self.device)
+
+        # ----- Low-level flight controller -----
+        self.llc = torch.jit.load(self.cfg.llc_checkpoint_path, map_location=self.device)
+        self.llc.eval()
+        for param in self.llc.parameters():
+            param.requires_grad = False
+
+        # ----- High-level navigator buffers -----
+        self._desired_vel_b = torch.zeros(self.num_envs, 3, device=self.device)
+        self._target_yaw = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Depth image buffer (exposed for external VAE training) -----
         self._last_depth_processed = None
@@ -148,18 +167,44 @@ class SACDroneEnv(DirectRLEnv):
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
-        """Convert RL actions → thrust and moment commands."""
+        """Convert high-level SAC navigation actions to low-level motor commands."""
         self._actions = actions.clone().clamp(-1.0, 1.0)
-        self._thrust[:, 0, 2] = (
-            self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
+
+        # High-level navigation action: desired body velocities and yaw rate
+        self._desired_vel_b[:, 0] = self._actions[:, 0] * self.cfg.vel_limit[0]
+        self._desired_vel_b[:, 1] = self._actions[:, 1] * self.cfg.vel_limit[1]
+        self._desired_vel_b[:, 2] = self._actions[:, 2] * self.cfg.vel_limit[2]
+        self._target_yaw = wrap_to_pi(self._target_yaw + self._actions[:, 3] * self.cfg.yaw_rate_limit)
+
+        # Prepare low-level controller observation
+        lin_vel_b = self._robot.data.root_lin_vel_b
+        ang_vel_b = self._robot.data.root_ang_vel_b
+        projected_gravity_b = self._robot.data.projected_gravity_b
+        current_yaw = self._get_drone_yaw()
+        yaw_err = wrap_to_pi(self._target_yaw - current_yaw)
+
+        ll_obs = torch.cat(
+            [self._desired_vel_b, yaw_err.unsqueeze(-1), lin_vel_b, ang_vel_b, projected_gravity_b],
+            dim=-1,
         )
-        self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+
+        # Query the frozen flight controller
+        with torch.no_grad():
+            ll_actions = self.llc(ll_obs)
+            ll_actions = ll_actions.clamp(-1.0, 1.0)
+
+        self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (ll_actions[:, 0] + 1.0) / 2.0
+        self._moment[:, 0, :] = self.cfg.moment_scale * ll_actions[:, 1:]
 
     def _apply_action(self):
         """Apply wrench to the drone body."""
         self._robot.permanent_wrench_composer.set_forces_and_torques(
             body_ids=self._body_id, forces=self._thrust, torques=self._moment
         )
+
+    def _get_drone_yaw(self) -> torch.Tensor:
+        _, _, yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
+        return yaw
 
     # ------------------------------------------------------------------
     # Observations
