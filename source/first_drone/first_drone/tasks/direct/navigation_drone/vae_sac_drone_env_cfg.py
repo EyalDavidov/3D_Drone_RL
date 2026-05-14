@@ -5,6 +5,8 @@ Observation space is 45-dim flat vector (after VAE encoding + state concat),
 so the RL algorithm sees a simple MLP-friendly input.
 """
 
+import os
+
 from first_drone.robots.cf2x import DRONE_CONFIG
 
 import isaaclab.sim as sim_utils
@@ -63,7 +65,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room
-    room_usd_path: str = "C:\\Isaac\\Assets\\room_with_poles.usd"
+    room_usd_path: str = "D:\\isaac\\3D_Drone_RL\\assets\\room_with_poles.usd"
 
     # camera — 128×72 depth as specified in the paper
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -74,7 +76,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
-        offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.0, 0.0), convention="ros"),
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
     )
 
     # ---------- Spaces ----------
@@ -89,10 +91,11 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     # ---------- VAE ----------
     vae_latent_dim: int = 32
     vae_beta: float = 1e-3
-    depth_max: float = 10.0  # max depth clamp in meters
+    depth_max: float = 5.0  # max depth clamp in meters (room is ~10m, but 5m gives better contrast)
+    vae_checkpoint_path: str = r"D:\isaac\3D_Drone_RL\logs\vae\vae_final.pt"
 
     # ---------- Flight controller ----------
-    llc_checkpoint_path: str = r"C:\Isaac\Projects\first_drone\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
+    llc_checkpoint_path: str = r"D:\isaac\3D_Drone_RL\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
     vel_limit: tuple[float, float, float] = (1.0, 1.0, 0.5)
     yaw_rate_limit: float = 0.05
 
@@ -105,21 +108,21 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     moment_scale = 0.01
 
     # ---------- Reward scales ----------
-    # Progress reward: getting closer to goal
-    w_progress: float = 2.0
+    # Progress reward: getting closer to goal (DOMINANT — drives navigation)
+    w_progress: float = 5.0
     # Goal reached bonus (huge one-time termination reward)
-    w_goal: float = 50.0
+    w_goal: float = 100.0
     # Hover bonus (disabled for now)
     w_hover: float = 0.0
     # Depth clearance (center-vs-mean depth)
-    w_clearance: float = 0.3
-    # Angular velocity penalty
-    w_ang_vel: float = 0.02
-    # Tilt penalty
-    w_tilt: float = 0.05
+    w_clearance: float = 0.5
+    # Angular velocity penalty (reduced further — still dominated at -20 in graphs)
+    w_ang_vel: float = -0.002
+    # Tilt penalty (reduced — was too dominant)
+    w_tilt: float = -0.01
     # Action magnitude penalty
-    w_action: float = 0.01
-    # Collision penalty
-    collision_penalty: float = -8.0
+    w_action: float = -0.01
+    # Collision penalty (increased — must clearly outweigh other penalties)
+    collision_penalty: float = -25.0
     # Goal radius (meters) — drone is "at goal" when closer than this
     goal_radius: float = 0.4

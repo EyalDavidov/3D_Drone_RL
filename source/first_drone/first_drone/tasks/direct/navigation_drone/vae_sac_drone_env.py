@@ -86,6 +86,14 @@ class SACDroneEnv(DirectRLEnv):
 
         # ----- VAE (owned by env, trained externally) -----
         self.vae = VAE(latent_dim=self.cfg.vae_latent_dim, beta=self.cfg.vae_beta).to(self.device)
+        if hasattr(self.cfg, "vae_checkpoint_path") and self.cfg.vae_checkpoint_path is not None:
+            import os
+            if os.path.exists(self.cfg.vae_checkpoint_path):
+                self.vae.load_state_dict(torch.load(self.cfg.vae_checkpoint_path, map_location=self.device))
+                print(f"\n[INFO] VAE model loaded successfully from {self.cfg.vae_checkpoint_path}\n")
+            else:
+                print(f"\n[WARNING] VAE checkpoint not found at {self.cfg.vae_checkpoint_path}\n")
+        self.vae.eval()
 
         # ----- Low-level flight controller -----
         self.llc = torch.jit.load(self.cfg.llc_checkpoint_path, map_location=self.device)
@@ -265,7 +273,9 @@ class SACDroneEnv(DirectRLEnv):
 
         self._vae_vis_step += 1
         with torch.no_grad():
-            recon, _, _ = self.vae(depth)
+            # Explicitly encode and then use the DECODER to get the reconstruction
+            mu, _ = self.vae.encode(depth)
+            recon = self.vae.decode(mu)
 
         depth_img = depth[0, 0].detach().cpu().numpy()
         recon_img = recon[0, 0].detach().cpu().numpy()
@@ -316,7 +326,7 @@ class SACDroneEnv(DirectRLEnv):
         # 3. Hover bonus (only near goal) - Disabled for now
         # vel_sq = torch.sum(self._robot.data.root_lin_vel_b ** 2, dim=1)
         # hover_bonus = at_goal * torch.exp(-2.0 * vel_sq)
-        hover_bonus = torch.zeros_like(curr_dist)
+        hover_bonus = torch.zeros_like(curr_dist) #this means hover is zero reward
 
         # 4. Depth clearance (center brighter = more open ahead)
         depth = self._last_depth_processed  # (B, 1, H, W)
@@ -349,9 +359,9 @@ class SACDroneEnv(DirectRLEnv):
             "goal": self.cfg.w_goal * reached_goal,
             "hover": self.cfg.w_hover * hover_bonus,
             "clearance": self.cfg.w_clearance * clearance,
-            "ang_vel": -self.cfg.w_ang_vel * ang_vel_sq,
-            "tilt": -self.cfg.w_tilt * tilt,
-            "action": -self.cfg.w_action * action_sq,
+            "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
+            "tilt": self.cfg.w_tilt * tilt,
+            "action": self.cfg.w_action * action_sq,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -372,14 +382,21 @@ class SACDroneEnv(DirectRLEnv):
 
         hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.0)
         hit_wall = (
-            (pos_local[:, 0] > 1.9) | (pos_local[:, 0] < -1.9)
-            | (pos_local[:, 1] > 1.9) | (pos_local[:, 1] < -1.9)
+            (pos_local[:, 0] > 4.8) | (pos_local[:, 0] < -4.8)
+            | (pos_local[:, 1] > 4.8) | (pos_local[:, 1] < -4.8)
         )
+
+        # Check pillar collisions
+        # Pillars are at x in [-3, -1, 1, 3] and y = 0
+        hit_pillar = torch.zeros_like(hit_wall)
+        for px in [-3.0, -1.0, 1.0, 3.0]:
+            hit_this_pillar = (torch.abs(pos_local[:, 0] - px) < 0.25) & (torch.abs(pos_local[:, 1] - 0.0) < 0.25)
+            hit_pillar = hit_pillar | hit_this_pillar
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
-        died = hit_floor_or_ceiling | hit_wall | reached_goal
+        died = hit_floor_or_ceiling | hit_wall | hit_pillar
         return died, time_out
 
     # ------------------------------------------------------------------
@@ -422,10 +439,24 @@ class SACDroneEnv(DirectRLEnv):
 
         # --- Robot spawn position ---
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
-        default_root_state[:, 0] = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
-        default_root_state[:, 0] += self._terrain.env_origins[env_ids, 0]
+        spawn_x = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
+        default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
         default_root_state[:, 1] = 1.0 + self._terrain.env_origins[env_ids, 1]
         default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
+
+        # --- Orient drone to face the goal ---
+        # Compute yaw angle from drone spawn → goal
+        dx = self._desired_pos_w[env_ids, 0] - default_root_state[:, 0]
+        dy = self._desired_pos_w[env_ids, 1] - default_root_state[:, 1]
+        goal_yaw = torch.atan2(dy, dx)  # world-frame yaw toward goal
+
+        # Set physical orientation using quat_from_euler_xyz (roll=0, pitch=0, yaw=goal_yaw)
+        zeros = torch.zeros_like(goal_yaw)
+        spawn_quat = quat_from_euler_xyz(zeros, zeros, goal_yaw)
+        default_root_state[:, 3:7] = spawn_quat
+
+        # Initialize target_yaw for the low-level controller
+        self._target_yaw[env_ids] = goal_yaw
 
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)

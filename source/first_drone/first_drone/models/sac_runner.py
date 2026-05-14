@@ -96,8 +96,17 @@ class SACRunner:
         """Load a training checkpoint. Returns the step number."""
         ckpt = torch.load(path, map_location=self.device)
         self.sac.load_state_dict(ckpt["sac"])
-        self.vae.load_state_dict(ckpt["vae"])
-        self.vae_optimizer.load_state_dict(ckpt["vae_optimizer"])
+        
+        # Only load VAE from SAC checkpoint if we are actively training it.
+        # If it's frozen, we keep the properly loaded pre-trained weights from the environment setup.
+        if getattr(self.cfg, "train_vae", True):
+            if "vae" in ckpt:
+                self.vae.load_state_dict(ckpt["vae"])
+            if "vae_optimizer" in ckpt:
+                self.vae_optimizer.load_state_dict(ckpt["vae_optimizer"])
+        else:
+            print("[INFO] train_vae is False (frozen). Skipping VAE load from SAC checkpoint.")
+            
         return ckpt.get("step", 0)
 
     # ------------------------------------------------------------------
@@ -194,7 +203,8 @@ class SACRunner:
             self.replay.add(obs, actions, rewards, next_obs, dones.float(), success)
 
             # Collect depth for VAE training (store on CPU to save GPU memory)
-            if self.unwrapped._last_depth_processed is not None:
+            # We ONLY collect this if we are actively training the VAE, otherwise this GPU->CPU transfer blocks and slows down training heavily!
+            if getattr(self.cfg, "train_vae", True) and self.unwrapped._last_depth_processed is not None:
                 depth_buffer.append(self.unwrapped._last_depth_processed.detach().cpu())
                 if len(depth_buffer) > max_depth_buffer:
                     depth_buffer.pop(0)
@@ -308,7 +318,11 @@ class SACRunner:
         fps = step / max(elapsed, 1)
         avg_reward = total_reward_sum / max(completed_episodes, 1)
 
-        phase = "VAE warmup" if step < self.vae_training_steps else "SAC train"
+        if step < self.vae_training_steps:
+            phase = "VAE+SAC Warmup" if getattr(self.cfg, "train_vae", True) else "SAC Random Warmup"
+        else:
+            phase = "SAC Train"
+            
         print(
             f"Step {step:>7d}/{max_steps} | "
             f"Phase: {phase} | "

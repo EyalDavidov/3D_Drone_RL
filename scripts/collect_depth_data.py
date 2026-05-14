@@ -58,10 +58,10 @@ from first_drone.robots.cf2x import DRONE_CONFIG
 #  Configuration
 # ═══════════════════════════════════════════════════════════════════
 
-ROOM_USD_PATH = "C:\\Isaac\\Assets\\Empty_Room.usd"
-POLE_USD_PATH = "C:\\Isaac\\Assets\\1_Pole.usd"
+ROOM_USD_PATH = r"D:\isaac\3D_Drone_RL\assets\Empty_Room.usd"
+POLE_USD_PATH = r"D:\isaac\3D_Drone_RL\assets\1_Pole.usd"
 MAX_POLES = 10             # max poles spawned; each reset picks 3-10 active
-DEPTH_MAX = 10.0           # metres – same as training env
+DEPTH_MAX = 5.0            # metres – same as training env (5m gives better contrast in indoor rooms)
 DT = 1.0 / 100.0           # physics dt
 DECIMATION = 2              # render every 2 physics steps
 CAMERA_WIDTH = 128
@@ -273,6 +273,14 @@ def main():
     omega = args_cli.circle_speed   # rad/s
     theta = 0.0                      # current angle on circle
 
+    # ── Diversity parameters (randomized periodically) ──────────────
+    current_roll = 0.0       # roll angle in radians
+    current_height = height  # flying height
+    current_radius = radius  # circle radius
+    current_omega = omega    # angular speed
+    randomize_angle_interval = 50   # re-roll viewing angle every N steps
+    randomize_trajectory_interval = 200  # re-roll trajectory params every N steps
+
     # ── Wrench buffers ──────────────────────────────────────────────
     thrust = torch.zeros(1, 1, 3, device=sim.device)
     moment = torch.zeros(1, 1, 3, device=sim.device)
@@ -286,19 +294,29 @@ def main():
 
     print(f"[INFO] Collecting {target_images} depth images ...")
     print(f"[INFO] Circle: radius={radius}m, height={height}m, speed={omega} rad/s")
+    print(f"[INFO] Diversity: roll/angle randomized every {randomize_angle_interval} steps, "
+          f"trajectory every {randomize_trajectory_interval} steps")
 
     while num_collected < target_images and simulation_app.is_running():
+        # ── Randomize viewing angle (roll) every N steps ─────────────
+        if step_count % randomize_angle_interval == 0:
+            current_roll = random.uniform(-math.radians(20), math.radians(20))
+
+        # ── Randomize trajectory params every M steps ────────────────
+        if step_count % randomize_trajectory_interval == 0:
+            current_height = random.uniform(0.5, 1.8)   # vary height within room
+            current_radius = random.uniform(0.3, 2.0)   # vary circle size
+            current_omega = random.uniform(1.0, 4.0)     # vary speed
+
         # ── Compute desired position & orientation ──────────────────
-        theta = omega * step_count * DT * DECIMATION
+        theta = current_omega * step_count * DT * DECIMATION
         # Position on circle (center of room = env origin)
-        px = radius * math.cos(theta)
-        py = radius * math.sin(theta)
-        pz = height
+        px = current_radius * math.cos(theta)
+        py = current_radius * math.sin(theta)
+        pz = current_height
 
         # Yaw so camera faces center
         desired_yaw = theta + math.pi
-        # Tilt to the left (Roll)
-        desired_roll = -math.radians(15)  # 15 degrees tilt to the left
 
         # Build pose
         env_origin = terrain.env_origins[0]  # (3,)
@@ -308,7 +326,7 @@ def main():
              pz + env_origin[2].item()],
             device=sim.device,
         )
-        qw, qx, qy, qz = quat_from_roll_yaw(desired_roll, desired_yaw)
+        qw, qx, qy, qz = quat_from_roll_yaw(current_roll, desired_yaw)
         desired_quat = torch.tensor([qw, qx, qy, qz], device=sim.device)
 
         # ── Build the desired root state ────────────────────────────
@@ -370,7 +388,9 @@ def main():
 
         if num_collected % 500 == 0 or num_collected == 1:
             print(f"[INFO] Collected {num_collected}/{target_images} images "
-                  f"(θ={math.degrees(theta % (2 * math.pi)):.1f}°)")
+                  f"(θ={math.degrees(theta % (2 * math.pi)):.1f}°, "
+                  f"h={current_height:.1f}m, r={current_radius:.1f}m, "
+                  f"roll={math.degrees(current_roll):.1f}°)")
 
         step_count += 1
 

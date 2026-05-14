@@ -90,7 +90,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     vae_latent_dim: int = 32
     vae_beta: float = 1e-3
     vae_lr: float = 1e-4
-    depth_max: float = 10.0  # max depth clamp in meters
+    depth_max: float = 5.0  # max depth clamp in meters (5m gives better contrast in indoor rooms)
 
     # ---------- SAC ----------
     sac_actor_lr: float = 3e-4

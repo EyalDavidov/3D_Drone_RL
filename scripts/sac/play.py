@@ -51,8 +51,10 @@ def main():
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = device
 
-    if args_cli.viewer:
-        env_cfg.show_vae_images = True
+    # Always show VAE images and update rapidly during play
+    env_cfg.show_vae_images = True
+    env_cfg.vae_image_display_interval = 2
+
     env = gym.make(args_cli.task, cfg=env_cfg)
     unwrapped = env.unwrapped
 
@@ -65,7 +67,11 @@ def main():
     ckpt = torch.load(args_cli.checkpoint, map_location=device)
 
     # Restore VAE
-    unwrapped.vae.load_state_dict(ckpt["vae"])
+    # Avoid overwriting the properly loaded pre-trained VAE weights with untrained weights from SAC checkpoint
+    if "vae" in ckpt and not hasattr(env_cfg, "vae_checkpoint_path"):
+        unwrapped.vae.load_state_dict(ckpt["vae"])
+    elif hasattr(env_cfg, "vae_checkpoint_path"):
+        print("[INFO] Using pre-trained VAE from env configuration, skipping VAE load from SAC checkpoint.")
     unwrapped.vae.eval()
 
     # Restore SAC
