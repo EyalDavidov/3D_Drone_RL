@@ -122,11 +122,11 @@ def main():
             total_reward += ep_reward
             completed += 1
 
-            # Check success
+            # Check success — goal reach now terminates the episode
             dist = torch.linalg.norm(
                 unwrapped._desired_pos_w[idx] - unwrapped._robot.data.root_pos_w[idx]
             ).item()
-            was_success = dist < env_cfg.goal_radius and not terminated[idx]
+            was_success = dist < env_cfg.goal_radius  # goal reach = terminated + within radius
 
             status = "SUCCESS" if was_success else ("CRASH" if terminated[idx] else "TIMEOUT")
             if was_success:

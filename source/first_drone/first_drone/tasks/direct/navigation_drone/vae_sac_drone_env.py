@@ -43,7 +43,7 @@ from isaaclab.utils.math import (
     quat_rotate_inverse,
 )
 
-from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
+from isaaclab.markers import CUBOID_MARKER_CFG, VisualizationMarkersCfg  # isort: skip
 
 from .vae_sac_drone_env_cfg import SACDroneEnvCfg
 from first_drone.models.vae import VAE
@@ -300,16 +300,21 @@ class SACDroneEnv(DirectRLEnv):
     # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        """Compute 7-term reward.
+        """Compute reward.
 
-        1. progress   — getting closer to goal (dense)
-        2. goal       — bonus for being inside goal radius
-        3. hover      — bonus for low velocity near goal
-        4. clearance  — depth-center vs depth-mean (obstacle awareness)
-        5. ang_vel    — penalty for spinning
-        6. tilt       — penalty for excessive roll/pitch
-        7. action     — penalty for large actions
-        + collision   — one-time penalty on death
+        Key design: the drone LOSES reward every step (time penalty), so the
+        only way to score high is to reach the goal FAST. Standing still or
+        spinning in place leads to a large negative total.
+
+        Terms:
+          1. progress   — getting closer to goal (dense)
+          2. goal       — one-time bonus for reaching goal (terminal)
+          3. time       — per-step cost (encourages speed)
+          4. clearance  — depth-center vs depth-mean (obstacle awareness)
+          5. ang_vel    — penalty for spinning
+          6. tilt       — penalty for excessive roll/pitch
+          7. action     — penalty for large actions
+          + collision   — one-time penalty on crash
         """
         # Current distance to goal
         curr_dist = torch.linalg.norm(
@@ -320,43 +325,45 @@ class SACDroneEnv(DirectRLEnv):
         progress = self._prev_dist_to_goal - curr_dist
         self._prev_dist_to_goal = curr_dist.clone()
 
-        # 2. Goal reached
+        # 2. Goal reached (one-time terminal)
         reached_goal = (curr_dist < self.cfg.goal_radius).float()
 
-        # 3. Hover bonus (only near goal) - Disabled for now
-        # vel_sq = torch.sum(self._robot.data.root_lin_vel_b ** 2, dim=1)
-        # hover_bonus = at_goal * torch.exp(-2.0 * vel_sq)
-        hover_bonus = torch.zeros_like(curr_dist) #this means hover is zero reward
+        # 3. Time penalty (constant per-step cost — makes standing still expensive)
+        time_penalty = torch.ones(self.num_envs, device=self.device)
 
-        # 4. Depth clearance (center brighter = more open ahead)
+        # 4. Hover bonus — reward for slowing down on final approach
+        #    Only within 2x goal_radius so it can't be exploited from far away
+        near_goal = (curr_dist < self.cfg.goal_radius * 1.25).float()
+        vel_sq = torch.sum(self._robot.data.root_lin_vel_b ** 2, dim=1)
+        hover_bonus = near_goal * torch.exp(-2.0 * vel_sq)
+
+        # 5. Depth clearance (center brighter = more open ahead)
         depth = self._last_depth_processed  # (B, 1, H, W)
         if depth is not None:
             h, w = depth.shape[2], depth.shape[3]
-            # Center crop: middle 16×16 region
             ch, cw = h // 2, w // 2
             center = depth[:, :, ch - 8: ch + 8, cw - 8: cw + 8]
             clearance = center.mean(dim=(1, 2, 3)) - depth.mean(dim=(1, 2, 3))
         else:
             clearance = torch.zeros(self.num_envs, device=self.device)
 
-        # 5. Angular velocity penalty
+        # 6. Angular velocity penalty
         ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
 
-        # 6. Tilt penalty (projected gravity deviation from straight down)
-        # projected_gravity_b for a level drone is (0, 0, -1)
-        # tilt = 1 - |gravity_z| (0 when level, ~1 when flipped)
+        # 7. Tilt penalty
         gravity_b = self._robot.data.projected_gravity_b
         tilt = 1.0 - gravity_b[:, 2].abs()
 
-        # 7. Action magnitude penalty
+        # 8. Action magnitude penalty
         action_sq = torch.sum(self._actions ** 2, dim=1)
 
-        # Check if died from collision (reset_terminated and NOT reached_goal)
+        # Collision (only on crash, not goal reach)
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
 
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
+            "time": self.cfg.w_time * time_penalty,
             "hover": self.cfg.w_hover * hover_bonus,
             "clearance": self.cfg.w_clearance * clearance,
             "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
@@ -368,6 +375,8 @@ class SACDroneEnv(DirectRLEnv):
 
         # Accumulate for logging
         for key, value in rewards.items():
+            if key not in self._episode_sums:
+                self._episode_sums[key] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             self._episode_sums[key] += value
 
         return reward
@@ -386,18 +395,24 @@ class SACDroneEnv(DirectRLEnv):
             | (pos_local[:, 1] > 4.8) | (pos_local[:, 1] < -4.8)
         )
 
-        # Check pillar collisions
-        # Pillars are at x in [-3, -1, 1, 3] and y = 0
+        # Check pillar collisions — circular check with configurable radius
+        # Pillars are at x in [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5] and y = 0
+        pillar_radius = self.cfg.pillar_collision_radius
         hit_pillar = torch.zeros_like(hit_wall)
-        for px in [-3.0, -1.0, 1.0, 3.0]:
-            hit_this_pillar = (torch.abs(pos_local[:, 0] - px) < 0.25) & (torch.abs(pos_local[:, 1] - 0.0) < 0.25)
+        for px in [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]:  # Exact pillar positions from USD
+            dx = pos_local[:, 0] - px
+            dy = pos_local[:, 1] - 0.0
+            dist_sq = dx * dx + dy * dy
+            hit_this_pillar = dist_sq < (pillar_radius * pillar_radius)
             hit_pillar = hit_pillar | hit_this_pillar
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
         died = hit_floor_or_ceiling | hit_wall | hit_pillar
-        return died, time_out
+        # Terminate on goal reach (SUCCESS — not a crash)
+        terminated = died | reached_goal
+        return terminated, time_out
 
     # ------------------------------------------------------------------
     # Reset
@@ -421,13 +436,15 @@ class SACDroneEnv(DirectRLEnv):
         self.extras["log"]["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         self.extras["log"]["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"]["Metrics/final_distance_to_goal"] = final_dist.item()
+        self.extras["log"]["Metrics/episode_length"] = torch.mean(self.episode_length_buf[env_ids].float()).item()
 
         # --- Reset robot ---
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
 
-        if len(env_ids) == self.num_envs:
-            self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
+        # NOTE: Do NOT randomize episode_length_buf for SAC.
+        # The PPO pattern of staggering resets is harmful here — it causes
+        # some envs to timeout almost immediately, producing useless transitions.
 
         self._actions[env_ids] = 0.0
 
@@ -481,9 +498,39 @@ class SACDroneEnv(DirectRLEnv):
                 marker_cfg.prim_path = "/Visuals/Command/goal_position"
                 self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
             self.goal_pos_visualizer.set_visibility(True)
+
+            # Pillar kill-zone visualizers — translucent red cylinders
+            if not hasattr(self, "pillar_zone_visualizers"):
+                r = self.cfg.pillar_collision_radius
+                pillar_marker_cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/PillarZones",
+                    markers={
+                        "cylinder": sim_utils.CylinderCfg(
+                            radius=r,
+                            height=2.5,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(0.0, 1.0, 0.0),
+                                opacity=0.1,
+                            ),
+                        ),
+                    },
+                )
+                self.pillar_zone_visualizers = VisualizationMarkers(pillar_marker_cfg)
+
+                # Compute pillar world positions for env 0
+                origin = self._terrain.env_origins[0]
+                self._pillar_vis_positions = torch.tensor(
+                    [[origin[0] + px, origin[1] + 0.0, origin[2] + 1.0] for px in [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]],
+                    device=self.device,
+                )
+            self.pillar_zone_visualizers.set_visibility(True)
         else:
             if hasattr(self, "goal_pos_visualizer"):
                 self.goal_pos_visualizer.set_visibility(False)
+            if hasattr(self, "pillar_zone_visualizers"):
+                self.pillar_zone_visualizers.set_visibility(False)
 
     def _debug_vis_callback(self, event):
         self.goal_pos_visualizer.visualize(self._desired_pos_w)
+        if hasattr(self, "pillar_zone_visualizers"):
+            self.pillar_zone_visualizers.visualize(self._pillar_vis_positions)

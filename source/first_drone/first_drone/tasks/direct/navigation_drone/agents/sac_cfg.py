@@ -22,8 +22,8 @@ class SACAgentCfg:
     sac_replay_size: int = 200_000
     sac_warmup_steps: int = 5_000
     vae_training_steps: int = 5_000   # env steps to train VAE only before SAC starts
-    sac_update_every: int = 4        # update SAC every N env steps (was 64 — much too slow)
-    sac_gradient_steps: int = 8      # gradient updates per update phase
+    sac_update_every: int = 1        # update SAC every env step (was 4 — too infrequent with 64 envs)
+    sac_gradient_steps: int = 4      # gradient updates per update phase (was 8 with update_every=4)
     sac_success_ratio: float = 0.25  # fraction of batch from success buffer
     sac_max_iterations: int = 500_000  # total env steps
     train_vae: bool = True  # whether the VAE should be updated during training

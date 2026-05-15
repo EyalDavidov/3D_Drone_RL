@@ -97,7 +97,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     # ---------- Flight controller ----------
     llc_checkpoint_path: str = r"D:\isaac\3D_Drone_RL\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
     vel_limit: tuple[float, float, float] = (1.0, 1.0, 0.5)
-    yaw_rate_limit: float = 0.05
+    yaw_rate_limit: float = 0.15  # was 0.05 — too slow for the agent to reorient
 
     # ---------- Visualization ----------
     show_vae_images: bool = False
@@ -109,20 +109,24 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
 
     # ---------- Reward scales ----------
     # Progress reward: getting closer to goal (DOMINANT — drives navigation)
-    w_progress: float = 5.0
-    # Goal reached bonus (huge one-time termination reward)
-    w_goal: float = 100.0
-    # Hover bonus (disabled for now)
-    w_hover: float = 0.0
-    # Depth clearance (center-vs-mean depth)
-    w_clearance: float = 0.5
-    # Angular velocity penalty (reduced further — still dominated at -20 in graphs)
+    w_progress: float = 10.0
+    # Goal reached bonus (one-time terminal reward — must dominate over cumulative hover)
+    w_goal: float = 200.0
+    # Time penalty (negative per-step cost — forces the drone to reach goal FAST)
+    w_time: float = -0.2
+    # Hover bonus (slow down inside goal radius — only inside goal_radius)
+    w_hover: float = 0.1  # heavily reduced to prevent any hover exploit
+    # Depth clearance (center-vs-mean depth — obstacle awareness)
+    w_clearance: float = 0.1  # was 0.5 — too noisy, dominates reward signal
+    # Angular velocity penalty
     w_ang_vel: float = -0.002
-    # Tilt penalty (reduced — was too dominant)
+    # Tilt penalty
     w_tilt: float = -0.01
     # Action magnitude penalty
     w_action: float = -0.01
-    # Collision penalty (increased — must clearly outweigh other penalties)
-    collision_penalty: float = -25.0
+    # Collision penalty (one-time on crash — must hurt enough to deter wall/pillar scraping)
+    collision_penalty: float = -200.0  # severely punish crashing
     # Goal radius (meters) — drone is "at goal" when closer than this
     goal_radius: float = 0.4
+    # Pillar termination radius (meters) — circular distance from pillar center
+    pillar_collision_radius: float = 0.1  # accounts for drone radius (~0.15) + pillar radius (~0.10)
