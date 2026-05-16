@@ -107,26 +107,52 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     thrust_to_weight = 1.9
     moment_scale = 0.01
 
-    # ---------- Reward scales ----------
-    # Progress reward: getting closer to goal (DOMINANT — drives navigation)
-    w_progress: float = 10.0
-    # Goal reached bonus (one-time terminal reward — must dominate over cumulative hover)
-    w_goal: float = 200.0
-    # Time penalty (negative per-step cost — forces the drone to reach goal FAST)
-    w_time: float = -0.2
-    # Hover bonus (slow down inside goal radius — only inside goal_radius)
-    w_hover: float = 0.1  # heavily reduced to prevent any hover exploit
-    # Depth clearance (center-vs-mean depth — obstacle awareness)
-    w_clearance: float = 0.1  # was 0.5 — too noisy, dominates reward signal
-    # Angular velocity penalty
-    w_ang_vel: float = -0.002
-    # Tilt penalty
-    w_tilt: float = -0.01
-    # Action magnitude penalty
-    w_action: float = -0.01
-    # Collision penalty (one-time on crash — must hurt enough to deter wall/pillar scraping)
-    collision_penalty: float = -200.0  # severely punish crashing
-    # Goal radius (meters) — drone is "at goal" when closer than this
-    goal_radius: float = 0.4
+    # =========================================================================
+    # HISTORICAL REWARD CONFIGURATIONS (For Documentation & Fine-Tuning Reference)
+    # =========================================================================
+    #
+    # --- PHASE 1: Forced Forward Flight (Overcoming Hesitation) ---
+    # * Physics: Action[0] clamped to [0,1] (no reverse). Action[1] zeroed (no strafe).
+    # * Goal: To teach the drone that moving forward is better than doing nothing.
+    # w_progress = 15.0, w_goal = 50.0, w_time = -0.02, w_heading = 0.25
+    # collision = -20.0, goal_radius = 0.4
+    # Result: Drone learned to fly forward, but was rigid and couldn't dodge tight pillars.
+    #
+    # --- PHASE 2: 6-DOF Release & Reward Hacking ---
+    # * Physics: Full 6-DOF restored (strafe and reverse allowed).
+    # * Goal: Allow agile dodges (strafing) while enforcing forward-facing with heavy heading reward.
+    # w_progress = 20.0, w_goal = 100.0, w_time = -0.04, w_heading = 1.0 (DANGER)
+    # w_sideslip = -0.2, collision = -30.0, goal_radius = 0.15
+    # Result: Reward Hacking! Drone learned to hover right outside the 0.15m goal radius,
+    # milking the massive +1.0/step heading reward for 500 steps instead of finishing the episode.
+    # =========================================================================
+
+    # ---------- Reward scales (Phase 2.1 — Anti-Hacking Fix / CURRENT) ----------
+    #
+    # Episode budget (500 steps, ~2.5m to goal):
+    #   progress: 20 * 2.5 = +50       (dense drive toward goal)
+    #   goal:     300 * 1  = +300       (DOMINANT — entering goal is the ultimate prize)
+    #   heading:  0.1 * 500 = +50 max   (guidance only — can't get rich from staring)
+    #   time:     -0.04 * 500 = -20     (anti-hesitation)
+    #   sideslip: -0.2 * v² ≈ -10      (soft lateral damping)
+    #   collision: -30 * 1 = -30        (hurts but doesn't paralyze)
+    #
+    # Scenarios:
+    #   SUCCESS (fast, 100 steps):  +50 +300 +10 -4 -2  = +354  ← BEST by far
+    #   HOVER+STARE (500 steps):   +40   +0 +50 -20 -5  = +65   ← can't hack anymore
+    #   CRASH (trying, 100 steps): +25   +0 +10 -4 -30  = +1    ← still better than nothing
+    #   DO NOTHING (500 steps):     0   +0   0  -20  0  = -20   ← worst
+    #
+    w_progress: float = 20.0
+    w_goal: float = 300.0         # TRIPLED — entering goal is 6x better than staring
+    w_time: float = -0.04
+    w_heading: float = 0.1        # guidance signal only — 90% cut from Phase 2
+    collision_penalty: float = -30.0
+    # Stabilization + lateral damping
+    w_ang_vel: float = -0.005
+    w_action: float = -0.005
+    w_sideslip: float = -0.2      # soft lateral penalty — allows quick dodges
+    # Goal radius (meters) — reasonable size for catching at speed
+    goal_radius: float = 0.25
     # Pillar termination radius (meters) — circular distance from pillar center
-    pillar_collision_radius: float = 0.1  # accounts for drone radius (~0.15) + pillar radius (~0.10)
+    pillar_collision_radius: float = 0.15  # accounts for drone radius (~0.15) + pillar radius (~0.10)

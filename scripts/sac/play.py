@@ -91,7 +91,18 @@ def main():
     total_reward = 0.0
     total_success = 0
 
+    # Track pre-reset distance and died flag every step so we can read
+    # them when an episode terminates (Isaac resets BEFORE we get control).
+    prev_dist = torch.linalg.norm(
+        unwrapped._desired_pos_w - unwrapped._robot.data.root_pos_w, dim=1
+    )
+
     while completed < args_cli.num_episodes:
+        # ---- Capture pre-step state (before env.step triggers reset) ----
+        pre_dist = torch.linalg.norm(
+            unwrapped._desired_pos_w - unwrapped._robot.data.root_pos_w, dim=1
+        )
+
         with torch.no_grad():
             actions = sac.act(obs, deterministic=True)
 
@@ -122,11 +133,12 @@ def main():
             total_reward += ep_reward
             completed += 1
 
-            # Check success — goal reach now terminates the episode
-            dist = torch.linalg.norm(
-                unwrapped._desired_pos_w[idx] - unwrapped._robot.data.root_pos_w[idx]
-            ).item()
-            was_success = dist < env_cfg.goal_radius  # goal reach = terminated + within radius
+            # Use pre-step distance (before the automatic reset moved everything) for display
+            dist = pre_dist[idx].item()
+            
+            # Phase 2.1: SUCCESS ~354, HOVER+STARE ~65, CRASH ~1, NOTHING ~-20
+            # Threshold 100 cleanly separates real goal-reaching from hacking/crashing
+            was_success = ep_reward > 100.0
 
             status = "SUCCESS" if was_success else ("CRASH" if terminated[idx] else "TIMEOUT")
             if was_success:

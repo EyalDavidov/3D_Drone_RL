@@ -112,8 +112,8 @@ class SACDroneEnv(DirectRLEnv):
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
-                "progress", "goal", "hover", "clearance",
-                "ang_vel", "tilt", "action", "collision",
+                "progress", "goal", "time", "heading",
+                "ang_vel", "action", "sideslip", "collision",
             ]
         }
 
@@ -175,10 +175,17 @@ class SACDroneEnv(DirectRLEnv):
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
-        """Convert high-level SAC navigation actions to low-level motor commands."""
+        """Convert high-level SAC navigation actions to low-level motor commands.
+
+        Phase 2: Full 6-DOF movement restored.
+        The drone can move in all directions (forward, backward, lateral).
+        The heading reward (w_heading=1.0) provides a strong soft constraint
+        to keep the drone facing the goal, while sideslip penalty discourages
+        constant lateral flight. Quick dodges are allowed.
+        """
         self._actions = actions.clone().clamp(-1.0, 1.0)
 
-        # High-level navigation action: desired body velocities and yaw rate
+        # Full freedom: forward/backward + lateral + vertical
         self._desired_vel_b[:, 0] = self._actions[:, 0] * self.cfg.vel_limit[0]
         self._desired_vel_b[:, 1] = self._actions[:, 1] * self.cfg.vel_limit[1]
         self._desired_vel_b[:, 2] = self._actions[:, 2] * self.cfg.vel_limit[2]
@@ -300,62 +307,57 @@ class SACDroneEnv(DirectRLEnv):
     # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        """Compute reward.
+        """Compute reward — Phase 2: 6-DOF with heading lock.
 
-        Key design: the drone LOSES reward every step (time penalty), so the
-        only way to score high is to reach the goal FAST. Standing still or
-        spinning in place leads to a large negative total.
+        Design principles:
+          - Full movement freedom (forward, backward, lateral)
+          - Strong heading reward locks gaze on goal at all times
+          - Soft sideslip penalty discourages constant strafing
+          - SUCCESS > CRASH > HOVER ordering preserved
 
         Terms:
-          1. progress   — getting closer to goal (dense)
-          2. goal       — one-time bonus for reaching goal (terminal)
-          3. time       — per-step cost (encourages speed)
-          4. clearance  — depth-center vs depth-mean (obstacle awareness)
-          5. ang_vel    — penalty for spinning
-          6. tilt       — penalty for excessive roll/pitch
-          7. action     — penalty for large actions
-          + collision   — one-time penalty on crash
+          1. progress  — dense: getting closer to goal
+          2. goal      — terminal: one-time bonus for reaching goal
+          3. time      — per-step cost (anti-hesitation)
+          4. heading   — per-step: cos(angle to goal) — gaze lock
+          5. ang_vel   — tiny penalty for spinning
+          6. action    — tiny penalty for jerky actions
+          7. sideslip  — soft penalty for lateral velocity
+          + collision  — one-time penalty on crash
         """
         # Current distance to goal
         curr_dist = torch.linalg.norm(
             self._desired_pos_w - self._robot.data.root_pos_w, dim=1
         )
 
-        # 1. Progress reward
+        # 1. Progress reward (dense breadcrumbs)
         progress = self._prev_dist_to_goal - curr_dist
         self._prev_dist_to_goal = curr_dist.clone()
 
         # 2. Goal reached (one-time terminal)
         reached_goal = (curr_dist < self.cfg.goal_radius).float()
 
-        # 3. Time penalty (constant per-step cost — makes standing still expensive)
+        # 3. Time penalty (constant per-step cost)
         time_penalty = torch.ones(self.num_envs, device=self.device)
 
-        # 4. Hover bonus — reward for slowing down on final approach
-        #    Only within 2x goal_radius so it can't be exploited from far away
-        near_goal = (curr_dist < self.cfg.goal_radius * 1.25).float()
-        vel_sq = torch.sum(self._robot.data.root_lin_vel_b ** 2, dim=1)
-        hover_bonus = near_goal * torch.exp(-2.0 * vel_sq)
+        # 4. Heading alignment — cos(angle between drone heading and goal direction)
+        #    +1 when facing goal, -1 when facing away
+        dx = self._desired_pos_w[:, 0] - self._robot.data.root_pos_w[:, 0]
+        dy = self._desired_pos_w[:, 1] - self._robot.data.root_pos_w[:, 1]
+        target_yaw = torch.atan2(dy, dx)
+        _, _, current_yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
+        heading_error = wrap_to_pi(target_yaw - current_yaw)
+        heading_alignment = torch.cos(heading_error)  # [-1, +1]
 
-        # 5. Depth clearance (center brighter = more open ahead)
-        depth = self._last_depth_processed  # (B, 1, H, W)
-        if depth is not None:
-            h, w = depth.shape[2], depth.shape[3]
-            ch, cw = h // 2, w // 2
-            center = depth[:, :, ch - 8: ch + 8, cw - 8: cw + 8]
-            clearance = center.mean(dim=(1, 2, 3)) - depth.mean(dim=(1, 2, 3))
-        else:
-            clearance = torch.zeros(self.num_envs, device=self.device)
-
-        # 6. Angular velocity penalty
+        # 5. Angular velocity penalty (smooth flight)
         ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
 
-        # 7. Tilt penalty
-        gravity_b = self._robot.data.projected_gravity_b
-        tilt = 1.0 - gravity_b[:, 2].abs()
-
-        # 8. Action magnitude penalty
+        # 6. Action magnitude penalty (smooth commands)
         action_sq = torch.sum(self._actions ** 2, dim=1)
+
+        # 7. Sideslip penalty (lateral velocity damping)
+        lateral_vel = self._robot.data.root_lin_vel_b[:, 1]
+        sideslip_sq = lateral_vel ** 2
 
         # Collision (only on crash, not goal reach)
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
@@ -364,11 +366,10 @@ class SACDroneEnv(DirectRLEnv):
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
             "time": self.cfg.w_time * time_penalty,
-            "hover": self.cfg.w_hover * hover_bonus,
-            "clearance": self.cfg.w_clearance * clearance,
+            "heading": self.cfg.w_heading * heading_alignment,
             "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
-            "tilt": self.cfg.w_tilt * tilt,
             "action": self.cfg.w_action * action_sq,
+            "sideslip": self.cfg.w_sideslip * sideslip_sq,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)

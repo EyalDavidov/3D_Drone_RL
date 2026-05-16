@@ -10,11 +10,11 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
     logger = "wandb"
     wandb_project = "navigation_drone"
 
-    # Actor-Critic network (Standard MLP for Phase 1)
+    # Actor-Critic network (Standard MLP matching SAC)
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[128, 64, 32],
-        critic_hidden_dims=[128, 64, 32],
+        actor_hidden_dims=[256, 256, 256],
+        critic_hidden_dims=[256, 256, 256],
         activation="elu",
     )
 
@@ -22,10 +22,10 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.001,
+        entropy_coef=0.005,  # Slight entropy for exploration
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3,
+        learning_rate=3e-4,  # Matching SAC learning rate
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
