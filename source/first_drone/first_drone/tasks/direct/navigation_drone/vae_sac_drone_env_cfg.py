@@ -76,13 +76,14 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
         collision_props=sim_utils.CollisionPropertiesCfg(),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.15, 0.15)),
     )
-    # Zone-based X randomization: 5 zones across [-2.5, 2.5], 0.52m each, 0.6m gaps
+    # Zone-based X randomization: 5 zones across [-2.0, 2.0], 0.4m each, 0.5m gaps
+    # Original pillars were at [-1.5 .. 1.5]; this adds slight extra range
     pillar_x_zones: tuple = (
-        (-2.50, -1.98),  # Zone 0
-        (-1.38, -0.86),  # Zone 1
-        (-0.26,  0.26),  # Zone 2
-        ( 0.86,  1.38),  # Zone 3
-        ( 1.98,  2.50),  # Zone 4
+        (-2.00, -1.60),  # Zone 0
+        (-1.10, -0.70),  # Zone 1
+        (-0.20,  0.20),  # Zone 2
+        ( 0.70,  1.10),  # Zone 3
+        ( 1.60,  2.00),  # Zone 4
     )
     # Slight Y jitter for depth occlusion — keeps pillars away from spawn/goal
     pillar_y_range: tuple = (-0.2, 0.2)
