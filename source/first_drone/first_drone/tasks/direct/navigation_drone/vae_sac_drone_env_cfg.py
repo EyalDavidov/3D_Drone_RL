@@ -10,7 +10,7 @@ import os
 from first_drone.robots.cf2x import DRONE_CONFIG
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -64,8 +64,29 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Drone"
     )
 
-    # room
-    room_usd_path: str = "D:\\isaac\\3D_Drone_RL\\assets\\room_with_poles.usd"
+    # room — empty room (pillars are now dynamic RigidObjects)
+    room_usd_path: str = "D:\\isaac\\3D_Drone_RL\\assets\\Empty_Room.usd"
+
+    # ---------- Dynamic Pillars (Domain Randomization) ----------
+    num_pillars: int = 5
+    pillar_spawn: sim_utils.CylinderCfg = sim_utils.CylinderCfg(
+        radius=0.1,
+        height=3.0,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.15, 0.15)),
+    )
+    # Zone-based X randomization: 5 zones across [-2.5, 2.5], 0.52m each, 0.6m gaps
+    pillar_x_zones: tuple = (
+        (-2.50, -1.98),  # Zone 0
+        (-1.38, -0.86),  # Zone 1
+        (-0.26,  0.26),  # Zone 2
+        ( 0.86,  1.38),  # Zone 3
+        ( 1.98,  2.50),  # Zone 4
+    )
+    # Slight Y jitter for depth occlusion — keeps pillars away from spawn/goal
+    pillar_y_range: tuple = (-0.2, 0.2)
+    pillar_z: float = 1.5  # pillar center height (3m tall → spans z=0 to z=3)
 
     # camera — 128×72 depth as specified in the paper
     tiled_camera: TiledCameraCfg = TiledCameraCfg(

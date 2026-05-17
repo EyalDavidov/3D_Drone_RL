@@ -31,7 +31,7 @@ except ImportError:
     np = None
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
 from isaaclab.sensors import TiledCamera
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
@@ -127,12 +127,27 @@ class SACDroneEnv(DirectRLEnv):
     # Scene setup
     # ------------------------------------------------------------------
     def _setup_scene(self):
-        """Create drone, room, terrain, camera, and lighting."""
+        """Create drone, room (empty), dynamic pillars, terrain, camera, and lighting."""
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
         room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
         room_cfg.func("/World/envs/env_0/Room", room_cfg)
+
+        # --- Dynamic pillars (spawned as kinematic rigid objects) ---
+        zone_centers = [(lo + hi) / 2.0 for lo, hi in self.cfg.pillar_x_zones]
+        self._pillars = []
+        for i in range(self.cfg.num_pillars):
+            pillar_cfg = RigidObjectCfg(
+                prim_path=f"/World/envs/env_.*/Pillar_{i}",
+                spawn=self.cfg.pillar_spawn,
+                init_state=RigidObjectCfg.InitialStateCfg(
+                    pos=(zone_centers[i], 0.0, self.cfg.pillar_z)
+                ),
+            )
+            pillar = RigidObject(pillar_cfg)
+            self.scene.rigid_objects[f"pillar_{i}"] = pillar
+            self._pillars.append(pillar)
 
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
@@ -396,16 +411,14 @@ class SACDroneEnv(DirectRLEnv):
             | (pos_local[:, 1] > 4.8) | (pos_local[:, 1] < -4.8)
         )
 
-        # Check pillar collisions — circular check with configurable radius
-        # Pillars are at x in [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5] and y = 0
+        # Check dynamic pillar collisions
         pillar_radius = self.cfg.pillar_collision_radius
         hit_pillar = torch.zeros_like(hit_wall)
-        for px in [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]:  # Exact pillar positions from USD
-            dx = pos_local[:, 0] - px
-            dy = pos_local[:, 1] - 0.0
-            dist_sq = dx * dx + dy * dy
-            hit_this_pillar = dist_sq < (pillar_radius * pillar_radius)
-            hit_pillar = hit_pillar | hit_this_pillar
+        for pillar in self._pillars:
+            pillar_pos = pillar.data.root_pos_w[:, :3]
+            # 2D distance (XY) between drone and pillar
+            dist_sq = torch.sum((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]) ** 2, dim=1)
+            hit_pillar = hit_pillar | (dist_sq < (pillar_radius ** 2))
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
@@ -488,6 +501,25 @@ class SACDroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids] - default_root_state[:, :3], dim=1
         )
 
+        # --- Randomize Pillar Positions (Domain Randomization) ---
+        num_resets = len(env_ids)
+        env_origins = self._terrain.env_origins[env_ids]
+        for i, pillar in enumerate(self._pillars):
+            x_lo, x_hi = self.cfg.pillar_x_zones[i]
+            y_lo, y_hi = self.cfg.pillar_y_range
+
+            state = pillar.data.default_root_state[env_ids].clone()
+            state[:, 0] = torch.zeros(num_resets, device=self.device).uniform_(x_lo, x_hi) + env_origins[:, 0]
+            state[:, 1] = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi) + env_origins[:, 1]
+            state[:, 2] = self.cfg.pillar_z + env_origins[:, 2]
+            # Identity quaternion (upright)
+            state[:, 3] = 1.0
+            state[:, 4:7] = 0.0
+            # Zero velocity
+            state[:, 7:] = 0.0
+            pillar.write_root_pose_to_sim(state[:, :7], env_ids)
+            pillar.write_root_velocity_to_sim(state[:, 7:], env_ids)
+
     # ------------------------------------------------------------------
     # Debug vis
     # ------------------------------------------------------------------
@@ -500,7 +532,7 @@ class SACDroneEnv(DirectRLEnv):
                 self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
             self.goal_pos_visualizer.set_visibility(True)
 
-            # Pillar kill-zone visualizers — translucent red cylinders
+            # Pillar kill-zone visualizers — translucent green cylinders
             if not hasattr(self, "pillar_zone_visualizers"):
                 r = self.cfg.pillar_collision_radius
                 pillar_marker_cfg = VisualizationMarkersCfg(
@@ -517,13 +549,6 @@ class SACDroneEnv(DirectRLEnv):
                     },
                 )
                 self.pillar_zone_visualizers = VisualizationMarkers(pillar_marker_cfg)
-
-                # Compute pillar world positions for env 0
-                origin = self._terrain.env_origins[0]
-                self._pillar_vis_positions = torch.tensor(
-                    [[origin[0] + px, origin[1] + 0.0, origin[2] + 1.0] for px in [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]],
-                    device=self.device,
-                )
             self.pillar_zone_visualizers.set_visibility(True)
         else:
             if hasattr(self, "goal_pos_visualizer"):
@@ -534,4 +559,8 @@ class SACDroneEnv(DirectRLEnv):
     def _debug_vis_callback(self, event):
         self.goal_pos_visualizer.visualize(self._desired_pos_w)
         if hasattr(self, "pillar_zone_visualizers"):
-            self.pillar_zone_visualizers.visualize(self._pillar_vis_positions)
+            # Gather real-time pillar positions for env 0 visualization
+            pillar_positions = torch.stack(
+                [p.data.root_pos_w[0, :3] for p in self._pillars], dim=0
+            )
+            self.pillar_zone_visualizers.visualize(pillar_positions)
