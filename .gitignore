@@ -95,3 +95,4 @@ Assets/Warehouse_NVD/
 !logs/sac/sac_drone/16-05_23-33/BEST_checkpoint_84000.pt
 !logs/sac/sac_drone/16-05_22-26/FIRST_STEP2_48000.pt
 !logs/sac/sac_drone/16-05_20-35/BEST_STEP1_checkpoint_48000.pt
+!logs/vae/vae_final.pt
