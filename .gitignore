@@ -55,7 +55,6 @@ _build
 
 # RL-Games
 **/runs/*
-**/logs/*
 **/recordings/*
 
 # Pre-Trained Checkpoints
@@ -78,8 +77,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-logs/
 *.pt
 *.pth
 
@@ -91,6 +88,8 @@ data/
 Assets/Warehouse_NVD/
 
 # Keep important checkpoints
+logs/**
+!logs/**/
 !logs/sac/sac_drone/16-05_23-33/SECOND_BEST_checkpoint_78000.pt
 !logs/sac/sac_drone/16-05_23-33/BEST_checkpoint_84000.pt
 !logs/sac/sac_drone/16-05_22-26/FIRST_STEP2_48000.pt
