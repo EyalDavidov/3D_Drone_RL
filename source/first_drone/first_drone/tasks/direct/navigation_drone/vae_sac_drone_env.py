@@ -16,7 +16,6 @@ Key differences from the PPO camera env:
   - Tracks previous distance for progress reward
   - Exposes raw depth for external VAE training
 """
-
 from __future__ import annotations
 
 import gymnasium as gym
@@ -190,21 +189,31 @@ class SACDroneEnv(DirectRLEnv):
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
-        """Convert high-level SAC navigation actions to low-level motor commands.
-
-        Phase 2: Full 6-DOF movement restored.
-        The drone can move in all directions (forward, backward, lateral).
-        The heading reward (w_heading=1.0) provides a strong soft constraint
-        to keep the drone facing the goal, while sideslip penalty discourages
-        constant lateral flight. Quick dodges are allowed.
-        """
+        """Convert high-level SAC navigation actions to low-level motor commands."""
         self._actions = actions.clone().clamp(-1.0, 1.0)
 
-        # Full freedom: forward/backward + lateral + vertical
+        # =========================================================================
+        # CURRICULUM LEARNING (Toggle between Phase 1 and Phase 2)
+        # =========================================================================
+
+        # --- PHASE 1: Forced Forward Flight (Overcoming Hesitation) ---
+        # Goal: Teach the drone that moving forward is good, ignoring lateral dodges.
+        # UNCOMMENT THIS BLOCK FOR PHASE 1:
+        # self._actions[:, 0] = self._actions[:, 0].clamp(0.0, 1.0)  # No reverse
+        # self._actions[:, 1] = 0.0                                  # No strafing (lateral)
+        # self._desired_vel_b[:, 0] = self._actions[:, 0] * self.cfg.vel_limit[0]
+        # self._desired_vel_b[:, 1] = 0.0
+        # self._desired_vel_b[:, 2] = self._actions[:, 2] * self.cfg.vel_limit[2]
+        # self._target_yaw = wrap_to_pi(self._target_yaw + self._actions[:, 3] * self.cfg.yaw_rate_limit)
+
+        # --- PHASE 2: 6-DOF Release (Agile Navigation & Dodging) ---
+        # Goal: Full freedom to dodge randomized pillars.
+        # UNCOMMENT THIS BLOCK FOR PHASE 2 (Current Default):
         self._desired_vel_b[:, 0] = self._actions[:, 0] * self.cfg.vel_limit[0]
         self._desired_vel_b[:, 1] = self._actions[:, 1] * self.cfg.vel_limit[1]
         self._desired_vel_b[:, 2] = self._actions[:, 2] * self.cfg.vel_limit[2]
         self._target_yaw = wrap_to_pi(self._target_yaw + self._actions[:, 3] * self.cfg.yaw_rate_limit)
+        # =========================================================================
 
         # Prepare low-level controller observation
         lin_vel_b = self._robot.data.root_lin_vel_b
@@ -256,6 +265,7 @@ class SACDroneEnv(DirectRLEnv):
 
         # Step 2: VAE encode (no gradients for RL)
         z_img = self.vae.encode_detached(depth)  # (B, 32)
+        #z_img=torch.zeros_like(z_img)
 
         if getattr(self.cfg, "show_vae_images", False):
             self._show_vae_images(depth)
