@@ -68,26 +68,27 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     room_usd_path: str = "D:\\isaac\\3D_Drone_RL\\assets\\Empty_Room.usd"
 
     # ---------- Dynamic Pillars (Domain Randomization) ----------
-    num_pillars: int = 5
+    num_pillars: int = 6
     pillar_spawn: sim_utils.CylinderCfg = sim_utils.CylinderCfg(
-        radius=0.1,
+        radius=0.05,  # Exactly matching the thickness of poles from the trained map
         height=3.0,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         collision_props=sim_utils.CollisionPropertiesCfg(),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.15, 0.15)),
     )
-    # Zone-based X randomization: 5 zones across [-2.0, 2.0], 0.4m each, 0.5m gaps
-    # Original pillars were at [-1.5 .. 1.5]; this adds slight extra range
+    # Zone-based X randomization: 6 tight zones within the room (±2.5m walls)
+    # With pillar radius 0.05, these zones create dynamic, tight but always passable gaps.
     pillar_x_zones: tuple = (
-        (-2.00, -1.60),  # Zone 0
+        (-1.80, -1.40),  # Zone 0
         (-1.10, -0.70),  # Zone 1
-        (-0.20,  0.20),  # Zone 2
-        ( 0.70,  1.10),  # Zone 3
-        ( 1.60,  2.00),  # Zone 4
+        (-0.40,  0.00),  # Zone 2
+        ( 0.20,  0.60),  # Zone 3
+        ( 0.80,  1.20),  # Zone 4
+        ( 1.40,  1.80),  # Zone 5
     )
-    # Slight Y jitter for depth occlusion — keeps pillars away from spawn/goal
-    pillar_y_range: tuple = (-0.2, 0.2)
-    pillar_z: float = 1.5  # pillar center height (3m tall → spans z=0 to z=3)
+    # Y jitter to make straight lines impossible
+    pillar_y_range: tuple = (-0.3, 0.3)
+    pillar_z: float = 1.5  # pillar center height
 
     # camera — 128×72 depth as specified in the paper
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -166,15 +167,16 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     #   DO NOTHING (500 steps):     0   +0   0  -20  0  = -20   ← worst
     #
     w_progress: float = 20.0
-    w_goal: float = 300.0         # TRIPLED — entering goal is 6x better than staring
+    w_goal: float = 300.0         # DOMINANT — entering goal is the ultimate prize
     w_time: float = -0.04
-    w_heading: float = 0.1        # guidance signal only — 90% cut from Phase 2
-    collision_penalty: float = -30.0
+    w_heading: float = 0.1        # guidance signal only
+    collision_penalty: float = -200.0  # INCREASED DRASTICALLY to make crashing catastrophic
     # Stabilization + lateral damping
-    w_ang_vel: float = -0.005
-    w_action: float = -0.005
+    w_ang_vel: float = -0.1       # INCREASED (was -0.005) to stop the weird spinning habit
+    w_action: float = -0.01       # slightly higher for smoother flights
     w_sideslip: float = -0.2      # soft lateral penalty — allows quick dodges
-    # Goal radius (meters) — reasonable size for catching at speed
-    goal_radius: float = 0.25
-    # Pillar termination radius (meters) — circular distance from pillar center
-    pillar_collision_radius: float = 0.15  # accounts for drone radius (~0.15) + pillar radius (~0.10)
+    # Goal radius (meters) — slightly larger so it doesn't have to spin to brake
+    goal_radius: float = 0.40
+    # Pillar termination radius (meters) — must catch drone-pillar contact
+    # CF2X body ~0.10m radius + Pillar 0.05m radius = 0.15m contact
+    pillar_collision_radius: float = 0.15
