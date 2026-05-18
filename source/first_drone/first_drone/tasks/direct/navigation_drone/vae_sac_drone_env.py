@@ -111,8 +111,7 @@ class SACDroneEnv(DirectRLEnv):
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
-                "progress", "goal", "time", "heading",
-                "ang_vel", "action", "sideslip", "collision",
+                "progress", "goal", "collision",
             ]
         }
 
@@ -332,24 +331,7 @@ class SACDroneEnv(DirectRLEnv):
     # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        """Compute reward — Phase 2: 6-DOF with heading lock.
-
-        Design principles:
-          - Full movement freedom (forward, backward, lateral)
-          - Strong heading reward locks gaze on goal at all times
-          - Soft sideslip penalty discourages constant strafing
-          - SUCCESS > CRASH > HOVER ordering preserved
-
-        Terms:
-          1. progress  — dense: getting closer to goal
-          2. goal      — terminal: one-time bonus for reaching goal
-          3. time      — per-step cost (anti-hesitation)
-          4. heading   — per-step: cos(angle to goal) — gaze lock
-          5. ang_vel   — tiny penalty for spinning
-          6. action    — tiny penalty for jerky actions
-          7. sideslip  — soft penalty for lateral velocity
-          + collision  — one-time penalty on crash
-        """
+        """Compute bare-minimum debugging rewards, with heading guidance."""
         # Current distance to goal
         curr_dist = torch.linalg.norm(
             self._desired_pos_w - self._robot.data.root_pos_w, dim=1
@@ -362,11 +344,7 @@ class SACDroneEnv(DirectRLEnv):
         # 2. Goal reached (one-time terminal)
         reached_goal = (curr_dist < self.cfg.goal_radius).float()
 
-        # 3. Time penalty (constant per-step cost)
-        time_penalty = torch.ones(self.num_envs, device=self.device)
-
-        # 4. Heading alignment — cos(angle between drone heading and goal direction)
-        #    +1 when facing goal, -1 when facing away
+        # 3. Heading alignment — cos(angle between drone heading and goal direction)
         dx = self._desired_pos_w[:, 0] - self._robot.data.root_pos_w[:, 0]
         dy = self._desired_pos_w[:, 1] - self._robot.data.root_pos_w[:, 1]
         target_yaw = torch.atan2(dy, dx)
@@ -374,28 +352,18 @@ class SACDroneEnv(DirectRLEnv):
         heading_error = wrap_to_pi(target_yaw - current_yaw)
         heading_alignment = torch.cos(heading_error)  # [-1, +1]
 
-        # 5. Angular velocity penalty (smooth flight)
+        # 4. Angular velocity penalty (discourage spinning)
         ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
 
-        # 6. Action magnitude penalty (smooth commands)
-        action_sq = torch.sum(self._actions ** 2, dim=1)
-
-        # 7. Sideslip penalty (lateral velocity damping)
-        lateral_vel = self._robot.data.root_lin_vel_b[:, 1]
-        sideslip_sq = lateral_vel ** 2
-
-        # Collision (only on crash, not goal reach)
+        # Collision
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
 
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
-            "time": self.cfg.w_time * time_penalty,
+            "collision": self.cfg.collision_penalty * died_from_crash,
             "heading": self.cfg.w_heading * heading_alignment,
             "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
-            "action": self.cfg.w_action * action_sq,
-            "sideslip": self.cfg.w_sideslip * sideslip_sq,
-            "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -415,10 +383,11 @@ class SACDroneEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
-        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.0)
+        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 1.9)
+        # Box bounds for Empty_Room.usd: Y is from -2.0 to ~2.0, X is from -2.5 to ~2.5
         hit_wall = (
-            (pos_local[:, 0] > 4.8) | (pos_local[:, 0] < -4.8)
-            | (pos_local[:, 1] > 4.8) | (pos_local[:, 1] < -4.8)
+            (pos_local[:, 0] > 1.87) | (pos_local[:, 0] < -1.87)
+            | (pos_local[:, 1] > 1.87) | (pos_local[:, 1] < -1.87)
         )
 
         # Check dynamic pillar collisions
@@ -442,7 +411,7 @@ class SACDroneEnv(DirectRLEnv):
     # Reset
     # ------------------------------------------------------------------
     def _reset_idx(self, env_ids: torch.Tensor | None):
-        """Reset environments. Drone at y=+1, goal at y=-1."""
+        """Reset environments with 4 randomized states to prevent directional bias."""
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
@@ -466,24 +435,81 @@ class SACDroneEnv(DirectRLEnv):
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
 
-        # NOTE: Do NOT randomize episode_length_buf for SAC.
-        # The PPO pattern of staggering resets is harmful here — it causes
-        # some envs to timeout almost immediately, producing useless transitions.
-
         self._actions[env_ids] = 0.0
 
-        # --- Goal position ---
-        self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.0, 1.0)
-        self._desired_pos_w[env_ids, 0] += self._terrain.env_origins[env_ids, 0]
+        # =========================================================================
+        # SPAWN RANDOMIZATION (PHASE 1 vs PHASE 2 NEW)
+        # =========================================================================
+
+        # --- PHASE 1: Single Direction Spawn ---
+        # UNCOMMENT THIS BLOCK FOR PHASE 1:
+        default_root_state = self._robot.data.default_root_state[env_ids].clone()
+        self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.0, 1.0) + self._terrain.env_origins[env_ids, 0]
         self._desired_pos_w[env_ids, 1] = -1.0 + self._terrain.env_origins[env_ids, 1]
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-
-        # --- Robot spawn position ---
-        default_root_state = self._robot.data.default_root_state[env_ids].clone()
         spawn_x = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
         default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
         default_root_state[:, 1] = 1.0 + self._terrain.env_origins[env_ids, 1]
         default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
+
+        # --- PHASE 2 NEW: 4-State Direction Randomization (Break Directional Bias) ---
+        # UNCOMMENT THIS BLOCK FOR PHASE 2 NEW (Current Default):
+        # default_root_state = self._robot.data.default_root_state[env_ids].clone()
+        # origins = self._terrain.env_origins[env_ids]
+        # num_resets = env_ids.shape[0]
+        # # Hardcode to state 2 (Left to Right) as requested
+        # spawn_states = torch.full((num_resets,), 2, dtype=torch.long, device=self.device)
+        # 
+        # # Initialize tensors
+        # spawn_x = torch.zeros(num_resets, device=self.device)
+        # spawn_y = torch.zeros(num_resets, device=self.device)
+        # goal_x = torch.zeros(num_resets, device=self.device)
+        # goal_y = torch.zeros(num_resets, device=self.device)
+        # 
+        # # State 0 (Top to Bottom): Drone Y ~1.0, Goal Y ~-1.0
+        # mask_0 = (spawn_states == 0)
+        # num_0 = int(mask_0.sum().item())
+        # if num_0 > 0:
+        #     spawn_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
+        #     spawn_y[mask_0] = 1.2
+        #     goal_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
+        #     goal_y[mask_0] = -1.2
+        # 
+        # # State 1 (Bottom to Top): Drone Y ~-1.0, Goal Y ~1.0
+        # mask_1 = (spawn_states == 1)
+        # num_1 = int(mask_1.sum().item())
+        # if num_1 > 0:
+        #     spawn_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
+        #     spawn_y[mask_1] = -1.2
+        #     goal_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
+        #     goal_y[mask_1] = 1.2
+        # 
+        # # State 2 (Left to Right): Drone X ~-1.5, Goal X ~1.5
+        # mask_2 = (spawn_states == 2)
+        # num_2 = int(mask_2.sum().item())
+        # if num_2 > 0:
+        #     spawn_x[mask_2] = -1.8
+        #     spawn_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
+        #     goal_x[mask_2] = 1.8
+        #     goal_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
+        # 
+        # # State 3 (Right to Left): Drone X ~1.5, Goal X ~-1.5
+        # mask_3 = (spawn_states == 3)
+        # num_3 = int(mask_3.sum().item())
+        # if num_3 > 0:
+        #     spawn_x[mask_3] = 1.8
+        #     spawn_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
+        #     goal_x[mask_3] = -1.8
+        #     goal_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
+        # 
+        # # Apply positions
+        # self._desired_pos_w[env_ids, 0] = goal_x + origins[:, 0]
+        # self._desired_pos_w[env_ids, 1] = goal_y + origins[:, 1]
+        # self._desired_pos_w[env_ids, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
+        # 
+        # default_root_state[:, 0] = spawn_x + origins[:, 0]
+        # default_root_state[:, 1] = spawn_y + origins[:, 1]
+        # default_root_state[:, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
 
         # --- Orient drone to face the goal ---
         # Compute yaw angle from drone spawn → goal
@@ -512,15 +538,25 @@ class SACDroneEnv(DirectRLEnv):
         )
 
         # --- Randomize Pillar Positions (Domain Randomization) ---
-        num_resets = len(env_ids)
+        num_resets = env_ids.shape[0]
         env_origins = self._terrain.env_origins[env_ids]
+        
+        # Mask for travel axis to swap pillar arrangement
+        # mask_y_travel = (spawn_states == 0) | (spawn_states == 1)
+        # mask_x_travel = (spawn_states == 2) | (spawn_states == 3)
+
         for i, pillar in enumerate(self._pillars):
             x_lo, x_hi = self.cfg.pillar_x_zones[i]
             y_lo, y_hi = self.cfg.pillar_y_range
 
             state = pillar.data.default_root_state[env_ids].clone()
-            state[:, 0] = torch.zeros(num_resets, device=self.device).uniform_(x_lo, x_hi) + env_origins[:, 0]
-            state[:, 1] = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi) + env_origins[:, 1]
+            
+            # Standard Y-axis travel logic (Phase 1)
+            pillar_x = torch.zeros(num_resets, device=self.device).uniform_(x_lo, x_hi)
+            pillar_y = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi)
+
+            state[:, 0] = pillar_x + env_origins[:, 0]
+            state[:, 1] = pillar_y + env_origins[:, 1]
             state[:, 2] = self.cfg.pillar_z + env_origins[:, 2]
             # Identity quaternion (upright)
             state[:, 3] = 1.0
