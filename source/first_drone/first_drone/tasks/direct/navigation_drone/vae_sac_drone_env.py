@@ -479,7 +479,8 @@ class SACDroneEnv(DirectRLEnv):
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
         spawn_x = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
         default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
-        default_root_state[:, 1] = 1.0 + self._terrain.env_origins[env_ids, 1]
+        # Drive spawn Y offset from configuration so it can spawn closer to target Y = -1.0
+        default_root_state[:, 1] = self.cfg.spawn_y_offset + self._terrain.env_origins[env_ids, 1]
         default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
 
         # --- PHASE 2 NEW: 4-State Direction Randomization (Break Directional Bias) ---
@@ -634,7 +635,7 @@ class SACDroneEnv(DirectRLEnv):
 
     def _debug_vis_callback(self, event):
         self.goal_pos_visualizer.visualize(self._desired_pos_w)
-        if hasattr(self, "pillar_zone_visualizers"):
+        if hasattr(self, "pillar_zone_visualizers") and len(self._pillars) > 0:
             # Gather real-time pillar positions for env 0 visualization
             pillar_positions = torch.stack(
                 [p.data.root_pos_w[0, :3] for p in self._pillars], dim=0
