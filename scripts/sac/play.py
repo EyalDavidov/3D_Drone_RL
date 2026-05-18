@@ -136,9 +136,11 @@ def main():
             # Use pre-step distance (before the automatic reset moved everything) for display
             dist = pre_dist[idx].item()
             
-            # Phase 2.1: SUCCESS ~354, HOVER+STARE ~65, CRASH ~1, NOTHING ~-20
-            # Threshold 100 cleanly separates real goal-reaching from hacking/crashing
-            was_success = ep_reward > 100.0
+            # Dynamic success threshold based on curriculum phase (Phase 1 vs Phase 2)
+            # If w_goal is 300, threshold is 150. If w_goal is 50, threshold is 25.
+            # This ensures success rate is accurately reported regardless of the training phase.
+            success_threshold = env_cfg.w_goal * 0.5
+            was_success = ep_reward > success_threshold
 
             status = "SUCCESS" if was_success else ("CRASH" if terminated[idx] else "TIMEOUT")
             if was_success:
