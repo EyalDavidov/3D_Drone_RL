@@ -69,6 +69,6 @@ class NavigationDroneEnvCfg(DirectRLEnvCfg):
     goal_radius = 0.1
 
     # ---------- Low Level Integration ----------
-    llc_checkpoint_path = r"C:\Isaac\Projects\first_drone\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
+    llc_checkpoint_path = r"./logs/rsl_rl/flight_controller_drone_direct/Flight_Controller/exported/policy.pt"
     thrust_to_weight = 1.9
     moment_scale = 0.01
