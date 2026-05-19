@@ -465,65 +465,6 @@ class SACDroneEnv(DirectRLEnv):
         default_root_state[:, 1] = self.cfg.spawn_y_offset + self._terrain.env_origins[env_ids, 1]
         default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
 
-        # --- PHASE 2 NEW: 4-State Direction Randomization (Break Directional Bias) ---
-        # UNCOMMENT THIS BLOCK FOR PHASE 2 NEW (Current Default):
-        default_root_state = self._robot.data.default_root_state[env_ids].clone()
-        origins = self._terrain.env_origins[env_ids]
-        num_resets = env_ids.shape[0]
-        # Generate random state [0, 1, 2, 3] for each environment resetting
-        spawn_states = torch.randint(0, 4, (num_resets,), device=self.device)
-
-        # Initialize tensors
-        spawn_x = torch.zeros(num_resets, device=self.device)
-        spawn_y = torch.zeros(num_resets, device=self.device)
-        goal_x = torch.zeros(num_resets, device=self.device)
-        goal_y = torch.zeros(num_resets, device=self.device)
-
-        # State 0 (Top to Bottom): Drone Y ~1.0, Goal Y ~-1.0
-        mask_0 = (spawn_states == 0)
-        num_0 = int(mask_0.sum().item())
-        if num_0 > 0:
-            spawn_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
-            spawn_y[mask_0] = 1.2
-            goal_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
-            goal_y[mask_0] = -1.2
-
-        # State 1 (Bottom to Top): Drone Y ~-1.0, Goal Y ~1.0
-        mask_1 = (spawn_states == 1)
-        num_1 = int(mask_1.sum().item())
-        if num_1 > 0:
-            spawn_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
-            spawn_y[mask_1] = -1.2
-            goal_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
-            goal_y[mask_1] = 1.2
-
-        # State 2 (Left to Right): Drone X ~-1.5, Goal X ~1.5
-        mask_2 = (spawn_states == 2)
-        num_2 = int(mask_2.sum().item())
-        if num_2 > 0:
-            spawn_x[mask_2] = -1.8
-            spawn_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
-            goal_x[mask_2] = 1.8
-            goal_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
-
-        # State 3 (Right to Left): Drone X ~1.5, Goal X ~-1.5
-        mask_3 = (spawn_states == 3)
-        num_3 = int(mask_3.sum().item())
-        if num_3 > 0:
-            spawn_x[mask_3] = 1.8
-            spawn_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
-            goal_x[mask_3] = -1.8
-            goal_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
-
-        # Apply positions
-        self._desired_pos_w[env_ids, 0] = goal_x + origins[:, 0]
-        self._desired_pos_w[env_ids, 1] = goal_y + origins[:, 1]
-        self._desired_pos_w[env_ids, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
-
-        default_root_state[:, 0] = spawn_x + origins[:, 0]
-        default_root_state[:, 1] = spawn_y + origins[:, 1]
-        default_root_state[:, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
-
         # --- Orient drone to face the goal ---
         # Compute yaw angle from drone spawn → goal
         dx = self._desired_pos_w[env_ids, 0] - default_root_state[:, 0]
@@ -554,32 +495,14 @@ class SACDroneEnv(DirectRLEnv):
         num_resets = env_ids.shape[0]
         env_origins = self._terrain.env_origins[env_ids]
         
-        # Mask for travel axis to swap pillar arrangement
-        # States 0, 1 travel along Y axis (X is horizontal gap, Y is depth)
-        mask_y_travel = (spawn_states == 0) | (spawn_states == 1)
-        # States 2, 3 travel along X axis (Y is horizontal gap, X is depth)
-        mask_x_travel = (spawn_states == 2) | (spawn_states == 3)
-
         for i, pillar in enumerate(self._pillars):
             x_lo, x_hi = self.cfg.pillar_x_zones[i]
             y_lo, y_hi = self.cfg.pillar_y_range
 
             state = pillar.data.default_root_state[env_ids].clone()
             
-            pillar_x = torch.zeros(num_resets, device=self.device)
-            pillar_y = torch.zeros(num_resets, device=self.device)
-
-            # For Y-axis travel (standard)
-            num_y = int(mask_y_travel.sum().item())
-            if num_y > 0:
-                pillar_x[mask_y_travel] = torch.zeros(num_y, device=self.device).uniform_(x_lo, x_hi)
-                pillar_y[mask_y_travel] = torch.zeros(num_y, device=self.device).uniform_(y_lo, y_hi)
-
-            # For X-axis travel (swapped: X=depth, Y=horizontal)
-            num_x = int(mask_x_travel.sum().item())
-            if num_x > 0:
-                pillar_x[mask_x_travel] = torch.zeros(num_x, device=self.device).uniform_(y_lo, y_hi)
-                pillar_y[mask_x_travel] = torch.zeros(num_x, device=self.device).uniform_(x_lo, x_hi)
+            pillar_x = torch.zeros(num_resets, device=self.device).uniform_(x_lo, x_hi)
+            pillar_y = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi)
 
             state[:, 0] = pillar_x + env_origins[:, 0]
             state[:, 1] = pillar_y + env_origins[:, 1]

@@ -68,7 +68,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     room_usd_path: str = "D:\\isaac\\3D_Drone_RL\\assets\\Empty_Room.usd"
 
     # ---------- Dynamic Pillars (Domain Randomization) ----------
-    num_pillars: int = 0
+    num_pillars: int = 6
     pillar_spawn: sim_utils.CylinderCfg = sim_utils.CylinderCfg(
         radius=0.05,  # Exactly matching the thickness of poles from the trained map
         height=3.0,
@@ -168,7 +168,6 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     pillar_collision_radius: float = 0.15
 
     # ---------- Curriculum Spawn (Phase 1) ----------
-    # Move drone spawn Y closer to target Y = -1.0. (Distance = |spawn_y_offset - (-1.0)|)
-    # Default Phase 1 was 1.0 (2.0 meters away). We set it closer to target for early training.
-    spawn_y_offset: float = -0.5
+    # Move drone spawn Y closer to target Y = -1.0. 
+    spawn_y_offset: float = 1.0
     # =========================================================================
