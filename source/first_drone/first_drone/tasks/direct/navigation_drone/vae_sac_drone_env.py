@@ -12,7 +12,7 @@ and its detached latent is fed to SAC.
 
 Key differences from the PPO camera env:
   - Observations are flat vectors (VAE-encoded), not raw images
-  - Reward function has 7 terms (progress, goal, vel_align, proximity, time, collision, ang_vel)
+  - Reward function has 7 terms (progress, goal, hover, clearance, ang_vel, tilt, action)
   - Tracks previous distance for progress reward
   - Exposes raw depth for external VAE training
 """
@@ -112,7 +112,6 @@ class SACDroneEnv(DirectRLEnv):
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
                 "progress", "goal", "collision",
-                "vel_align", "proximity", "time",
             ]
         }
 
@@ -332,56 +331,39 @@ class SACDroneEnv(DirectRLEnv):
     # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        """Compute rewards: progress, goal, velocity alignment, proximity, time, collision."""
+        """Compute rewards matching the CFG weights exactly."""
         # Current distance to goal
         curr_dist = torch.linalg.norm(
             self._desired_pos_w - self._robot.data.root_pos_w, dim=1
         )
 
-        # 1. Progress reward (dense breadcrumbs)
+        # 1. Progress reward
         progress = self._prev_dist_to_goal - curr_dist
         self._prev_dist_to_goal = curr_dist.clone()
 
-        # 2. Goal reached (one-time terminal)
+        # 2. Goal reached
         reached_goal = (curr_dist < self.cfg.goal_radius).float()
 
-        # 3. Velocity Alignment — cos(angle between velocity and drone→goal vector) × speed
-        vel_w = self._robot.data.root_lin_vel_w                       # (B, 3)
-        to_goal_w = self._desired_pos_w - self._robot.data.root_pos_w  # (B, 3)
-        speed = torch.linalg.norm(vel_w, dim=1)                        # (B,)
-        dot = torch.sum(vel_w * to_goal_w, dim=1)                      # (B,)
-        cos_sim = dot / (speed * curr_dist + 1e-6)                     # (B,) in [-1, +1]
-        # Scale by normalized speed so hovering gives ~0 reward
-        speed_factor = (speed / self.cfg.vel_align_max_speed).clamp(0.0, 1.0)
-        velocity_alignment = cos_sim * speed_factor                    # (B,) in [-1, +1]
+        # 3. Velocity alignment (vector towards goal dot robot velocity)
+        dir_to_goal = self._desired_pos_w[:, :2] - self._robot.data.root_pos_w[:, :2]
+        dir_to_goal = torch.nn.functional.normalize(dir_to_goal, dim=1)
+        vel_w = self._robot.data.root_lin_vel_w[:, :2]
+        vel_align = torch.sum(vel_w * dir_to_goal, dim=1)
+        # Normalize by max speed
+        vel_align = (vel_align / self.cfg.vel_align_max_speed).clamp(max=1.0)
 
-        # 4. Proximity Penalty — graduated penalty when inside pillar danger zone
-        #    Penalty linearly interpolates from -0.5 (zone edge) to -1.0 (collision surface)
-        proximity_penalty = torch.zeros(self.num_envs, device=self.device)
+        # 4. Proximity penalty (distance to closest pillar)
+        min_dist_to_pillar = torch.full((self.num_envs,), float('inf'), device=self.device)
         for pillar in self._pillars:
-            pillar_xy = pillar.data.root_pos_w[:, :2]
-            drone_xy = self._robot.data.root_pos_w[:, :2]
-            dist_2d = torch.linalg.norm(drone_xy - pillar_xy, dim=1)  # (B,)
+            dist = torch.linalg.norm(self._robot.data.root_pos_w[:, :2] - pillar.data.root_pos_w[:, :2], dim=1)
+            min_dist_to_pillar = torch.min(min_dist_to_pillar, dist)
+        proximity_penalty = torch.clamp(self.cfg.pillar_proximity_radius - min_dist_to_pillar, min=0.0)
 
-            # penetration: 0 at zone edge, 1 at collision surface
-            penetration = 1.0 - (dist_2d - self.cfg.pillar_collision_radius) / (
-                self.cfg.pillar_proximity_radius - self.cfg.pillar_collision_radius
-            )
-            penetration = penetration.clamp(0.0, 1.0)
-
-            # Map to [-0.5, -1.0] only inside the zone
-            pillar_pen = -0.5 - 0.5 * penetration
-            in_zone = dist_2d < self.cfg.pillar_proximity_radius
-            pillar_pen = torch.where(in_zone, pillar_pen, torch.zeros_like(pillar_pen))
-
-            # Keep worst (most negative) penalty across all pillars
-            proximity_penalty = torch.min(proximity_penalty, pillar_pen)
-
-        # 5. Time penalty (flat per-step cost to encourage speed)
-        time_penalty = torch.ones(self.num_envs, device=self.device)
-
-        # 6. Angular velocity penalty (discourage spinning)
+        # 5. Angular velocity penalty (discourage spinning)
         ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
+
+        # 6. Time penalty
+        time_penalty = torch.ones(self.num_envs, device=self.device)
 
         # Collision
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
@@ -390,10 +372,10 @@ class SACDroneEnv(DirectRLEnv):
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
             "collision": self.cfg.collision_penalty * died_from_crash,
-            "vel_align": self.cfg.w_vel_align * velocity_alignment,
-            "proximity": self.cfg.w_proximity * proximity_penalty,
-            "time": self.cfg.w_time * time_penalty,
+            "vel_align": self.cfg.w_vel_align * vel_align,
+            "proximity": -abs(self.cfg.w_proximity) * proximity_penalty,
             "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
+            "time": self.cfg.w_time * time_penalty,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -485,62 +467,62 @@ class SACDroneEnv(DirectRLEnv):
 
         # --- PHASE 2 NEW: 4-State Direction Randomization (Break Directional Bias) ---
         # UNCOMMENT THIS BLOCK FOR PHASE 2 NEW (Current Default):
-        # default_root_state = self._robot.data.default_root_state[env_ids].clone()
-        # origins = self._terrain.env_origins[env_ids]
-        # num_resets = env_ids.shape[0]
-        # # Hardcode to state 2 (Left to Right) as requested
-        # spawn_states = torch.full((num_resets,), 2, dtype=torch.long, device=self.device)
-        # 
-        # # Initialize tensors
-        # spawn_x = torch.zeros(num_resets, device=self.device)
-        # spawn_y = torch.zeros(num_resets, device=self.device)
-        # goal_x = torch.zeros(num_resets, device=self.device)
-        # goal_y = torch.zeros(num_resets, device=self.device)
-        # 
-        # # State 0 (Top to Bottom): Drone Y ~1.0, Goal Y ~-1.0
-        # mask_0 = (spawn_states == 0)
-        # num_0 = int(mask_0.sum().item())
-        # if num_0 > 0:
-        #     spawn_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
-        #     spawn_y[mask_0] = 1.2
-        #     goal_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
-        #     goal_y[mask_0] = -1.2
-        # 
-        # # State 1 (Bottom to Top): Drone Y ~-1.0, Goal Y ~1.0
-        # mask_1 = (spawn_states == 1)
-        # num_1 = int(mask_1.sum().item())
-        # if num_1 > 0:
-        #     spawn_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
-        #     spawn_y[mask_1] = -1.2
-        #     goal_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
-        #     goal_y[mask_1] = 1.2
-        # 
-        # # State 2 (Left to Right): Drone X ~-1.5, Goal X ~1.5
-        # mask_2 = (spawn_states == 2)
-        # num_2 = int(mask_2.sum().item())
-        # if num_2 > 0:
-        #     spawn_x[mask_2] = -1.8
-        #     spawn_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
-        #     goal_x[mask_2] = 1.8
-        #     goal_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
-        # 
-        # # State 3 (Right to Left): Drone X ~1.5, Goal X ~-1.5
-        # mask_3 = (spawn_states == 3)
-        # num_3 = int(mask_3.sum().item())
-        # if num_3 > 0:
-        #     spawn_x[mask_3] = 1.8
-        #     spawn_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
-        #     goal_x[mask_3] = -1.8
-        #     goal_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
-        # 
-        # # Apply positions
-        # self._desired_pos_w[env_ids, 0] = goal_x + origins[:, 0]
-        # self._desired_pos_w[env_ids, 1] = goal_y + origins[:, 1]
-        # self._desired_pos_w[env_ids, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
-        # 
-        # default_root_state[:, 0] = spawn_x + origins[:, 0]
-        # default_root_state[:, 1] = spawn_y + origins[:, 1]
-        # default_root_state[:, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
+        default_root_state = self._robot.data.default_root_state[env_ids].clone()
+        origins = self._terrain.env_origins[env_ids]
+        num_resets = env_ids.shape[0]
+        # Generate random state [0, 1, 2, 3] for each environment resetting
+        spawn_states = torch.randint(0, 4, (num_resets,), device=self.device)
+
+        # Initialize tensors
+        spawn_x = torch.zeros(num_resets, device=self.device)
+        spawn_y = torch.zeros(num_resets, device=self.device)
+        goal_x = torch.zeros(num_resets, device=self.device)
+        goal_y = torch.zeros(num_resets, device=self.device)
+
+        # State 0 (Top to Bottom): Drone Y ~1.0, Goal Y ~-1.0
+        mask_0 = (spawn_states == 0)
+        num_0 = int(mask_0.sum().item())
+        if num_0 > 0:
+            spawn_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
+            spawn_y[mask_0] = 1.2
+            goal_x[mask_0] = torch.zeros(num_0, device=self.device).uniform_(-1.0, 1.0)
+            goal_y[mask_0] = -1.2
+
+        # State 1 (Bottom to Top): Drone Y ~-1.0, Goal Y ~1.0
+        mask_1 = (spawn_states == 1)
+        num_1 = int(mask_1.sum().item())
+        if num_1 > 0:
+            spawn_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
+            spawn_y[mask_1] = -1.2
+            goal_x[mask_1] = torch.zeros(num_1, device=self.device).uniform_(-1.0, 1.0)
+            goal_y[mask_1] = 1.2
+
+        # State 2 (Left to Right): Drone X ~-1.5, Goal X ~1.5
+        mask_2 = (spawn_states == 2)
+        num_2 = int(mask_2.sum().item())
+        if num_2 > 0:
+            spawn_x[mask_2] = -1.8
+            spawn_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
+            goal_x[mask_2] = 1.8
+            goal_y[mask_2] = torch.zeros(num_2, device=self.device).uniform_(-0.8, 0.8)
+
+        # State 3 (Right to Left): Drone X ~1.5, Goal X ~-1.5
+        mask_3 = (spawn_states == 3)
+        num_3 = int(mask_3.sum().item())
+        if num_3 > 0:
+            spawn_x[mask_3] = 1.8
+            spawn_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
+            goal_x[mask_3] = -1.8
+            goal_y[mask_3] = torch.zeros(num_3, device=self.device).uniform_(-0.8, 0.8)
+
+        # Apply positions
+        self._desired_pos_w[env_ids, 0] = goal_x + origins[:, 0]
+        self._desired_pos_w[env_ids, 1] = goal_y + origins[:, 1]
+        self._desired_pos_w[env_ids, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
+
+        default_root_state[:, 0] = spawn_x + origins[:, 0]
+        default_root_state[:, 1] = spawn_y + origins[:, 1]
+        default_root_state[:, 2] = torch.zeros(num_resets, device=self.device).uniform_(0.5, 1.5)
 
         # --- Orient drone to face the goal ---
         # Compute yaw angle from drone spawn → goal
@@ -573,8 +555,10 @@ class SACDroneEnv(DirectRLEnv):
         env_origins = self._terrain.env_origins[env_ids]
         
         # Mask for travel axis to swap pillar arrangement
-        # mask_y_travel = (spawn_states == 0) | (spawn_states == 1)
-        # mask_x_travel = (spawn_states == 2) | (spawn_states == 3)
+        # States 0, 1 travel along Y axis (X is horizontal gap, Y is depth)
+        mask_y_travel = (spawn_states == 0) | (spawn_states == 1)
+        # States 2, 3 travel along X axis (Y is horizontal gap, X is depth)
+        mask_x_travel = (spawn_states == 2) | (spawn_states == 3)
 
         for i, pillar in enumerate(self._pillars):
             x_lo, x_hi = self.cfg.pillar_x_zones[i]
@@ -582,9 +566,20 @@ class SACDroneEnv(DirectRLEnv):
 
             state = pillar.data.default_root_state[env_ids].clone()
             
-            # Standard Y-axis travel logic (Phase 1)
-            pillar_x = torch.zeros(num_resets, device=self.device).uniform_(x_lo, x_hi)
-            pillar_y = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi)
+            pillar_x = torch.zeros(num_resets, device=self.device)
+            pillar_y = torch.zeros(num_resets, device=self.device)
+
+            # For Y-axis travel (standard)
+            num_y = int(mask_y_travel.sum().item())
+            if num_y > 0:
+                pillar_x[mask_y_travel] = torch.zeros(num_y, device=self.device).uniform_(x_lo, x_hi)
+                pillar_y[mask_y_travel] = torch.zeros(num_y, device=self.device).uniform_(y_lo, y_hi)
+
+            # For X-axis travel (swapped: X=depth, Y=horizontal)
+            num_x = int(mask_x_travel.sum().item())
+            if num_x > 0:
+                pillar_x[mask_x_travel] = torch.zeros(num_x, device=self.device).uniform_(y_lo, y_hi)
+                pillar_y[mask_x_travel] = torch.zeros(num_x, device=self.device).uniform_(x_lo, x_hi)
 
             state[:, 0] = pillar_x + env_origins[:, 0]
             state[:, 1] = pillar_y + env_origins[:, 1]
