@@ -77,6 +77,13 @@ class SACRunner:
         # VAE warmup length
         self.vae_training_steps = getattr(self.cfg, "vae_training_steps", self.cfg.sac_warmup_steps)
 
+        # Per-env episode trajectory accumulators (for full-trajectory success buffer)
+        self._ep_obs = [[] for _ in range(self.num_envs)]
+        self._ep_act = [[] for _ in range(self.num_envs)]
+        self._ep_rew = [[] for _ in range(self.num_envs)]
+        self._ep_nobs = [[] for _ in range(self.num_envs)]
+        self._ep_done = [[] for _ in range(self.num_envs)]
+
         # Wandb handle (initialized lazily in learn())
         self._wandb_run = None
 
@@ -167,17 +174,25 @@ class SACRunner:
         depth_buffer = []
         max_depth_buffer = 50  # ~115 MB on CPU for 1024 envs (was 100)
 
-        # Episode tracking
+        # Episode tracking (for interval statistics)
         episode_rewards = torch.zeros(self.num_envs, device=self.device)
         episode_lengths = torch.zeros(self.num_envs, device=self.device)
-        completed_episodes = 0
-        total_reward_sum = 0.0
+        interval_completed_episodes = 0
+        interval_reward_sum = 0.0
+        interval_length_sum = 0.0
 
+        # Timing
         start_time = time.time()
+        interval_start_time = time.time()
+        collection_time = 0.0
+        learning_time = 0.0
+
         print(f"[INFO] Starting SAC training for {max_steps} steps "
               f"(VAE warmup: {self.vae_training_steps} steps)")
 
         for step in range(start_step, max_steps):
+            t_col_start = time.time()
+
             # ---- Act ----
             if step < self.vae_training_steps:
                 actions = torch.rand(self.num_envs, self.action_dim, device=self.device) * 2 - 1
@@ -193,32 +208,62 @@ class SACRunner:
             episode_rewards += rewards
             episode_lengths += 1
 
-            # Determine success
+            # Determine success (per-env, at this instant)
             dist_to_goal = torch.linalg.norm(
                 self.unwrapped._desired_pos_w - self.unwrapped._robot.data.root_pos_w, dim=1
             )
             success = dist_to_goal < self.unwrapped.cfg.goal_radius
 
-            # Store transition
-            self.replay.add(obs, actions, rewards, next_obs, dones.float(), success)
+            # Store transition in regular buffer
+            self.replay.add(obs, actions, rewards, next_obs, dones.float())
 
             # Collect depth for VAE training (store on CPU to save GPU memory)
-            # We ONLY collect this if we are actively training the VAE, otherwise this GPU->CPU transfer blocks and slows down training heavily!
             if getattr(self.cfg, "train_vae", True) and self.unwrapped._last_depth_processed is not None:
                 depth_buffer.append(self.unwrapped._last_depth_processed.detach().cpu())
                 if len(depth_buffer) > max_depth_buffer:
                     depth_buffer.pop(0)
 
-            # Log completed episodes
+            # Accumulate per-env trajectory and flush on episode end
+            for i in range(self.num_envs):
+                self._ep_obs[i].append(obs[i].unsqueeze(0))
+                self._ep_act[i].append(actions[i].unsqueeze(0))
+                self._ep_rew[i].append(rewards[i].unsqueeze(0))
+                self._ep_nobs[i].append(next_obs[i].unsqueeze(0))
+                self._ep_done[i].append(dones[i].float().unsqueeze(0))
+
+            # Flush completed episodes
             done_mask = dones.nonzero(as_tuple=False).squeeze(-1)
             if len(done_mask) > 0:
                 for idx in done_mask:
-                    total_reward_sum += episode_rewards[idx].item()
-                    completed_episodes += 1
+                    i = idx.item()
+                    # If this episode was successful, flush full trajectory to success buffer
+                    if success[i]:
+                        traj_obs = torch.cat(self._ep_obs[i], dim=0)
+                        traj_act = torch.cat(self._ep_act[i], dim=0)
+                        traj_rew = torch.cat(self._ep_rew[i], dim=0)
+                        traj_nobs = torch.cat(self._ep_nobs[i], dim=0)
+                        traj_done = torch.cat(self._ep_done[i], dim=0)
+                        self.replay.add_success_trajectory(
+                            traj_obs, traj_act, traj_rew, traj_nobs, traj_done
+                        )
+                    # Clear episode accumulator
+                    self._ep_obs[i].clear()
+                    self._ep_act[i].clear()
+                    self._ep_rew[i].clear()
+                    self._ep_nobs[i].clear()
+                    self._ep_done[i].clear()
+
+                    interval_reward_sum += episode_rewards[i].item()
+                    interval_length_sum += episode_lengths[i].item()
+                    interval_completed_episodes += 1
                 episode_rewards[done_mask] = 0.0
                 episode_lengths[done_mask] = 0.0
 
+            t_col_end = time.time()
+            collection_time += (t_col_end - t_col_start)
+
             # ---- Update networks ----
+            t_learn_start = time.time()
             sac_logs = {}
             vae_logs = {}
 
@@ -233,10 +278,23 @@ class SACRunner:
                     sac_logs = self._update_sac()
                     vae_logs = self._update_vae(depth_buffer)
 
+            t_learn_end = time.time()
+            learning_time += (t_learn_end - t_learn_start)
+
             # ---- Console & Wandb logging ----
-            if step % 500 == 0:
-                self._log_step(step, max_steps, start_time, completed_episodes,
-                               total_reward_sum, sac_logs, vae_logs)
+            log_interval = getattr(self.cfg, "log_interval", 100)
+            if step > start_step and step % log_interval == 0:
+                self._log_step(step, max_steps, start_time, interval_start_time,
+                               collection_time, learning_time, interval_completed_episodes,
+                               interval_reward_sum, interval_length_sum, sac_logs, vae_logs, log_interval)
+                
+                # Reset interval stats
+                interval_reward_sum = 0.0
+                interval_length_sum = 0.0
+                interval_completed_episodes = 0
+                collection_time = 0.0
+                learning_time = 0.0
+                interval_start_time = time.time()
 
             # ---- Save checkpoint ----
             if step > 0 and step % self.cfg.save_interval == 0:
@@ -311,26 +369,51 @@ class SACRunner:
         return sac_logs
 
     def _log_step(self, step: int, max_steps: int, start_time: float,
-                  completed_episodes: int, total_reward_sum: float,
-                  sac_logs: dict, vae_logs: dict):
+                  interval_start_time: float, collection_time: float, learning_time: float,
+                  completed_episodes: int, total_reward_sum: float, total_length_sum: float,
+                  sac_logs: dict, vae_logs: dict, log_interval: int = 100):
         """Print console log and optionally push to wandb."""
-        elapsed = time.time() - start_time
-        fps = step / max(elapsed, 1)
+        elapsed_interval = time.time() - interval_start_time
+        # Multiply by num_envs because step is *environment step* (one step = num_envs transitions)
+        fps = int((log_interval * self.num_envs) / max(elapsed_interval, 1e-6))
+        
         avg_reward = total_reward_sum / max(completed_episodes, 1)
+        avg_length = total_length_sum / max(completed_episodes, 1)
 
         if step < self.vae_training_steps:
             phase = "VAE+SAC Warmup" if getattr(self.cfg, "train_vae", True) else "SAC Random Warmup"
         else:
             phase = "SAC Train"
             
-        print(
-            f"Step {step:>7d}/{max_steps} | "
-            f"Phase: {phase} | "
-            f"Ep: {completed_episodes:>5d} | "
-            f"Avg R: {avg_reward:>7.2f} | "
-            f"Alpha: {self.sac.alpha.item():.3f} | "
-            f"FPS: {fps:.0f}"
-        )
+        elapsed_total = time.time() - start_time
+        eta = (elapsed_total / max(step, 1)) * (max_steps - step)
+        
+        def format_time(t):
+            return f"{int(t // 3600):02d}:{int((t % 3600) // 60):02d}:{int(t % 60):02d}"
+
+        width = 45
+        print("-" * width)
+        print(f"{'Phase:':<25} {phase}")
+        print(f"{'Iteration:':<25} {step} / {max_steps}")
+        print(f"{'Total Timesteps:':<25} {step * self.num_envs}")
+        print(f"{'ETA:':<25} {format_time(eta)}")
+        print("-" * width)
+        print(f"{'FPS:':<25} {fps}")
+        print(f"{'Collection Time:':<25} {collection_time:.2f}s")
+        print(f"{'Learning Time:':<25} {learning_time:.2f}s")
+        if completed_episodes > 0:
+            print(f"{'Mean Episode Reward:':<25} {avg_reward:.2f}")
+            print(f"{'Mean Episode Length:':<25} {avg_length:.1f}")
+        print("-" * width)
+        
+        if sac_logs:
+            for k, v in sac_logs.items():
+                print(f"{f'sac/{k}:':<25} {v:.4f}")
+        if vae_logs:
+            for k, v in vae_logs.items():
+                print(f"{f'vae/{k}:':<25} {v:.4f}")
+        print("-" * width)
+        print()
 
         if self._wandb_run:
             import wandb
@@ -345,4 +428,6 @@ class SACRunner:
             if "log" in self.unwrapped.extras:
                 for k, v in self.unwrapped.extras["log"].items():
                     log_data[k] = v if isinstance(v, (int, float)) else v
+            # Replay buffer debug info
+            log_data.update(self.replay.get_debug_info())
             wandb.log(log_data, step=step)

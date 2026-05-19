@@ -2,10 +2,14 @@
 
 Maintains two separate buffers:
   - Regular buffer: stores all transitions
-  - Success buffer: stores transitions from successful episodes
+  - Success buffer: stores FULL trajectories from successful episodes
 
 Samples are drawn from both in a configurable ratio (e.g. 75% regular, 25% success)
 to ensure the agent keeps learning from rare successful experiences.
+
+The success buffer receives entire episode trajectories (not just the terminal
+transition) via `add_success_trajectory()`, called by the runner when an episode
+ends successfully.
 """
 
 from __future__ import annotations
@@ -39,18 +43,34 @@ class SplitReplayBuffer:
         self.success_ratio = success_ratio
         self.device = device
 
-        # Regular buffer
+        assert 0.0 <= success_ratio <= 1.0, (
+            f"sac_success_ratio must be in [0.0, 1.0], got {success_ratio}"
+        )
+
+        # Regular buffer — stores ALL transitions
         self._reg = _Buffer(obs_dim, action_dim, max_size, device)
-        # Success buffer
+        # Success buffer — stores full trajectories from successful episodes
         self._suc = _Buffer(obs_dim, action_dim, max_size, device)
+
+        # Debug counters
+        self._total_added = 0
+        self._total_success_transitions = 0
 
     @property
     def total_size(self) -> int:
         return self._reg.size + self._suc.size
 
+    @property
+    def reg_size(self) -> int:
+        return self._reg.size
+
+    @property
+    def suc_size(self) -> int:
+        return self._suc.size
+
     def add(self, obs: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
-            next_obs: torch.Tensor, done: torch.Tensor, success: torch.Tensor | None = None):
-        """Add a batch of transitions.
+            next_obs: torch.Tensor, done: torch.Tensor):
+        """Add a batch of transitions to the regular buffer.
 
         All tensors: shape (B, ...) where B = num_envs.
 
@@ -60,24 +80,39 @@ class SplitReplayBuffer:
             reward: Reward received, (B, 1) or (B,).
             next_obs: Next observation, (B, obs_dim).
             done: Episode termination flag, (B, 1) or (B,).
-            success: Optional per-env success flag, (B,). If provided, transitions
-                     where success=True are also added to the success buffer.
         """
         reward = reward.view(-1, 1) if reward.dim() == 1 else reward
         done = done.view(-1, 1).float() if done.dim() == 1 else done.float()
 
-        # Add all to regular buffer
         self._reg.add(obs, action, reward, next_obs, done)
+        self._total_added += obs.shape[0]
 
-        # Add successes to success buffer
-        if success is not None and success.any():
-            mask = success.bool()
-            self._suc.add(
-                obs[mask], action[mask], reward[mask], next_obs[mask], done[mask]
-            )
+    def add_success_trajectory(self, obs: torch.Tensor, action: torch.Tensor,
+                               reward: torch.Tensor, next_obs: torch.Tensor,
+                               done: torch.Tensor):
+        """Add a full successful episode trajectory to the success buffer.
+
+        Called by the runner when an episode ends with success. All transitions
+        from that episode are flushed here so the agent can re-learn the entire
+        approach path, not just the final lucky step.
+
+        Args:
+            obs: (T, obs_dim) — full episode observations.
+            action: (T, action_dim) — full episode actions.
+            reward: (T, 1) or (T,) — full episode rewards.
+            next_obs: (T, obs_dim) — full episode next-observations.
+            done: (T, 1) or (T,) — full episode done flags.
+        """
+        if obs.shape[0] == 0:
+            return
+        reward = reward.view(-1, 1) if reward.dim() == 1 else reward
+        done = done.view(-1, 1).float() if done.dim() == 1 else done.float()
+
+        self._suc.add(obs, action, reward, next_obs, done)
+        self._total_success_transitions += obs.shape[0]
 
     def sample(self, batch_size: int) -> dict[str, torch.Tensor]:
-        """Sample a mixed batch from both buffers.
+        """Sample a mixed batch from both buffers, shuffled.
 
         Returns:
             Dictionary with keys: obs, action, reward, next_obs, done.
@@ -93,14 +128,29 @@ class SplitReplayBuffer:
         reg_batch = self._reg.sample(n_reg)
         suc_batch = self._suc.sample(n_suc)
 
-        return {
+        # Concatenate
+        combined = {
             key: torch.cat([reg_batch[key], suc_batch[key]], dim=0)
             for key in reg_batch.keys()
         }
 
+        # Shuffle the combined batch to prevent ordering bias
+        perm = torch.randperm(batch_size, device=self.device)
+        return {key: val[perm] for key, val in combined.items()}
+
     def can_sample(self, batch_size: int) -> bool:
         """Check if there are enough transitions to sample a full batch."""
         return self._reg.size >= batch_size
+
+    def get_debug_info(self) -> dict[str, int | float]:
+        """Return buffer statistics for logging/debugging."""
+        return {
+            "replay/reg_size": self._reg.size,
+            "replay/suc_size": self._suc.size,
+            "replay/total_added": self._total_added,
+            "replay/total_success_transitions": self._total_success_transitions,
+            "replay/suc_fill_pct": self._suc.size / self.max_size * 100,
+        }
 
 
 class _Buffer:
@@ -110,6 +160,7 @@ class _Buffer:
         self.max_size = max_size
         self.size = 0
         self.ptr = 0  # next write position
+        self.device = device
 
         self.obs = torch.zeros(max_size, obs_dim, device=device)
         self.action = torch.zeros(max_size, action_dim, device=device)
@@ -123,6 +174,13 @@ class _Buffer:
         b = obs.shape[0]
         if b == 0:
             return
+
+        # Ensure tensors are on the correct device
+        obs = obs.to(self.device)
+        action = action.to(self.device)
+        reward = reward.to(self.device)
+        next_obs = next_obs.to(self.device)
+        done = done.to(self.device)
 
         # Handle wrap-around
         if self.ptr + b <= self.max_size:
@@ -152,7 +210,7 @@ class _Buffer:
 
     def sample(self, batch_size: int) -> dict[str, torch.Tensor]:
         """Sample uniformly from stored transitions."""
-        idx = torch.randint(0, self.size, (batch_size,), device=self.obs.device)
+        idx = torch.randint(0, self.size, (batch_size,), device=self.device)
         return {
             "obs": self.obs[idx],
             "action": self.action[idx],

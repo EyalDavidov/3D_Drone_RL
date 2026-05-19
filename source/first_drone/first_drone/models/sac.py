@@ -23,30 +23,37 @@ LOG_STD_MAX = 2.0
 class GaussianActor(nn.Module):
     """Tanh-squashed Gaussian policy network.
 
-    4 hidden layers of 256 units (as specified in the paper).
+    Architecture:
+    FC(45→256) + ReLU
+    FC(256→256) + HardSwish
+    FC(256→256) + HardSwish
+    mean/log_std heads
+
     Outputs mean and log_std for each action dimension.
 
     Actions are squashed through tanh to lie in [-1, 1], then scaled
     to physical drone commands by the environment.
     """
 
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dims: list[int] | None = None):
+    def __init__(self, obs_dim: int, action_dim: int):
         super().__init__()
-        if hidden_dims is None:
-            hidden_dims = [256, 256, 256, 256]
-
-        # Build MLP trunk
-        layers = []
-        in_dim = obs_dim
-        for h_dim in hidden_dims:
-            layers.append(nn.Linear(in_dim, h_dim))
-            layers.append(nn.ReLU())
-            in_dim = h_dim
-        self.trunk = nn.Sequential(*layers)
+        
+        # Build MLP trunk exactly as requested:
+        # 1. FC -> ReLU
+        # 2. FC -> Hard Swish
+        # 3. FC -> Hard Swish
+        self.trunk = nn.Sequential(
+            nn.Linear(obs_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.Hardswish(),
+            nn.Linear(256, 256),
+            nn.Hardswish()
+        )
 
         # Output heads
-        self.fc_mean = nn.Linear(in_dim, action_dim)
-        self.fc_log_std = nn.Linear(in_dim, action_dim)
+        self.fc_mean = nn.Linear(256, action_dim)
+        self.fc_log_std = nn.Linear(256, action_dim)
 
     def forward(
         self, obs: torch.Tensor, deterministic: bool = False
@@ -87,22 +94,28 @@ class GaussianActor(nn.Module):
 class QNetwork(nn.Module):
     """Single Q-network: Q(obs, action) → scalar value.
 
-    3 hidden layers of 256 units as specified in the paper.
+    Architecture:
+    FC(49→256) + ReLU
+    FC(256→256) + HardSwish
+    FC(256→1)
     """
 
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dims: list[int] | None = None):
+    def __init__(self, obs_dim: int, action_dim: int):
         super().__init__()
-        if hidden_dims is None:
-            hidden_dims = [256, 256, 256]
-
-        layers = []
+        
         in_dim = obs_dim + action_dim
-        for h_dim in hidden_dims:
-            layers.append(nn.Linear(in_dim, h_dim))
-            layers.append(nn.ReLU())
-            in_dim = h_dim
-        layers.append(nn.Linear(in_dim, 1))
-        self.net = nn.Sequential(*layers)
+        
+        # Build MLP trunk exactly as requested:
+        # 1. FC -> ReLU
+        # 2. FC -> Hard Swish
+        # 3. FC -> 1
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.Hardswish(),
+            nn.Linear(256, 1)
+        )
 
     def forward(self, obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """Compute Q-value for (obs, action) pair.
@@ -123,10 +136,10 @@ class TwinCritic(nn.Module):
     Uses min(Q1, Q2) for the target to provide a conservative Q estimate.
     """
 
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dims: list[int] | None = None):
+    def __init__(self, obs_dim: int, action_dim: int):
         super().__init__()
-        self.q1 = QNetwork(obs_dim, action_dim, hidden_dims)
-        self.q2 = QNetwork(obs_dim, action_dim, hidden_dims)
+        self.q1 = QNetwork(obs_dim, action_dim)
+        self.q2 = QNetwork(obs_dim, action_dim)
 
     def forward(
         self, obs: torch.Tensor, action: torch.Tensor
@@ -156,8 +169,6 @@ class SACActorCritic(nn.Module):
         self,
         obs_dim: int,
         action_dim: int,
-        actor_hidden: list[int] | None = None,
-        critic_hidden: list[int] | None = None,
         actor_lr: float = 3e-4,
         critic_lr: float = 3e-4,
         alpha_lr: float = 3e-4,
@@ -170,8 +181,6 @@ class SACActorCritic(nn.Module):
         Args:
             obs_dim: Dimension of the observation vector.
             action_dim: Dimension of the action space.
-            actor_hidden: Hidden layer sizes for actor. Default: [256]*4.
-            critic_hidden: Hidden layer sizes for each critic. Default: [256]*3.
             actor_lr: Learning rate for the actor.
             critic_lr: Learning rate for the critics.
             alpha_lr: Learning rate for the temperature parameter.
@@ -185,9 +194,9 @@ class SACActorCritic(nn.Module):
         self.action_dim = action_dim
 
         # Networks
-        self.actor = GaussianActor(obs_dim, action_dim, actor_hidden)
-        self.critic = TwinCritic(obs_dim, action_dim, critic_hidden)
-        self.critic_target = TwinCritic(obs_dim, action_dim, critic_hidden)
+        self.actor = GaussianActor(obs_dim, action_dim)
+        self.critic = TwinCritic(obs_dim, action_dim)
+        self.critic_target = TwinCritic(obs_dim, action_dim)
 
         # Copy critic params to target (hard copy)
         self.critic_target.load_state_dict(self.critic.state_dict())
@@ -237,6 +246,10 @@ class SACActorCritic(nn.Module):
 
         Returns dict of logging metrics.
         """
+        # Ensure reward and done have shape (B, 1)
+        reward = reward.view(-1, 1)
+        done = done.view(-1, 1)
+        
         with torch.no_grad():
             next_action, next_log_prob = self.actor(next_obs)
             q1_tgt, q2_tgt = self.critic_target(next_obs, next_action)

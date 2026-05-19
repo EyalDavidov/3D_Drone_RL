@@ -19,6 +19,7 @@ Key differences from the PPO camera env:
 
 from __future__ import annotations
 
+import random
 import gymnasium as gym
 import torch
 import torch.nn.functional as F
@@ -78,6 +79,9 @@ class SACDroneEnv(DirectRLEnv):
         # ----- Previous distance to goal (for progress reward) -----
         self._prev_dist_to_goal = torch.zeros(self.num_envs, device=self.device)
 
+        # ----- Per-env pole positions (local frame), randomized each reset -----
+        self._pole_positions = torch.zeros(self.num_envs, self.cfg.num_poles, 2, device=self.device)
+
         # ----- Physical constants -----
         self._body_id = self._robot.find_bodies("body")[0]
         self._robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
@@ -127,12 +131,17 @@ class SACDroneEnv(DirectRLEnv):
     # Scene setup
     # ------------------------------------------------------------------
     def _setup_scene(self):
-        """Create drone, room, terrain, camera, and lighting."""
+        """Create drone, room, poles, terrain, camera, and lighting."""
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
         room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
         room_cfg.func("/World/envs/env_0/Room", room_cfg)
+
+        # Spawn poles as static USD prims (collider-only, no rigid body needed)
+        for i in range(self.cfg.num_poles):
+            pole_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.pole_usd_path)
+            pole_cfg.func(f"/World/envs/env_0/Pole_{i}", pole_cfg, translation=(0.0, 0.0, 0.0))
 
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
@@ -148,6 +157,10 @@ class SACDroneEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+        # Store USD stage reference for moving poles on reset (pxr API)
+        import omni.usd
+        self._stage = omni.usd.get_context().get_stage()
 
     # ------------------------------------------------------------------
     # Depth preprocessing
@@ -323,10 +336,6 @@ class SACDroneEnv(DirectRLEnv):
         # 2. Goal reached
         reached_goal = (curr_dist < self.cfg.goal_radius).float()
 
-        # 3. Hover bonus (only near goal) - Disabled for now
-        # vel_sq = torch.sum(self._robot.data.root_lin_vel_b ** 2, dim=1)
-        # hover_bonus = at_goal * torch.exp(-2.0 * vel_sq)
-        hover_bonus = torch.zeros_like(curr_dist) #this means hover is zero reward
 
         # 4. Depth clearance (center brighter = more open ahead)
         depth = self._last_depth_processed  # (B, 1, H, W)
@@ -357,7 +366,6 @@ class SACDroneEnv(DirectRLEnv):
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
-            "hover": self.cfg.w_hover * hover_bonus,
             "clearance": self.cfg.w_clearance * clearance,
             "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
             "tilt": self.cfg.w_tilt * tilt,
@@ -376,32 +384,64 @@ class SACDroneEnv(DirectRLEnv):
     # Termination
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Terminate on floor/ceiling/wall collision or timeout."""
+        """Terminate on floor/ceiling/wall/pole collision or timeout."""
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
-        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.0)
+        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 1.9)
         hit_wall = (
-            (pos_local[:, 0] > 4.8) | (pos_local[:, 0] < -4.8)
-            | (pos_local[:, 1] > 4.8) | (pos_local[:, 1] < -4.8)
+            (pos_local[:, 0] > 1.87) | (pos_local[:, 0] < -1.87)
+            | (pos_local[:, 1] > 1.87) | (pos_local[:, 1] < -1.87)
         )
 
-        # Check pillar collisions
-        # Pillars are at x in [-3, -1, 1, 3] and y = 0
-        hit_pillar = torch.zeros_like(hit_wall)
-        for px in [-3.0, -1.0, 1.0, 3.0]:
-            hit_this_pillar = (torch.abs(pos_local[:, 0] - px) < 0.25) & (torch.abs(pos_local[:, 1] - 0.0) < 0.25)
-            hit_pillar = hit_pillar | hit_this_pillar
+        # Check random pole collisions (AABB: pole_half + drone_radius)
+        # _pole_positions shape: (num_envs, num_poles, 2)
+        collision_margin = self.cfg.pole_half_size + self.cfg.drone_radius
+        hit_pole = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        for i in range(self.cfg.num_poles):
+            dx = torch.abs(pos_local[:, 0] - self._pole_positions[:, i, 0])
+            dy = torch.abs(pos_local[:, 1] - self._pole_positions[:, i, 1])
+            hit_this_pole = (dx < collision_margin) & (dy < collision_margin)
+            hit_pole = hit_pole | hit_this_pole
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
-        died = hit_floor_or_ceiling | hit_wall | hit_pillar
-        return died, time_out
+        died = hit_floor_or_ceiling | hit_wall | hit_pole
+        terminated = died | reached_goal
+        return terminated, time_out
 
     # ------------------------------------------------------------------
     # Reset
     # ------------------------------------------------------------------
+    def _generate_pole_positions(self, num_sets: int) -> torch.Tensor:
+        """Generate random pole positions with minimum spacing.
+
+        Args:
+            num_sets: Number of independent pole layouts to generate.
+
+        Returns:
+            Tensor of shape (num_sets, num_poles, 2) with local x, y positions.
+        """
+        positions = torch.zeros(num_sets, self.cfg.num_poles, 2, device=self.device)
+        for s in range(num_sets):
+            for i in range(self.cfg.num_poles):
+                valid = False
+                retries = 0
+                while not valid and retries < 100:
+                    x = random.uniform(*self.cfg.pole_x_range)
+                    y = random.uniform(*self.cfg.pole_y_range)
+                    valid = True
+                    for j in range(i):
+                        dist_sq = (x - positions[s, j, 0].item())**2 + (y - positions[s, j, 1].item())**2
+                        if dist_sq < self.cfg.pole_min_spacing**2:
+                            valid = False
+                            break
+                    retries += 1
+                positions[s, i, 0] = x
+                positions[s, i, 1] = y
+        return positions
+
     def _reset_idx(self, env_ids: torch.Tensor | None):
         """Reset environments. Drone at y=+1, goal at y=-1."""
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -431,18 +471,35 @@ class SACDroneEnv(DirectRLEnv):
 
         self._actions[env_ids] = 0.0
 
+        # --- Randomize pole positions ---
+        new_pole_pos = self._generate_pole_positions(len(env_ids))  # (N, num_poles, 2)
+        self._pole_positions[env_ids] = new_pole_pos
+        from pxr import UsdGeom, Gf
+        env_ids_list = env_ids.cpu().tolist()
+        origins = self._terrain.env_origins.cpu()
+        for i in range(self.cfg.num_poles):
+            for k, eid in enumerate(env_ids_list):
+                prim = self._stage.GetPrimAtPath(f"/World/envs/env_{eid}/Pole_{i}")
+                if prim.IsValid():
+                    xformable = UsdGeom.Xformable(prim)
+                    xformable.ClearXformOpOrder()
+                    tx = float(new_pole_pos[k, i, 0].item())
+                    ty = float(new_pole_pos[k, i, 1].item())
+                    tz = 0.0
+                    xformable.AddTranslateOp().Set(Gf.Vec3d(tx, ty, tz))
+
         # --- Goal position ---
-        self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.0, 1.0)
-        self._desired_pos_w[env_ids, 0] += self._terrain.env_origins[env_ids, 0]
-        self._desired_pos_w[env_ids, 1] = -1.0 + self._terrain.env_origins[env_ids, 1]
-        self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
+        self._desired_pos_w[env_ids, 0] = 0.0 + self._terrain.env_origins[env_ids, 0]
+        self._desired_pos_w[env_ids, 1] = -1.8 + self._terrain.env_origins[env_ids, 1]
+        self._desired_pos_w[env_ids, 2] = 1.0 + self._terrain.env_origins[env_ids, 2]
 
         # --- Robot spawn position ---
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
-        spawn_x = torch.zeros(len(env_ids), device=self.device).uniform_(-1.0, 1.0)
+        spawn_x = torch.zeros(len(env_ids), device=self.device).uniform_(-1.5, 1.5)
         default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
-        default_root_state[:, 1] = 1.0 + self._terrain.env_origins[env_ids, 1]
-        default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
+        spawn_y = torch.zeros(len(env_ids), device=self.device).uniform_(1.6, 1.9)
+        default_root_state[:, 1] = spawn_y + self._terrain.env_origins[env_ids, 1]
+        default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.3, 1.8)
 
         # --- Orient drone to face the goal ---
         # Compute yaw angle from drone spawn → goal

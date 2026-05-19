@@ -65,7 +65,17 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room
-    room_usd_path: str = "C:/Isaac/Projects/first_drone/Assets/room_window.usd"
+    room_usd_path: str = "Assets/room_window.usd"
+
+    # ---------- Random obstacle poles ----------
+    pole_usd_path: str = "Assets/1_Pole.usd"
+    num_poles: int = 10
+    pole_min_spacing: float = 0.4  # Minimum distance between poles
+    pole_x_range: tuple[float, float] = (-1.8, 1.8)
+    pole_y_range: tuple[float, float] = (-1.8, 1.0)
+    # Collision geometry: pole is 10cm×10cm, drone circumscribed radius ~7.07cm
+    pole_half_size: float = 0.05   # half of 10cm pole
+    drone_radius: float = 0.0707   # circumscribed radius of 10×10cm drone
 
     # camera — 128×72 depth as specified in the paper
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -92,10 +102,10 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     vae_latent_dim: int = 32
     vae_beta: float = 1e-3
     depth_max: float = 5.0  # max depth clamp in meters (room is ~10m, but 5m gives better contrast)
-    vae_checkpoint_path: str = r"Projects\first_drone\logs\vae\vae_final.pt"
+    vae_checkpoint_path: str = "logs/vae/vae_final.pt"
 
     # ---------- Flight controller ----------
-    llc_checkpoint_path: str = r"Projects\first_drone\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
+    llc_checkpoint_path: str = "logs/rsl_rl/flight_controller_drone_direct/Flight_Controller/exported/policy.pt"
     vel_limit: tuple[float, float, float] = (1.0, 1.0, 0.5)
     yaw_rate_limit: float = 0.05
 
@@ -112,16 +122,14 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     w_progress: float = 5.0
     # Goal reached bonus (huge one-time termination reward)
     w_goal: float = 100.0
-    # Hover bonus (disabled for now)
-    w_hover: float = 0.0
     # Depth clearance (center-vs-mean depth)
-    w_clearance: float = 0.5
+    w_clearance: float = 0.0 #0.5
     # Angular velocity penalty (reduced further — still dominated at -20 in graphs)
-    w_ang_vel: float = -0.002
+    w_ang_vel: float = 0.0 #-0.001
     # Tilt penalty (reduced — was too dominant)
-    w_tilt: float = -0.01
+    w_tilt: float = 0.0 #-0.01
     # Action magnitude penalty
-    w_action: float = -0.01
+    w_action: float = 0.0 #-0.01
     # Collision penalty (increased — must clearly outweigh other penalties)
     collision_penalty: float = -25.0
     # Goal radius (meters) — drone is "at goal" when closer than this

@@ -91,7 +91,7 @@ def main():
     total_reward = 0.0
     total_success = 0
 
-    while completed < args_cli.num_episodes:
+    while simulation_app.is_running():
         with torch.no_grad():
             actions = sac.act(obs, deterministic=True)
 
@@ -134,14 +134,12 @@ def main():
 
             print(f"  Episode {completed:>3d}: reward={ep_reward:>7.2f}, dist={dist:.2f}m, {status}")
 
-            if completed >= args_cli.num_episodes:
-                break
-
         episode_rewards[done_ids] = 0.0
 
-    avg = total_reward / max(completed, 1)
-    success_rate = total_success / max(completed, 1) * 100
-    print(f"\n[RESULTS] {completed} episodes | Avg reward: {avg:.2f} | Success rate: {success_rate:.1f}%")
+    if completed > 0:
+        avg = total_reward / max(completed, 1)
+        success_rate = total_success / max(completed, 1) * 100
+        print(f"\n[RESULTS] {completed} episodes | Avg reward: {avg:.2f} | Success rate: {success_rate:.1f}%")
 
     if args_cli.viewer:
         cv2.destroyAllWindows()

@@ -23,7 +23,7 @@ parser.add_argument("--max_iterations", type=int, default=None, help="Total envi
 parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging.")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from.")
 parser.add_argument("--vae_checkpoint", type=str, default=None, help="Path to pretrained VAE weights (.pt) to load before training.")
-parser.add_argument("--freeze_vae", action="store_true", help="If set, do not update the VAE during SAC training.")
+parser.add_argument("--train_vae", action="store_true", help="If set, update the VAE during SAC training.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
@@ -84,9 +84,12 @@ def main():
         env.unwrapped.vae.eval()
         print(f"[INFO] Loaded pretrained VAE weights from: {args_cli.vae_checkpoint}")
 
-    if args_cli.freeze_vae:
-        agent_cfg.train_vae = False
-        print("[INFO] VAE updates disabled for training (freeze_vae=True)")
+    agent_cfg.train_vae = args_cli.train_vae
+
+    if agent_cfg.train_vae:
+        print("[INFO] VAE updates enabled for training (train_vae=True)")
+    else:
+        print("[INFO] VAE updates disabled by default")
 
     # ---- Create runner ----
     runner = SACRunner(env, agent_cfg, log_dir=log_dir, device=env_cfg.sim.device)
