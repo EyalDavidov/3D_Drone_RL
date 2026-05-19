@@ -155,16 +155,26 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     # --- PHASE 2: 6-DOF Release (Agile Navigation & Dodging) ---
     # * Physics (in env.py): Full 6-DOF restored (strafe and reverse allowed).
     # * Goal: Full freedom to dodge while highly prioritizing goal arrival. Softer crash penalty to prevent freezing.
-    w_progress: float = 3.0               # Dense progress reward toward goal
-    w_goal: float = 100.0                  # Strong terminal reward for reaching goal
-    collision_penalty: float = -100.0      # Terminal penalty for crashing
-    w_vel_align: float = 0.5              # Velocity alignment reward (replaces heading)
-    vel_align_max_speed: float = 1.0      # Speed normalization constant (matches vel_limit[0])
-    w_proximity: float = 1.0              # Proximity penalty weight (pillar danger zone)
-    pillar_proximity_radius: float = 0.5  # Soft-zone outer boundary in meters
-    w_time: float = -0.05                 # Per-step time penalty
-    w_ang_vel: float = 0.0                # Discourage constant spinning (disabled)
-    goal_radius: float = 0.40
+    w_progress: float = 20.0
+    w_goal: float = 300.0         # TRIPLED — entering goal is 6x better than staring
+    # Slightly stronger time pressure to encourage forward progress
+    w_time: float = -0.06
+    # Guidance but not overpowering — lower so agent moves instead of just looking
+    w_heading: float = 0.05
+    # Velocity alignment reward (encourage moving toward goal)
+    w_vel_align: float = 0.5
+    vel_align_max_speed: float = 1.0
+    collision_penalty: float = -30.0
+    # Stabilization + lateral damping
+    w_ang_vel: float = -0.005
+    w_action: float = -0.005
+    w_sideslip: float = -0.2      # soft lateral penalty — allows quick dodges
+    # Proximity penalty to give early warning before collisions
+    w_proximity: float = 1.5
+    pillar_proximity_radius: float = 0.5
+    # Goal radius (meters)
+    goal_radius: float = 0.25
+    # Pillar termination radius (meters) — circular distance from pillar center
     pillar_collision_radius: float = 0.15
 
     # ---------- Curriculum Spawn (Phase 1) ----------

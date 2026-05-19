@@ -12,7 +12,7 @@ and its detached latent is fed to SAC.
 
 Key differences from the PPO camera env:
   - Observations are flat vectors (VAE-encoded), not raw images
-  - Reward function has 7 terms (progress, goal, hover, clearance, ang_vel, tilt, action)
+   - Reward function has 7 terms (progress, goal, hover, clearance, ang_vel, tilt, action)
   - Tracks previous distance for progress reward
   - Exposes raw depth for external VAE training
 """
@@ -331,51 +331,104 @@ class SACDroneEnv(DirectRLEnv):
     # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        """Compute rewards matching the CFG weights exactly."""
-        # Current distance to goal
+        """Compute reward — Phase 2: 6-DOF with heading lock.
+
+        Design principles:
+          - Full movement freedom (forward, backward, lateral)
+          - Strong heading reward locks gaze on goal at all times
+          - Soft sideslip penalty discourages constant strafing
+          - SUCCESS > CRASH > HOVER ordering preserved
+
+        Terms:
+          1. progress  — dense: getting closer to goal
+          2. goal      — terminal: one-time bonus for reaching goal
+          3. time      — per-step cost (anti-hesitation)
+          4. heading   — per-step: cos(angle to goal) — gaze lock
+          5. ang_vel   — tiny penalty for spinning
+          6. action    — tiny penalty for jerky actions
+          7. sideslip  — soft penalty for lateral velocity
+          + collision  — one-time penalty on crash
+        """
+        # Current distance to goal (2D on X/Y to avoid height mismatch)
         curr_dist = torch.linalg.norm(
-            self._desired_pos_w - self._robot.data.root_pos_w, dim=1
+            (self._desired_pos_w - self._robot.data.root_pos_w)[:, :2], dim=1
         )
 
-        # 1. Progress reward
+        # 1. Progress reward (dense breadcrumbs)
         progress = self._prev_dist_to_goal - curr_dist
         self._prev_dist_to_goal = curr_dist.clone()
 
-        # 2. Goal reached
+        # 2. Goal reached (one-time terminal)
         reached_goal = (curr_dist < self.cfg.goal_radius).float()
 
-        # 3. Velocity alignment (vector towards goal dot robot velocity)
-        dir_to_goal = self._desired_pos_w[:, :2] - self._robot.data.root_pos_w[:, :2]
-        dir_to_goal = torch.nn.functional.normalize(dir_to_goal, dim=1)
-        vel_w = self._robot.data.root_lin_vel_w[:, :2]
-        vel_align = torch.sum(vel_w * dir_to_goal, dim=1)
-        # Normalize by max speed
-        vel_align = (vel_align / self.cfg.vel_align_max_speed).clamp(max=1.0)
-
-        # 4. Proximity penalty (distance to closest pillar)
-        min_dist_to_pillar = torch.full((self.num_envs,), float('inf'), device=self.device)
-        for pillar in self._pillars:
-            dist = torch.linalg.norm(self._robot.data.root_pos_w[:, :2] - pillar.data.root_pos_w[:, :2], dim=1)
-            min_dist_to_pillar = torch.min(min_dist_to_pillar, dist)
-        proximity_penalty = torch.clamp(self.cfg.pillar_proximity_radius - min_dist_to_pillar, min=0.0)
-
-        # 5. Angular velocity penalty (discourage spinning)
-        ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
-
-        # 6. Time penalty
+        # 3. Time penalty (constant per-step cost)
         time_penalty = torch.ones(self.num_envs, device=self.device)
 
-        # Collision
+        # 4. Heading alignment — cos(angle between drone heading and goal direction)
+        dx = self._desired_pos_w[:, 0] - self._robot.data.root_pos_w[:, 0]
+        dy = self._desired_pos_w[:, 1] - self._robot.data.root_pos_w[:, 1]
+        target_yaw = torch.atan2(dy, dx)
+        _, _, current_yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
+        heading_error = wrap_to_pi(target_yaw - current_yaw)
+        heading_alignment = torch.cos(heading_error)  # [-1, +1]
+
+        # 5. Angular velocity penalty (smooth flight)
+        ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
+
+        # 6. Action magnitude penalty (smooth commands)
+        action_sq = torch.sum(self._actions ** 2, dim=1)
+
+        # 7. Sideslip penalty (lateral velocity damping)
+        lateral_vel = self._robot.data.root_lin_vel_b[:, 1]
+        sideslip_sq = lateral_vel ** 2
+
+        # --- Velocity alignment (encourages moving toward goal) ---
+        vel_w = self._robot.data.root_lin_vel_w  # world-frame linear vel (B,3)
+        to_goal_w = self._desired_pos_w - self._robot.data.root_pos_w  # (B,3)
+        speed = torch.linalg.norm(vel_w, dim=1)  # (B,)
+        dot = torch.sum(vel_w * to_goal_w, dim=1)  # (B,)
+        vel_align_denom = speed * curr_dist + 1e-6
+        cos_sim = dot / vel_align_denom
+        vel_align_max_speed = getattr(self.cfg, "vel_align_max_speed", self.cfg.vel_limit[0])
+        speed_factor = (speed / vel_align_max_speed).clamp(0.0, 1.0)
+        velocity_alignment = cos_sim * speed_factor
+
+        # --- Proximity penalty to pillars (graduated) ---
+        proximity_penalty = torch.zeros(self.num_envs, device=self.device)
+        proximity_radius = getattr(self.cfg, "pillar_proximity_radius", getattr(self.cfg, "pillar_proximity_radius", 0.5))
+        for pillar in self._pillars:
+            pillar_pos = pillar.data.root_pos_w[:, :3]
+            dist = torch.linalg.norm((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]), dim=1)
+            inside = (dist < proximity_radius).float()
+            # linear scale 0 at edge -> 1 at center
+            scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
+            # keep the max penalty across pillars to avoid double counting
+            proximity_penalty = torch.maximum(proximity_penalty, scaled)
+
+        # scale to [-1, 0] (edge ~ -0.0..-0.5, center -> -1.0)
+        proximity_penalty = -proximity_penalty  # negative penalty
+
+        # Collision (only on crash, not goal reach)
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
+
+        # --- Small stuck penalty: facing goal but not moving or making progress ---
+        stuck_mask = (
+            (progress.abs() < 1e-4) & (speed < 0.05) & (heading_alignment > 0.9)
+        )
+        stuck_penalty = stuck_mask.float() * -0.2
 
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
-            "collision": self.cfg.collision_penalty * died_from_crash,
-            "vel_align": self.cfg.w_vel_align * vel_align,
-            "proximity": -abs(self.cfg.w_proximity) * proximity_penalty,
-            "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
             "time": self.cfg.w_time * time_penalty,
+            "heading": self.cfg.w_heading * heading_alignment,
+            "vel_align": getattr(self.cfg, "w_vel_align", 0.5) * velocity_alignment,
+            "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
+            "action": self.cfg.w_action * action_sq,
+            "sideslip": self.cfg.w_sideslip * sideslip_sq,
+            "proximity": getattr(self.cfg, "w_proximity", 1.0) * proximity_penalty,
+            "stuck": stuck_penalty,
+            "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -411,7 +464,8 @@ class SACDroneEnv(DirectRLEnv):
             dist_sq = torch.sum((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]) ** 2, dim=1)
             hit_pillar = hit_pillar | (dist_sq < (pillar_radius ** 2))
 
-        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
+        # Use 2D (X/Y) distance to match reward's reached_goal calculation
+        distance_to_goal = torch.linalg.norm((self._desired_pos_w - self._robot.data.root_pos_w)[:, :2], dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
         died = hit_floor_or_ceiling | hit_wall | hit_pillar
@@ -428,8 +482,9 @@ class SACDroneEnv(DirectRLEnv):
             env_ids = self._robot._ALL_INDICES
 
         # --- Logging ---
+        # Final distance logged in 2D to match success/reward termination criteria
         final_dist = torch.linalg.norm(
-            self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+            (self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids])[:, :2], dim=1
         ).mean()
         extras = dict()
         for key in self._episode_sums.keys():
@@ -486,9 +541,9 @@ class SACDroneEnv(DirectRLEnv):
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        # --- Initialize previous distance ---
+        # --- Initialize previous distance (2D X/Y) ---
         self._prev_dist_to_goal[env_ids] = torch.linalg.norm(
-            self._desired_pos_w[env_ids] - default_root_state[:, :3], dim=1
+            (self._desired_pos_w[env_ids] - default_root_state[:, :3])[:, :2], dim=1
         )
 
         # --- Randomize Pillar Positions (Domain Randomization) ---

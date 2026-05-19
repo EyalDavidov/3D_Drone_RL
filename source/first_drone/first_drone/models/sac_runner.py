@@ -194,8 +194,9 @@ class SACRunner:
             episode_lengths += 1
 
             # Determine success
+            # Use 2D (X/Y) distance for success determination to match env logic
             dist_to_goal = torch.linalg.norm(
-                self.unwrapped._desired_pos_w - self.unwrapped._robot.data.root_pos_w, dim=1
+                (self.unwrapped._desired_pos_w - self.unwrapped._robot.data.root_pos_w)[:, :2], dim=1
             )
             success = dist_to_goal < self.unwrapped.cfg.goal_radius
 
@@ -230,7 +231,7 @@ class SACRunner:
             else:
                 # SAC training: update SAC and VAE based on sac_update_every
                 if step % self.cfg.sac_update_every == 0:
-                    sac_logs = self._update_sac()
+                    sac_logs = self._update_sac(step, max_steps)
                     vae_logs = self._update_vae(depth_buffer)
 
             # ---- Console & Wandb logging ----
@@ -286,13 +287,21 @@ class SACRunner:
             "vae_kl_loss": kl_loss.item(),
         }
 
-    def _update_sac(self) -> dict:
+    def _update_sac(self, step: int, max_steps: int) -> dict:
         """Run SAC gradient updates on sampled replay batches."""
         if not self.replay.can_sample(self.cfg.sac_batch_size):
             return {}
 
+        start_steps = getattr(self.cfg, "sac_gradient_steps_start", getattr(self.cfg, "sac_gradient_steps", 20))
+        end_steps = getattr(self.cfg, "sac_gradient_steps_end", getattr(self.cfg, "sac_gradient_steps", 1))
+        
+        # Calculate dynamic gradient steps
+        progress = min(1.0, max(0.0, step / max(1, max_steps)))
+        current_gradient_steps = int(start_steps - (start_steps - end_steps) * progress)
+        current_gradient_steps = max(1, current_gradient_steps)
+
         sac_logs: dict[str, float] = {}
-        for _ in range(self.cfg.sac_gradient_steps):
+        for _ in range(current_gradient_steps):
             batch = self.replay.sample(self.cfg.sac_batch_size)
 
             critic_info = self.sac.update_critic(
@@ -306,7 +315,7 @@ class SACRunner:
                 sac_logs[k] = sac_logs.get(k, 0.0) + v
 
         for k in sac_logs:
-            sac_logs[k] /= self.cfg.sac_gradient_steps
+            sac_logs[k] /= current_gradient_steps
 
         return sac_logs
 
