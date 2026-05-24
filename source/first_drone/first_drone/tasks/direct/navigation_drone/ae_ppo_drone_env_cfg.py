@@ -6,6 +6,9 @@ Observation space is 45-dim flat vector (after AE encoding + state concat).
 
 import os
 
+# Get the repository root directory
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../"))
+
 from first_drone.robots.cf2x import DRONE_CONFIG
 
 import isaaclab.sim as sim_utils
@@ -64,7 +67,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room — empty room (pillars are now dynamic RigidObjects)
-    room_usd_path: str = "D:\\isaac\\3D_Drone_RL\\assets\\Empty_Room.usd"
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "Empty_Room.usd")
 
     # ---------- Dynamic Pillars (Domain Randomization) ----------
     num_pillars: int = 6
@@ -109,10 +112,10 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # ---------- Autoencoder (AE) ----------
     ae_latent_dim: int = 32
     depth_max: float = 5.0  # max depth clamp in meters (room is ~10m, but 5m gives better contrast)
-    ae_checkpoint_path: str = r"D:\isaac\3D_Drone_RL\logs\vae\ae_final.pt"
+    ae_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "vae", "ae_final.pt")
 
     # ---------- Flight controller ----------
-    llc_checkpoint_path: str = r"D:\isaac\3D_Drone_RL\logs\rsl_rl\flight_controller_drone_direct\Flight_Controller\exported\policy.pt"
+    llc_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "rsl_rl", "flight_controller_drone_direct", "Flight_Controller", "exported", "policy.pt")
     vel_limit: tuple[float, float, float] = (1.0, 1.0, 0.5)
     yaw_rate_limit: float = 0.15
 
