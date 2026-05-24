@@ -4,4 +4,4 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import gymnasium as gym
-from . import first_drone, navigation_drone
+from . import first_drone, navigation_drone, navigation_drone_lidar
