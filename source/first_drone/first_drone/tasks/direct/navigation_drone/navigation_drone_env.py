@@ -221,6 +221,28 @@ class NavigationDroneEnv(DirectRLEnv):
         self._goal_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + torch.zeros(len(env_ids), device=self.device).uniform_(-3.0, 3.0)
         self._goal_pos_w[env_ids, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 2.0)
         
+        # Optional: corner fine-tuning mode — spawn goals in corners and drone in the opposite corner
+        if getattr(self.cfg, "corner_fine_tune", False):
+            # pre-defined corner offsets relative to env origin
+            corners = torch.tensor([[-3.0, -3.0], [3.0, -3.0], [-3.0, 3.0], [3.0, 3.0]], device=self.device)
+            pick = torch.randint(0, 4, (len(env_ids),), device=self.device)
+            corner_offsets = corners[pick]
+            # set goal to chosen corner
+            self._goal_pos_w[env_ids, 0] = self._terrain.env_origins[env_ids, 0] + corner_offsets[:, 0]
+            self._goal_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + corner_offsets[:, 1]
+            self._goal_pos_w[env_ids, 2] = torch.ones(len(env_ids), device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
+
+            # place drone in opposite corner (mirrored)
+            opp = -corner_offsets
+            default_root_state[:, 0] = self._terrain.env_origins[env_ids, 0] + opp[:, 0]
+            default_root_state[:, 1] = self._terrain.env_origins[env_ids, 1] + opp[:, 1]
+            default_root_state[:, 2] = torch.zeros(len(env_ids), device=self.device).uniform_(0.5, 1.5)
+
+            # rewrite pose & velocity so the sim reflects the overrides
+            self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
+            self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
+
+        # compute distances using the (possibly-overridden) start and goal
         pos_w = default_root_state[:, :3]
         self._distance_to_goal[env_ids] = torch.norm(self._goal_pos_w[env_ids] - pos_w, dim=1)
         self._previous_distance[env_ids] = self._distance_to_goal[env_ids].clone()
