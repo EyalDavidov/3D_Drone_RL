@@ -1,5 +1,5 @@
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlMLPModelCfg, RslRlPpoAlgorithmCfg
 
 @configclass
 class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
@@ -10,13 +10,28 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
     logger = "wandb"
     wandb_project = "navigation_drone"
 
-    # Actor-Critic network (Standard MLP for Phase 1)
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[128, 64, 32],
-        critic_hidden_dims=[128, 64, 32],
+    # Actor network
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[128, 64, 32],
         activation="elu",
+        obs_normalization=False,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
+            init_std=1.0,
+        ),
     )
+
+    # Critic network
+    critic = RslRlMLPModelCfg(
+        hidden_dims=[128, 64, 32],
+        activation="elu",
+        obs_normalization=False,
+    )
+
+    # Map observation dict keys to actor/critic
+    obs_groups = {
+        "actor": ["policy"],
+        "critic": ["policy"],
+    }
 
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
@@ -32,3 +47,4 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
