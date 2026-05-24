@@ -138,6 +138,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
+    # --- Auto-enable AE/VAE visualization in play mode ---
+    if hasattr(env.unwrapped, "cfg"):
+        if hasattr(env.unwrapped.cfg, "show_ae_images"):
+            env.unwrapped.cfg.show_ae_images = True
+            env.unwrapped.cfg.ae_image_display_interval = 2
+        if hasattr(env.unwrapped.cfg, "show_vae_images"):
+            env.unwrapped.cfg.show_vae_images = True
+            env.unwrapped.cfg.vae_image_display_interval = 2
+
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -228,10 +237,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.viewer and timestep % 2 == 0:
             if hasattr(env.unwrapped, "_tiled_camera"):
                 raw_depth = env.unwrapped._tiled_camera.data.output["depth"][0, :, :, 0].clone()
-                # print("-----------------------------------------------")
-                # print("Linear velocity (body frame): ", torch.sum(torch.square(env.unwrapped._robot.data.root_lin_vel_b[0, :3])).item())
-                # print("Angular velocity (body frame): ", torch.sum(torch.square(env.unwrapped._robot.data.root_ang_vel_b[0, :3])).item())
-                # print("-----------------------------------------------")
 
                 # User defined min (w) and max (b) limits for depth mapping
                 w = 0.1
@@ -245,14 +250,38 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 raw_depth = raw_depth.clamp(w, b)
                 
                 # Normalize to 0-255 uint8 format
-                # We invert it so closer objects (w) are brighter and farther (b) are darker
                 depth_range = max(b - w, 1e-6)
                 normalized_img = (((raw_depth - w) / depth_range) * 255.0).byte().cpu().numpy()
                 
-                # Upscale strictly for the debug viewer (50x50 -> 500x500)
+                # Upscale for the debug viewer
                 display_img = cv2.resize(normalized_img, (500, 500), interpolation=cv2.INTER_NEAREST)
                 
                 cv2.imshow("Drone Env 0 Camera", display_img)
+
+                # --- AE Reconstruction Viewer ---
+                if hasattr(env.unwrapped, "ae") and hasattr(env.unwrapped, "_last_depth_processed"):
+                    import numpy as np
+                    depth_proc = env.unwrapped._last_depth_processed
+                    if depth_proc is not None and depth_proc.shape[0] > 0:
+                        with torch.no_grad():
+                            z = env.unwrapped.ae.encode(depth_proc[:1])
+                            recon = env.unwrapped.ae.decode(z)
+                        
+                        input_img = depth_proc[0, 0].cpu().numpy()
+                        recon_img = recon[0, 0].cpu().numpy()
+                        
+                        input_vis = np.uint8(np.clip(input_img * 255.0, 0, 255))
+                        recon_vis = np.uint8(np.clip(recon_img * 255.0, 0, 255))
+                        combined = np.hstack([input_vis, recon_vis])
+                        
+                        scale = 4
+                        combined = cv2.resize(combined, (combined.shape[1] * scale, combined.shape[0] * scale),
+                                              interpolation=cv2.INTER_NEAREST)
+                        combined = cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR)
+                        cv2.putText(combined, "AE Input (left) | Reconstruction (right)",
+                                    (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+                        cv2.imshow("AE Input vs Reconstruction", combined)
+
                 cv2.waitKey(1)
 
         timestep += 1

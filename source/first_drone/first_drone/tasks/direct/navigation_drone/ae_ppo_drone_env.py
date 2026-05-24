@@ -84,6 +84,7 @@ class AEPPODroneEnv(DirectRLEnv):
         # ----- High-level navigator buffers -----
         self._desired_vel_b = torch.zeros(self.num_envs, 3, device=self.device)
         self._target_yaw = torch.zeros(self.num_envs, device=self.device)
+        self._previous_actions = torch.zeros(self.num_envs, 4, device=self.device)
 
         # ----- Depth image buffer -----
         self._last_depth_processed = None
@@ -165,6 +166,7 @@ class AEPPODroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
         """Convert high-level navigation actions to low-level motor commands."""
+        self._previous_actions = self._actions.clone()
         self._actions = actions.clone().clamp(-1.0, 1.0)
 
         # --- PHASE 2: 6-DOF Release (Agile Navigation & Dodging) ---
@@ -305,15 +307,22 @@ class AEPPODroneEnv(DirectRLEnv):
         heading_error = wrap_to_pi(target_yaw - current_yaw)
         heading_alignment = torch.cos(heading_error)
 
-        # 5. Angular velocity penalty
+        # 5. Angular velocity penalty (roll + pitch stability)
         ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
 
-        # 6. Action magnitude penalty
+        # 6. Yaw rate penalty — punishes unnecessary turning (action[3])
+        yaw_action_sq = self._actions[:, 3] ** 2
+
+        # 7. Action magnitude penalty (smooth commands)
         action_sq = torch.sum(self._actions ** 2, dim=1)
 
-        # 7. Sideslip penalty
+        # 8. Sideslip penalty
         lateral_vel = self._robot.data.root_lin_vel_b[:, 1]
         sideslip_sq = lateral_vel ** 2
+
+        # 9. Forward speed bonus — reward forward body velocity toward goal
+        forward_vel = self._robot.data.root_lin_vel_b[:, 0].clamp(min=0.0)
+        forward_speed_bonus = forward_vel * heading_alignment.clamp(min=0.0)
 
         # Velocity alignment
         vel_w = self._robot.data.root_lin_vel_w
@@ -345,6 +354,9 @@ class AEPPODroneEnv(DirectRLEnv):
         )
         stuck_penalty = stuck_mask.float() * -0.2
 
+        # Action rate penalty — smooths out commands, reduces shaking
+        action_rate_sq = torch.sum((self._actions - self._previous_actions) ** 2, dim=1)
+
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
@@ -352,7 +364,10 @@ class AEPPODroneEnv(DirectRLEnv):
             "heading": self.cfg.w_heading * heading_alignment,
             "vel_align": getattr(self.cfg, "w_vel_align", 0.5) * velocity_alignment,
             "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
+            "yaw_rate": getattr(self.cfg, "w_yaw_rate", -0.1) * yaw_action_sq,
+            "forward_speed": getattr(self.cfg, "w_forward_speed", 0.3) * forward_speed_bonus,
             "action": self.cfg.w_action * action_sq,
+            "action_rate": getattr(self.cfg, "w_action_rate", -0.02) * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
             "proximity": getattr(self.cfg, "w_proximity", 1.0) * proximity_penalty,
             "stuck": stuck_penalty,
