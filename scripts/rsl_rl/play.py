@@ -160,7 +160,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        agent_dict = agent_cfg.to_dict()
+        for model_key in ["actor", "critic"]:
+            if model_key in agent_dict:
+                agent_dict[model_key].pop("stochastic", None)
+                agent_dict[model_key].pop("init_noise_std", None)
+                agent_dict[model_key].pop("noise_std_type", None)
+                agent_dict[model_key].pop("state_dependent_std", None)
+        runner = OnPolicyRunner(env, agent_dict, log_dir=None, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:

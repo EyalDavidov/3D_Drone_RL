@@ -130,15 +130,15 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     w_progress: float = 20.0
     w_goal: float = 300.0
     w_time: float = -0.06
-    w_heading: float = 0.05
+    w_heading: float = 0.2
     w_vel_align: float = 0.5
     vel_align_max_speed: float = 1.0
-    collision_penalty: float = -30.0
+    collision_penalty: float = -150.0
     w_ang_vel: float = -0.005
     w_action: float = -0.005
     w_sideslip: float = -0.2
-    w_proximity: float = 1.5
-    pillar_proximity_radius: float = 0.5
+    w_proximity: float = 3.0
+    pillar_proximity_radius: float = 0.6
     goal_radius: float = 0.25
     pillar_collision_radius: float = 0.15
 
