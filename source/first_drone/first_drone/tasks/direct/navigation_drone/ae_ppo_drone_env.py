@@ -116,7 +116,7 @@ class AEPPODroneEnv(DirectRLEnv):
         for key in [
             "progress", "goal", "time", "heading", "vel_align", "ang_vel",
             "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
-            "proximity", "speed_proximity", "near_miss", "stuck", "collision"
+            "proximity", "speed_proximity", "stuck", "collision"
         ]:
             self._env0_log_values["Env0_Reward/" + key] = 0.0
             self._env0_accumulated_rewards[key] = 0.0
@@ -434,19 +434,6 @@ class AEPPODroneEnv(DirectRLEnv):
         # Speed penalty near obstacles: penalize speed proportional to how close we are to any pillar
         speed_proximity_penalty = speed * proximity_penalty
 
-        # Near-miss penalty: STEEP penalty in the "danger zone" (0.25m) just above collision radius (0.15m)
-        # This creates a hard "wall" of punishment that the linear proximity can't provide
-        near_miss_penalty = torch.zeros(self.num_envs, device=self.device)
-        near_miss_radius = getattr(self.cfg, "near_miss_radius", 0.25)
-        for pillar in self._pillars:
-            pillar_pos = pillar.data.root_pos_w[:, :3]
-            dist = torch.linalg.norm((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]), dim=1)
-            # Linear scale within danger zone, then SQUARED for steep escalation near pillar
-            danger_scaled = ((near_miss_radius - dist) / (near_miss_radius + 1e-6)).clamp(min=0.0)
-            near_miss_penalty = torch.maximum(near_miss_penalty, danger_scaled)
-
-
-
         # Collision
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
 
@@ -471,9 +458,8 @@ class AEPPODroneEnv(DirectRLEnv):
             "action": self.cfg.w_action * action_sq,
             "action_rate": getattr(self.cfg, "w_action_rate", -0.02) * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
-            "proximity": getattr(self.cfg, "w_proximity", 2.5) * (-proximity_penalty),
+            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty),
             "speed_proximity": getattr(self.cfg, "w_speed_proximity", -4.0) * speed_proximity_penalty,
-            "near_miss": getattr(self.cfg, "w_near_miss", -8.0) * near_miss_penalty,
             "stuck": stuck_penalty,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }

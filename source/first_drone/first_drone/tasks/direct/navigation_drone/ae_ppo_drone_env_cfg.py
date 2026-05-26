@@ -143,11 +143,9 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     w_action: float = -0.005
     w_action_rate: float = -0.02
     w_sideslip: float = -0.2
-    w_proximity: float = 2.5
+    w_proximity: float = 1.5
     pillar_proximity_radius: float = 0.5
     w_speed_proximity: float = -4.0       # penalty for speed when close to pillars
-    w_near_miss: float = -8.0             # steep penalty in danger zone (just above collision radius)
-    near_miss_radius: float = 0.25        # danger zone radius (collision_radius=0.15, so 0.1m buffer)
     goal_radius: float = 0.25
     pillar_collision_radius: float = 0.15
 
