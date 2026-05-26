@@ -108,6 +108,7 @@ class AEPPODroneEnv(DirectRLEnv):
         self._env0_accumulated_rewards = {}
         self._env0_died_count = 0.0
         self._env0_timeout_count = 0.0
+        self._env0_episode_count_window = 0
         self._env0_episode_lengths = []
         self._env0_final_distances = []
         
@@ -115,7 +116,7 @@ class AEPPODroneEnv(DirectRLEnv):
         for key in [
             "progress", "goal", "time", "heading", "vel_align", "ang_vel",
             "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
-            "proximity", "speed_proximity", "stuck", "collision"
+            "proximity", "speed_proximity", "near_miss", "stuck", "collision"
         ]:
             self._env0_log_values["Env0_Reward/" + key] = 0.0
             self._env0_accumulated_rewards[key] = 0.0
@@ -123,6 +124,7 @@ class AEPPODroneEnv(DirectRLEnv):
         self._env0_log_values["Env0_Termination/time_out"] = 0.0
         self._env0_log_values["Env0_Metrics/final_distance_to_goal"] = 0.0
         self._env0_log_values["Env0_Metrics/episode_length"] = 0.0
+        self._env0_log_values["Env0_Metrics/collision_rate"] = 0.0
 
     # ------------------------------------------------------------------
     # Scene setup
@@ -245,6 +247,7 @@ class AEPPODroneEnv(DirectRLEnv):
             died = terminated[0].item() and not reached_goal
             self._env0_died_count += float(died)
             self._env0_timeout_count += float(truncated[0].item())
+            self._env0_episode_count_window += 1
             if hasattr(self, "_env0_last_episode_length"):
                 self._env0_episode_lengths.append(self._env0_last_episode_length)
             if hasattr(self, "_env0_last_final_dist"):
@@ -259,8 +262,16 @@ class AEPPODroneEnv(DirectRLEnv):
             
             self._env0_log_values["Env0_Termination/died"] = self._env0_died_count
             self._env0_log_values["Env0_Termination/time_out"] = self._env0_timeout_count
+            
+            # Collision rate: crashes / episodes in this 100-step window
+            if self._env0_episode_count_window > 0:
+                self._env0_log_values["Env0_Metrics/collision_rate"] = self._env0_died_count / self._env0_episode_count_window
+            else:
+                self._env0_log_values["Env0_Metrics/collision_rate"] = 0.0
+            
             self._env0_died_count = 0.0
             self._env0_timeout_count = 0.0
+            self._env0_episode_count_window = 0
             
             if len(self._env0_episode_lengths) > 0:
                 self._env0_log_values["Env0_Metrics/episode_length"] = sum(self._env0_episode_lengths) / len(self._env0_episode_lengths)
@@ -423,6 +434,19 @@ class AEPPODroneEnv(DirectRLEnv):
         # Speed penalty near obstacles: penalize speed proportional to how close we are to any pillar
         speed_proximity_penalty = speed * proximity_penalty
 
+        # Near-miss penalty: STEEP penalty in the "danger zone" (0.25m) just above collision radius (0.15m)
+        # This creates a hard "wall" of punishment that the linear proximity can't provide
+        near_miss_penalty = torch.zeros(self.num_envs, device=self.device)
+        near_miss_radius = getattr(self.cfg, "near_miss_radius", 0.25)
+        for pillar in self._pillars:
+            pillar_pos = pillar.data.root_pos_w[:, :3]
+            dist = torch.linalg.norm((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]), dim=1)
+            # Linear scale within danger zone, then SQUARED for steep escalation near pillar
+            danger_scaled = ((near_miss_radius - dist) / (near_miss_radius + 1e-6)).clamp(min=0.0)
+            near_miss_penalty = torch.maximum(near_miss_penalty, danger_scaled)
+
+
+
         # Collision
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
 
@@ -447,8 +471,9 @@ class AEPPODroneEnv(DirectRLEnv):
             "action": self.cfg.w_action * action_sq,
             "action_rate": getattr(self.cfg, "w_action_rate", -0.02) * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
-            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty),
-            "speed_proximity": getattr(self.cfg, "w_speed_proximity", -2.0) * speed_proximity_penalty,
+            "proximity": getattr(self.cfg, "w_proximity", 2.5) * (-proximity_penalty),
+            "speed_proximity": getattr(self.cfg, "w_speed_proximity", -4.0) * speed_proximity_penalty,
+            "near_miss": getattr(self.cfg, "w_near_miss", -8.0) * near_miss_penalty,
             "stuck": stuck_penalty,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }
@@ -514,9 +539,10 @@ class AEPPODroneEnv(DirectRLEnv):
             ).item()
 
         # Log metrics
-        final_dist = torch.linalg.norm(
+        dist_per_env = torch.linalg.norm(
             self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
-        ).mean()
+        )
+        final_dist = dist_per_env.mean()
         extras = dict()
         for key in self._episode_sums.keys():
             avg = torch.mean(self._episode_sums[key][env_ids])
@@ -524,7 +550,15 @@ class AEPPODroneEnv(DirectRLEnv):
             self._episode_sums[key][env_ids] = 0.0
         self.extras["log"] = dict()
         self.extras["log"].update(extras)
-        self.extras["log"]["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
+        
+        # Collision & goal rates (across all envs in this reset batch)
+        reached_goal_mask = dist_per_env < self.cfg.goal_radius
+        crash_mask = self.reset_terminated[env_ids] & ~reached_goal_mask
+        total_resets = max(len(env_ids), 1)
+        self.extras["log"]["Metrics/collision_rate"] = torch.count_nonzero(crash_mask).item() / total_resets
+        self.extras["log"]["Metrics/goal_rate"] = torch.count_nonzero(reached_goal_mask).item() / total_resets
+        
+        self.extras["log"]["Episode_Termination/died"] = torch.count_nonzero(crash_mask).item()
         self.extras["log"]["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"]["Metrics/final_distance_to_goal"] = final_dist.item()
         self.extras["log"]["Metrics/episode_length"] = torch.mean(self.episode_length_buf[env_ids].float()).item()

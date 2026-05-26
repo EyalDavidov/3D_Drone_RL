@@ -126,6 +126,8 @@ def main():
                 wandb.define_metric("Env0_Reward/*", step_metric="Metrics/total_steps")
                 wandb.define_metric("Env0_Termination/*", step_metric="Metrics/total_steps")
                 wandb.define_metric("Env0_Metrics/*", step_metric="Metrics/total_steps")
+                wandb.define_metric("Metrics/collision_rate")
+                wandb.define_metric("Metrics/goal_rate")
                 print("[INFO] WandB: Env0 metrics will use total_steps as x-axis")
         except Exception as e:
             print(f"[WARNING] Could not configure WandB custom metrics: {e}")
