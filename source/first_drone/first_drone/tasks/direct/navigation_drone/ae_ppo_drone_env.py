@@ -569,10 +569,10 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + goal_offsets[:, 1]
             self._desired_pos_w[env_ids, 2] = torch.ones(env_count, device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
         else:
-            self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.0, 1.0) + self._terrain.env_origins[env_ids, 0]
+            self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.65, 1.65) + self._terrain.env_origins[env_ids, 0]
             self._desired_pos_w[env_ids, 1] = -1.0 + self._terrain.env_origins[env_ids, 1]
             self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-1.0, 1.0)
+            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-1.65, 1.65)
             default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
             default_root_state[:, 1] = self.cfg.spawn_y_offset + self._terrain.env_origins[env_ids, 1]
             default_root_state[:, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)

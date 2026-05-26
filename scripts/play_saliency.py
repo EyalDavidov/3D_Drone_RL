@@ -27,6 +27,12 @@ parser.add_argument("--saliency_target", type=str, default="action", choices=["a
                     help="Compute saliency w.r.t. actor output (action) or critic output (value).")
 parser.add_argument("--saliency_env", type=int, default=0, help="Which environment index to visualize.")
 parser.add_argument("--update_interval", type=int, default=2, help="Update saliency every N steps.")
+parser.add_argument("--saliency_method", type=str, default="smoothgrad", choices=["vanilla", "smoothgrad", "integrated"],
+                    help="Method to compute saliency map.")
+parser.add_argument("--saliency_samples", type=int, default=15, help="Number of samples for SmoothGrad/Integrated Gradients.")
+parser.add_argument("--saliency_noise", type=float, default=0.1, help="Noise level (std) for SmoothGrad.")
+parser.add_argument("--no_saliency_focus", action="store_true", default=False,
+                    help="Disable focusing the heatmap on close obstacles (shows raw gradients).")
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
@@ -60,51 +66,82 @@ def compute_saliency(
     actor_mlp: torch.nn.Module,
     actor_obs_normalizer: torch.nn.Module,
     actor_deterministic_output: torch.nn.Module | None = None,
+    method: str = "smoothgrad",
+    num_samples: int = 15,
+    noise_level: float = 0.1,
+    focus_obstacles: bool = True,
 ) -> torch.Tensor:
-    """Compute saliency map via Jacobian of policy output w.r.t. depth pixels.
+    """Compute saliency map of policy output w.r.t. depth pixels.
 
-    Pipeline: depth -> AE encoder -> z_img -> cat(z_img, state) -> normalize -> MLP -> action
-    Gradient flows backward from action to depth pixels.
-
-    Args:
-        depth_image: Preprocessed depth image (1, 1, 72, 128), values in [0, 1].
-        ae_encoder: The AE's encoder CNN (Sequential ending with Flatten).
-        ae_fc_z: The AE's fc_z linear layer (bottleneck).
-        state_features: Non-image state features (1, 13), detached.
-        actor_mlp: The actor's MLP layers (rsl_rl MLP module).
-        actor_obs_normalizer: The actor's observation normalizer (Identity if disabled).
-        actor_deterministic_output: Distribution's deterministic output module, or None.
-
-    Returns:
-        Saliency map (72, 128), normalized to [0, 1].
+    Supports:
+      - 'vanilla': standard Jacobian gradient (often noisy in deep nets)
+      - 'smoothgrad': averages gradients over inputs corrupted by Gaussian noise
+      - 'integrated': path integral of gradients from a black baseline
     """
-    # Enable gradients on the depth image
-    depth_input = depth_image.clone().detach().requires_grad_(True)
+    if method == "vanilla":
+        depth_input = depth_image.clone().detach().requires_grad_(True)
+        h = ae_encoder(depth_input)
+        z_img = ae_fc_z(h)
+        obs = torch.cat([z_img, state_features], dim=-1)
+        obs = actor_obs_normalizer(obs)
+        output = actor_mlp(obs)
+        if actor_deterministic_output is not None:
+            output = actor_deterministic_output(output)
+        loss = output.abs().sum()
+        loss.backward()
+        saliency = depth_input.grad.abs().squeeze(0).squeeze(0)
 
-    # Forward through AE encoder (with gradients!)
-    h = ae_encoder(depth_input)         # (1, 8192)
-    z_img = ae_fc_z(h)                  # (1, 32)
+    elif method == "smoothgrad":
+        total_grad = torch.zeros_like(depth_image[0, 0])
+        for _ in range(num_samples):
+            noise = torch.randn_like(depth_image) * noise_level
+            noisy_depth = (depth_image + noise).clamp(0.0, 1.0)
+            depth_input = noisy_depth.clone().detach().requires_grad_(True)
 
-    # Concatenate with state features to form full observation
-    obs = torch.cat([z_img, state_features], dim=-1)  # (1, 45)
+            h = ae_encoder(depth_input)
+            z_img = ae_fc_z(h)
+            obs = torch.cat([z_img, state_features], dim=-1)
+            obs = actor_obs_normalizer(obs)
+            output = actor_mlp(obs)
+            if actor_deterministic_output is not None:
+                output = actor_deterministic_output(output)
+            loss = output.abs().sum()
+            loss.backward()
 
-    # Normalize observations (matches MLPModel.get_latent)
-    obs = actor_obs_normalizer(obs)
+            if depth_input.grad is not None:
+                total_grad += depth_input.grad.abs().squeeze(0).squeeze(0)
+        saliency = total_grad / num_samples
 
-    # Forward through actor MLP
-    output = actor_mlp(obs)  # (1, N)
+    elif method == "integrated":
+        total_grad = torch.zeros_like(depth_image[0, 0])
+        baseline = torch.zeros_like(depth_image)  # completely black baseline
+        for step in range(1, num_samples + 1):
+            alpha = step / num_samples
+            interpolated = baseline + alpha * (depth_image - baseline)
+            depth_input = interpolated.clone().detach().requires_grad_(True)
 
-    # Apply deterministic output mapping if it exists (e.g., mean extraction)
-    if actor_deterministic_output is not None:
-        output = actor_deterministic_output(output)  # (1, 4)
+            h = ae_encoder(depth_input)
+            z_img = ae_fc_z(h)
+            obs = torch.cat([z_img, state_features], dim=-1)
+            obs = actor_obs_normalizer(obs)
+            output = actor_mlp(obs)
+            if actor_deterministic_output is not None:
+                output = actor_deterministic_output(output)
+            loss = output.abs().sum()
+            loss.backward()
 
-    # Compute gradient: sum of absolute output values w.r.t. input pixels
-    loss = output.abs().sum()
-    loss.backward()
+            if depth_input.grad is not None:
+                total_grad += depth_input.grad.abs().squeeze(0).squeeze(0)
+        # Average and multiply by differences from baseline
+        saliency = (total_grad / num_samples) * (depth_image - baseline).abs().squeeze(0).squeeze(0)
 
-    # Extract gradient map
-    grad = depth_input.grad  # (1, 1, 72, 128)
-    saliency = grad.abs().squeeze(0).squeeze(0)  # (72, 128)
+    else:
+        raise ValueError(f"Unknown saliency method: {method}")
+
+    # Focus saliency on close obstacles (pillars) by weighting with proximity (1.0 - depth)
+    if focus_obstacles:
+        proximity = 1.0 - depth_image[0, 0]
+        saliency = saliency * proximity
 
     # Normalize to [0, 1]
     sal_min, sal_max = saliency.min(), saliency.max()
@@ -215,6 +252,10 @@ def main():
                         depth_single, ae_encoder, ae_fc_z,
                         state_features, actor_mlp,
                         actor_obs_normalizer, actor_deterministic_output,
+                        method=args_cli.saliency_method,
+                        num_samples=args_cli.saliency_samples,
+                        noise_level=args_cli.saliency_noise,
+                        focus_obstacles=not args_cli.no_saliency_focus,
                     )
 
                     # === Visualization ===
