@@ -222,7 +222,7 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # Step 2: AE encode (no gradients for RL)
         z_img = self.ae.encode_detached(depth)  # (B, 32)
-
+        
         if getattr(self.cfg, "show_ae_images", False):
             self._show_ae_images(depth)
 
@@ -286,7 +286,7 @@ class AEPPODroneEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute reward — Phase 2: 6-DOF with heading lock."""
         curr_dist = torch.linalg.norm(
-            (self._desired_pos_w - self._robot.data.root_pos_w)[:, :2], dim=1
+            self._desired_pos_w - self._robot.data.root_pos_w, dim=1
         )
 
         # 1. Progress reward
@@ -405,7 +405,7 @@ class AEPPODroneEnv(DirectRLEnv):
             dist_sq = torch.sum((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]) ** 2, dim=1)
             hit_pillar = hit_pillar | (dist_sq < (pillar_radius ** 2))
 
-        distance_to_goal = torch.linalg.norm((self._desired_pos_w - self._robot.data.root_pos_w)[:, :2], dim=1)
+        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
         died = hit_floor_or_ceiling | hit_wall | hit_pillar
@@ -424,7 +424,7 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # Log metrics
         final_dist = torch.linalg.norm(
-            (self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids])[:, :2], dim=1
+            self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
         ).mean()
         extras = dict()
         for key in self._episode_sums.keys():
@@ -499,7 +499,7 @@ class AEPPODroneEnv(DirectRLEnv):
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         self._prev_dist_to_goal[env_ids] = torch.linalg.norm(
-            (self._desired_pos_w[env_ids] - default_root_state[:, :3])[:, :2], dim=1
+            self._desired_pos_w[env_ids] - default_root_state[:, :3], dim=1
         )
 
         # Randomize Pillar Positions
