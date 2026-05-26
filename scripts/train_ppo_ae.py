@@ -116,6 +116,20 @@ def main():
 
     runner = OnPolicyRunner(env, agent_dict, log_dir=log_dir, device=agent_cfg.device)
 
+    # ---- Configure WandB step-based x-axis for Env0 panel ----
+    if not args_cli.no_wandb:
+        try:
+            import wandb
+            if wandb.run is not None:
+                # Define custom x-axis for Env0 metrics (step-based instead of iteration-based)
+                wandb.define_metric("Metrics/total_steps")
+                wandb.define_metric("Env0_Reward/*", step_metric="Metrics/total_steps")
+                wandb.define_metric("Env0_Termination/*", step_metric="Metrics/total_steps")
+                wandb.define_metric("Env0_Metrics/*", step_metric="Metrics/total_steps")
+                print("[INFO] WandB: Env0 metrics will use total_steps as x-axis")
+        except Exception as e:
+            print(f"[WARNING] Could not configure WandB custom metrics: {e}")
+
     # ---- Load checkpoint ----
     if args_cli.resume:
         print(f"[INFO]: Loading model checkpoint from: {args_cli.resume}")

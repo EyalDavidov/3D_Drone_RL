@@ -103,6 +103,27 @@ class AEPPODroneEnv(DirectRLEnv):
         # Debug visualization
         self.set_debug_vis(self.cfg.debug_vis)
 
+        # ----- Env 0 100-step logging buffers -----
+        self._env0_step_counter = 0
+        self._env0_accumulated_rewards = {}
+        self._env0_died_count = 0.0
+        self._env0_timeout_count = 0.0
+        self._env0_episode_lengths = []
+        self._env0_final_distances = []
+        
+        self._env0_log_values = {}
+        for key in [
+            "progress", "goal", "time", "heading", "vel_align", "ang_vel",
+            "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
+            "proximity", "speed_proximity", "stuck", "collision"
+        ]:
+            self._env0_log_values["Env0_Reward/" + key] = 0.0
+            self._env0_accumulated_rewards[key] = 0.0
+        self._env0_log_values["Env0_Termination/died"] = 0.0
+        self._env0_log_values["Env0_Termination/time_out"] = 0.0
+        self._env0_log_values["Env0_Metrics/final_distance_to_goal"] = 0.0
+        self._env0_log_values["Env0_Metrics/episode_length"] = 0.0
+
     # ------------------------------------------------------------------
     # Scene setup
     # ------------------------------------------------------------------
@@ -204,6 +225,61 @@ class AEPPODroneEnv(DirectRLEnv):
     def _get_drone_yaw(self) -> torch.Tensor:
         _, _, yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
         return yaw
+
+    def step(self, actions) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        # Call the parent step (handles simulation, rewards, and resets)
+        obs, rewards, terminated, truncated, info = super().step(actions)
+        
+        # 1. Increment env0 step counter
+        self._env0_step_counter += 1
+        
+        # 2. Accumulate step rewards for env0
+        if hasattr(self, "_env0_last_step_rewards"):
+            for key, val in self._env0_last_step_rewards.items():
+                if key in self._env0_accumulated_rewards:
+                    self._env0_accumulated_rewards[key] += val
+        
+        # 3. Track metrics if env 0 reset in this step
+        if terminated[0].item() or truncated[0].item():
+            reached_goal = (torch.linalg.norm(self._desired_pos_w[0] - self._robot.data.root_pos_w[0]) < self.cfg.goal_radius).item()
+            died = terminated[0].item() and not reached_goal
+            self._env0_died_count += float(died)
+            self._env0_timeout_count += float(truncated[0].item())
+            if hasattr(self, "_env0_last_episode_length"):
+                self._env0_episode_lengths.append(self._env0_last_episode_length)
+            if hasattr(self, "_env0_last_final_dist"):
+                self._env0_final_distances.append(self._env0_last_final_dist)
+        
+        # 4. Check if 100 steps completed for env0
+        if self._env0_step_counter >= 100:
+            # Update log values
+            for key in self._env0_accumulated_rewards.keys():
+                self._env0_log_values["Env0_Reward/" + key] = self._env0_accumulated_rewards[key] / 100.0
+                self._env0_accumulated_rewards[key] = 0.0
+            
+            self._env0_log_values["Env0_Termination/died"] = self._env0_died_count
+            self._env0_log_values["Env0_Termination/time_out"] = self._env0_timeout_count
+            self._env0_died_count = 0.0
+            self._env0_timeout_count = 0.0
+            
+            if len(self._env0_episode_lengths) > 0:
+                self._env0_log_values["Env0_Metrics/episode_length"] = sum(self._env0_episode_lengths) / len(self._env0_episode_lengths)
+                self._env0_episode_lengths = []
+            if len(self._env0_final_distances) > 0:
+                self._env0_log_values["Env0_Metrics/final_distance_to_goal"] = sum(self._env0_final_distances) / len(self._env0_final_distances)
+                self._env0_final_distances = []
+                
+            self._env0_step_counter = 0
+
+        # 5. Ensure "log" is in self.extras, and update it with our Env0 values
+        if "log" not in self.extras:
+            self.extras["log"] = {}
+        self.extras["log"].update(self._env0_log_values)
+        
+        # We also need to log total_steps on every single step so it is always present for step alignment!
+        self.extras["log"]["Metrics/total_steps"] = float(self.common_step_counter)
+        
+        return obs, rewards, terminated, truncated, info
 
     # ------------------------------------------------------------------
     # Observations
@@ -335,7 +411,7 @@ class AEPPODroneEnv(DirectRLEnv):
         speed_factor = (speed / vel_align_max_speed).clamp(0.0, 1.0)
         velocity_alignment = cos_sim * speed_factor
 
-        # Proximity penalty
+        # Proximity penalty (MAX across all pillars)
         proximity_penalty = torch.zeros(self.num_envs, device=self.device)
         proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 0.5)
         for pillar in self._pillars:
@@ -343,7 +419,9 @@ class AEPPODroneEnv(DirectRLEnv):
             dist = torch.linalg.norm((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]), dim=1)
             scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
             proximity_penalty = torch.maximum(proximity_penalty, scaled)
-        proximity_penalty = -proximity_penalty
+
+        # Speed penalty near obstacles: penalize speed proportional to how close we are to any pillar
+        speed_proximity_penalty = speed * proximity_penalty
 
         # Collision
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
@@ -369,11 +447,17 @@ class AEPPODroneEnv(DirectRLEnv):
             "action": self.cfg.w_action * action_sq,
             "action_rate": getattr(self.cfg, "w_action_rate", -0.02) * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
-            "proximity": getattr(self.cfg, "w_proximity", 1.0) * proximity_penalty,
+            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty),
+            "speed_proximity": getattr(self.cfg, "w_speed_proximity", -2.0) * speed_proximity_penalty,
             "stuck": stuck_penalty,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+
+        # Store individual step rewards for env 0 to be accumulated in step()
+        self._env0_last_step_rewards = {
+            key: rewards[key][0].item() for key in rewards.keys()
+        }
 
         # Accumulate for logging
         for key, value in rewards.items():
@@ -422,6 +506,13 @@ class AEPPODroneEnv(DirectRLEnv):
         assert env_ids is not None
         env_count = env_ids.shape[0]
 
+        # Capture env0 metrics before reset and clearing self._episode_sums
+        if 0 in env_ids:
+            self._env0_last_episode_length = float(self.episode_length_buf[0].item())
+            self._env0_last_final_dist = torch.linalg.norm(
+                self._desired_pos_w[0] - self._robot.data.root_pos_w[0]
+            ).item()
+
         # Log metrics
         final_dist = torch.linalg.norm(
             self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
@@ -437,6 +528,11 @@ class AEPPODroneEnv(DirectRLEnv):
         self.extras["log"]["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"]["Metrics/final_distance_to_goal"] = final_dist.item()
         self.extras["log"]["Metrics/episode_length"] = torch.mean(self.episode_length_buf[env_ids].float()).item()
+        self.extras["log"]["Metrics/total_steps"] = float(self.common_step_counter)
+
+        # Always inject Env0 keys to ensure they are present in ep_extras[0]
+        if hasattr(self, "_env0_log_values"):
+            self.extras["log"].update(self._env0_log_values)
 
         # Reset robot
         self._robot.reset(env_ids)
