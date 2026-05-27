@@ -88,8 +88,8 @@ class TestYoloEnv(DirectRLEnv):
         # Enable the arena map USD
         # Map is originally ~5000 units wide in -X direction. Scale by 0.01 -> 50m.
         # The map was exported Y-up (vertical), so we rotate it 90 degrees around the X-axis to lie flat.
-        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path, scale=(0.01, 0.01, 0.01))
-        room_cfg.func("/World/envs/env_0/Room", room_cfg, translation=(25.0, 25.0, 0.0), orientation=(0.7071, 0.7071, 0.0, 0.0))
+        # room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path, scale=(0.01, 0.01, 0.01))
+        # room_cfg.func("/World/envs/env_0/Room", room_cfg, translation=(25.0, 25.0, 0.0), orientation=(0.7071, 0.7071, 0.0, 0.0))
 
         # Dynamic People Spawning for YOLO Testing
         # Using built-in NVIDIA worker asset from S3/Nucleus
@@ -104,7 +104,7 @@ class TestYoloEnv(DirectRLEnv):
         # Spawn ONE person 3.5 meters in front of the drone on the X axis.
         # Shift Z up by ~0.9 meters because the asset origin is likely at its center, not its feet.
         # Rotated 90 degrees right -> Quaternion: W=0.7071, X=0, Y=0, Z=-0.7071 (Testing this so they face the right way)
-        person_cfg.func("/World/envs/env_0/Person0", person_cfg, translation=(3.5, 0.0, 0.9), orientation=(0.7071, 0.0, 0.0, -0.7071))
+        person_cfg.func("/World/envs/env_0/Person0", person_cfg, translation=(3.5, 0.0, 0.0), orientation=(0.7071, 0.0, 0.0, -0.7071))
 
         # --- Spawn a wall with a hole for the face ---
         # The wall is placed at X=2.5 (between the drone starting point and the person at X=3.5)
