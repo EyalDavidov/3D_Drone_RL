@@ -1,7 +1,7 @@
 """SAC+VAE Training Script for the drone navigation task.
 
 Usage:
-    c:\\Isaac\\IsaacLab\\isaaclab.bat -p scripts/sac/train.py --task SAC-First-Drone-Direct-v0 --num_envs 64 --enable_cameras
+    isaaclab.bat -p scripts/sac/train.py --task SAC-First-Drone-Direct-v0 --num_envs 64 --enable_cameras
 
 This script bypasses RSL-RL entirely and runs a custom SAC training loop with:
   - Online VAE training on depth images

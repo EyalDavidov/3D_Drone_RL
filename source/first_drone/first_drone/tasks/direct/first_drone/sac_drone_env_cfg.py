@@ -1,11 +1,8 @@
-"""Configuration for the SAC+VAE drone environment.
-
-Camera is set to 128×72 as specified in the paper.
-Observation space is 45-dim flat vector (after VAE encoding + state concat),
-so the RL algorithm sees a simple MLP-friendly input.
-"""
-
+import os
 from first_drone.robots.cf2x import DRONE_CONFIG
+
+# Get the repository root directory
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../"))
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
@@ -63,7 +60,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room
-    room_usd_path: str = "C:\\Isaac\\Assets\\room_with_poles.usd"
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "room_with_poles.usd")
 
     # camera — 128×72 depth as specified in the paper
     tiled_camera: TiledCameraCfg = TiledCameraCfg(

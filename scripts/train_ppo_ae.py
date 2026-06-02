@@ -1,7 +1,7 @@
 """Script to train RL agent with PPO (RSL-RL) + AE.
 
 Usage:
-    c:\\Isaac\\IsaacLab\\isaaclab.bat -p scripts/train_ppo_ae.py --task AE-PPO-Drone-Direct-v0 --num_envs 512 --enable_cameras --freeze_ae
+    isaaclab.bat -p scripts/train_ppo_ae.py --task AE-PPO-Drone-Direct-v0 --num_envs 512 --enable_cameras --freeze_ae
 """
 
 """Launch Isaac Sim Simulator first."""

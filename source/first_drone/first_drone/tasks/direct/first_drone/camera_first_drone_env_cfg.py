@@ -1,4 +1,8 @@
+import os
 from first_drone.robots.cf2x import DRONE_CONFIG
+
+# Get the repository root directory
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../"))
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
@@ -56,7 +60,7 @@ class CameraFirstDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room with poles — spawned as a static USD prim per-env (no RigidBodyAPI needed)
-    room_usd_path: str = "C:\\Isaac\\Assets\\room_with_poles.usd"
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "room_with_poles.usd")
 
     # camera — body-mounted depth sensor
     tiled_camera: TiledCameraCfg = TiledCameraCfg(

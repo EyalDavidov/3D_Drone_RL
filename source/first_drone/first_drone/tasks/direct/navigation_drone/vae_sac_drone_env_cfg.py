@@ -7,6 +7,9 @@ so the RL algorithm sees a simple MLP-friendly input.
 
 import os
 
+# Get the repository root directory
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../"))
+
 from first_drone.robots.cf2x import DRONE_CONFIG
 
 import isaaclab.sim as sim_utils
@@ -65,7 +68,7 @@ class SACDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room — empty room (pillars are now dynamic RigidObjects)
-    room_usd_path: str = "D:\\isaac\\3D_Drone_RL\\assets\\Empty_Room.usd"
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "Empty_Room.usd")
 
     # ---------- Dynamic Pillars (Domain Randomization) ----------
     num_pillars: int = 6

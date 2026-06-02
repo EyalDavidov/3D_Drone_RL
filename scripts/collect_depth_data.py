@@ -6,7 +6,7 @@ are collected.  No RL model is used — the drone follows a scripted
 circular trajectory via direct wrench control.
 
 Usage:
-    c:\\Isaac\\IsaacLab\\isaaclab.bat -p scripts/collect_depth_data.py --enable_cameras
+    isaaclab.bat -p scripts/collect_depth_data.py --enable_cameras
 """
 
 # ── Launch Isaac Sim first ──────────────────────────────────────────

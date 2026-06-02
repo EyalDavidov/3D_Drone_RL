@@ -3,7 +3,7 @@
 Loads a trained checkpoint and runs the policy in the environment.
 
 Usage:
-    c:\\Isaac\\IsaacLab\\isaaclab.bat -p scripts/sac/play.py --checkpoint logs/sac/.../checkpoint_final.pt --num_envs 4 --enable_cameras
+    isaaclab.bat -p scripts/sac/play.py --checkpoint logs/sac/.../checkpoint_final.pt --num_envs 4 --enable_cameras
 """
 
 """Launch Isaac Sim Simulator first."""

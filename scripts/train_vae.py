@@ -13,6 +13,9 @@ Usage:
 
 import argparse
 import os
+
+# Repository root (one level up from scripts/)
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 import sys
 import glob
 
@@ -96,7 +99,7 @@ def visualize_reconstruction(epoch: int, original: torch.Tensor,
 
 def main():
     parser = argparse.ArgumentParser(description="Train VAE on collected depth data (standalone).")
-    parser.add_argument("--data_dir", type=str, default="D:\\isaac\\3D_Drone_RL\\data\\depth_collection",
+    parser.add_argument("--data_dir", type=str, default=os.path.join(_REPO_ROOT, "data", "depth_collection"),
                         help="Path to collected .npy depth images.")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=100)
@@ -105,7 +108,7 @@ def main():
     parser.add_argument("--beta", type=float, default=1e-3, help="Beta weight for KL loss.")
     parser.add_argument("--vis_interval", type=int, default=50,
                         help="Show reconstruction every N batches.")
-    parser.add_argument("--save_dir", type=str, default="D:\\isaac\\3D_Drone_RL\\logs\\vae",
+    parser.add_argument("--save_dir", type=str, default=os.path.join(_REPO_ROOT, "logs", "vae"),
                         help="Directory to save model weights.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a .pt checkpoint to resume training from.")

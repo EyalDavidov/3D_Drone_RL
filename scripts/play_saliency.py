@@ -5,7 +5,7 @@ depth image pixels: nabla_x pi(a|s). Visualizes these gradients as a heatmap
 overlaying the depth image to show which pixels drive the agent's decisions.
 
 Usage:
-    D:\\Isaac\\IsaacLab\\isaaclab.bat -p scripts/play_saliency.py ^
+    isaaclab.bat -p scripts/play_saliency.py ^
         --task AE-PPO-Drone-Direct-v0 --num_envs 4 --enable_cameras ^
         --checkpoint logs/ppo/navigation_drone_direct/24-05_22-30/model_1499.pt
 """

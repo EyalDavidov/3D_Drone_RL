@@ -1,11 +1,16 @@
+import os
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
+# Compute repository root relative to this file: robots/ -> first_drone/ -> first_drone/ -> source/ -> 3D_Drone_RL/
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../"))
+
 DRONE_CONFIG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path="D:\\isaac\\3D_Drone_RL\\assets\\cf2x\\cf2x.usd",
+        usd_path=os.path.join(_REPO_ROOT, "assets", "cf2x", "cf2x.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=10.0,
