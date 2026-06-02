@@ -134,19 +134,81 @@ class AEPPODroneEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
-        room_cfg = sim_utils.UsdFileCfg(
-            usd_path=self.cfg.room_usd_path,
-            scale=(2.0, 2.0, 1.0)
-        )
+        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
         room_cfg.func("/World/envs/env_0/Room", room_cfg)
 
-        # --- Dynamic pillars (spawned as kinematic rigid objects) ---
+        # --- Dynamic obstacles (diverse shapes, defined here to avoid @configclass serialization) ---
+        obstacle_spawns = [
+            # 0: Thin cylinder (original pillar)
+            sim_utils.CylinderCfg(
+                radius=0.05, height=3.0,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.15, 0.15)),
+            ),
+            # 1: Wide cuboid (wall segment)
+            sim_utils.CuboidCfg(
+                size=(0.15, 0.4, 3.0),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, 0.2, 0.2)),
+            ),
+            # 2: Thick cylinder (tree trunk)
+            sim_utils.CylinderCfg(
+                radius=0.15, height=3.0,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.4, 0.25, 0.1)),
+            ),
+            # 3: Tall narrow cuboid (pole-like)
+            sim_utils.CuboidCfg(
+                size=(0.08, 0.08, 3.0),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 0.6)),
+            ),
+            # 4: Large sphere
+            sim_utils.SphereCfg(
+                radius=0.25,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.5, 0.1)),
+            ),
+            # 5: Flat wide cuboid (barrier/fence)
+            sim_utils.CuboidCfg(
+                size=(0.05, 0.8, 1.5),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.5, 0.1)),
+            ),
+        ]
+        # Define shape details for accurate perimeter collision check
+        # r_drone = drone_radius (0.07) + margin (0.03) = 0.10
+        self._drone_collision_offset = 0.10
+        self._obstacle_shapes = [
+            # 0: Thin cylinder (original pillar) - radius 0.05, height 3.0 (half-height 1.5)
+            {"type": "cylinder", "radius": 0.05, "half_z": 1.5},
+            # 1: Wide cuboid (wall segment) - size (0.15, 0.4, 3.0), half-extents (0.075, 0.20, 1.5)
+            {"type": "box", "half_x": 0.075, "half_y": 0.20, "half_z": 1.5, "size_x": 0.15, "size_y": 0.40, "height": 3.0},
+            # 2: Thick cylinder (tree trunk) - radius 0.15, height 3.0 (half-height 1.5)
+            {"type": "cylinder", "radius": 0.15, "half_z": 1.5},
+            # 3: Tall narrow cuboid (pole-like) - size (0.08, 0.08, 3.0), half-extents (0.04, 0.04, 1.5)
+            {"type": "box", "half_x": 0.04, "half_y": 0.04, "half_z": 1.5, "size_x": 0.08, "size_y": 0.08, "height": 3.0},
+            # 4: Large sphere - radius 0.25
+            {"type": "sphere", "radius": 0.25},
+            # 5: Flat wide cuboid (barrier/fence) - size (0.05, 0.8, 1.5), half-extents (0.025, 0.40, 0.75)
+            {"type": "box", "half_x": 0.025, "half_y": 0.40, "half_z": 0.75, "size_x": 0.05, "size_y": 0.80, "height": 1.5},
+        ]
+        # Keep _obstacle_collision_radii for compatibility (e.g. fallback defaults)
+        self._obstacle_collision_radii = [0.15, 0.31, 0.25, 0.16, 0.35, 0.50]
+
         zone_centers = [(lo + hi) / 2.0 for lo, hi in self.cfg.pillar_x_zones]
         self._pillars = []
         for i in range(self.cfg.num_pillars):
+            spawn_cfg = obstacle_spawns[i]
             pillar_cfg = RigidObjectCfg(
-                prim_path=f"/World/envs/env_.*/Pillar_{i}",
-                spawn=self.cfg.pillar_spawn,
+                prim_path=f"/World/envs/env_.*/Obstacle_{i}",
+                spawn=spawn_cfg,
                 init_state=RigidObjectCfg.InitialStateCfg(
                     pos=(zone_centers[i], 0.0, self.cfg.pillar_z)
                 ),
@@ -428,9 +490,9 @@ class AEPPODroneEnv(DirectRLEnv):
         # Proximity penalty (MAX across all pillars)
         proximity_penalty = torch.zeros(self.num_envs, device=self.device)
         proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 0.5)
-        for pillar in self._pillars:
-            pillar_pos = pillar.data.root_pos_w[:, :3]
-            dist = torch.linalg.norm((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]), dim=1)
+        obstacle_dists = self._compute_obstacle_distances()
+        for i in range(len(self._pillars)):
+            dist = obstacle_dists[:, i]
             scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
             proximity_penalty = torch.maximum(proximity_penalty, scaled)
 
@@ -481,6 +543,52 @@ class AEPPODroneEnv(DirectRLEnv):
 
         return reward
 
+    def _compute_obstacle_distances(self) -> torch.Tensor:
+        """Compute the 3D Euclidean distance from the drone center to each obstacle boundary.
+
+        Returns:
+            torch.Tensor: Shape (num_envs, num_pillars) with distances to each obstacle's boundary.
+        """
+        drone_pos = self._robot.data.root_pos_w[:, :3]  # (num_envs, 3)
+        distances = []
+
+        for i, pillar in enumerate(self._pillars):
+            pillar_pos = pillar.data.root_pos_w[:, :3]  # (num_envs, 3)
+            # Relative vector in world frame
+            rel_w = drone_pos - pillar_pos  # (num_envs, 3)
+            # Rotate relative vector into the local frame of the pillar
+            rel_l = quat_rotate_inverse(pillar.data.root_quat_w, rel_w)  # (num_envs, 3)
+
+            dx = rel_l[:, 0]
+            dy = rel_l[:, 1]
+            dz = rel_l[:, 2]
+
+            shape = self._obstacle_shapes[i]
+            if shape["type"] == "sphere":
+                r = shape["radius"]
+                dist_to_center = torch.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                dist = torch.clamp(dist_to_center - r, min=0.0)
+            elif shape["type"] == "cylinder":
+                r = shape["radius"]
+                hz = shape["half_z"]
+                dist_xy = torch.clamp(torch.sqrt(dx ** 2 + dy ** 2) - r, min=0.0)
+                dist_z = torch.clamp(torch.abs(dz) - hz, min=0.0)
+                dist = torch.sqrt(dist_xy ** 2 + dist_z ** 2)
+            elif shape["type"] == "box":
+                hx = shape["half_x"]
+                hy = shape["half_y"]
+                hz = shape["half_z"]
+                dist_x = torch.clamp(torch.abs(dx) - hx, min=0.0)
+                dist_y = torch.clamp(torch.abs(dy) - hy, min=0.0)
+                dist_z = torch.clamp(torch.abs(dz) - hz, min=0.0)
+                dist = torch.sqrt(dist_x ** 2 + dist_y ** 2 + dist_z ** 2)
+            else:
+                raise ValueError(f"Unknown obstacle shape type: {shape['type']}")
+
+            distances.append(dist)
+
+        return torch.stack(distances, dim=1)  # (num_envs, num_pillars)
+
     # ------------------------------------------------------------------
     # Termination
     # ------------------------------------------------------------------
@@ -491,17 +599,15 @@ class AEPPODroneEnv(DirectRLEnv):
 
         hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 1.9)
         hit_wall = (
-            (pos_local[:, 0] > 3.74) | (pos_local[:, 0] < -3.74)
-            | (pos_local[:, 1] > 3.74) | (pos_local[:, 1] < -3.74)
+            (pos_local[:, 0] > 1.87) | (pos_local[:, 0] < -1.87)
+            | (pos_local[:, 1] > 1.87) | (pos_local[:, 1] < -1.87)
         )
 
-        # Check dynamic pillar collisions
-        pillar_radius = self.cfg.pillar_collision_radius
+        # Check dynamic obstacle collisions
         hit_pillar = torch.zeros_like(hit_wall)
-        for pillar in self._pillars:
-            pillar_pos = pillar.data.root_pos_w[:, :3]
-            dist_sq = torch.sum((self._robot.data.root_pos_w[:, :2] - pillar_pos[:, :2]) ** 2, dim=1)
-            hit_pillar = hit_pillar | (dist_sq < (pillar_radius ** 2))
+        obstacle_dists = self._compute_obstacle_distances()
+        for i in range(len(self._pillars)):
+            hit_pillar = hit_pillar | (obstacle_dists[:, i] < self._drone_collision_offset)
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
@@ -609,10 +715,10 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + goal_offsets[:, 1]
             self._desired_pos_w[env_ids, 2] = torch.ones(env_count, device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
         else:
-            self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-3.3, 3.3) + self._terrain.env_origins[env_ids, 0]
-            self._desired_pos_w[env_ids, 1] = -2.0 + self._terrain.env_origins[env_ids, 1]
+            self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.65, 1.65) + self._terrain.env_origins[env_ids, 0]
+            self._desired_pos_w[env_ids, 1] = -1.0 + self._terrain.env_origins[env_ids, 1]
             self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-3.3, 3.3)
+            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-1.65, 1.65)
             default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
             default_root_state[:, 1] = self.cfg.spawn_y_offset + self._terrain.env_origins[env_ids, 1]
             default_root_state[:, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)
@@ -638,22 +744,37 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids] - default_root_state[:, :3], dim=1
         )
 
-        # Randomize Pillar Positions
+        # Randomize Pillar Positions and Orientations
         num_resets = env_count
         env_origins = self._terrain.env_origins[env_ids]
+
+        # Shuffle the zone assignments for each env to randomize the spawn order
+        zones_tensor = torch.tensor(self.cfg.pillar_x_zones, device=self.device)  # shape (6, 2)
+        perms = torch.stack([torch.randperm(6, device=self.device) for _ in range(num_resets)], dim=0)  # shape (num_resets, 6)
+
         for i, pillar in enumerate(self._pillars):
-            x_lo, x_hi = self.cfg.pillar_x_zones[i]
+            # Select randomized zone boundaries for this obstacle across all reset envs
+            zone_idx = perms[:, i]
+            chosen_zones = zones_tensor[zone_idx]
+            x_lo = chosen_zones[:, 0]
+            x_hi = chosen_zones[:, 1]
+
             y_lo, y_hi = self.cfg.pillar_y_range
 
-            state = pillar.data.default_root_state[env_ids].clone()
-            pillar_x = torch.zeros(num_resets, device=self.device).uniform_(x_lo, x_hi)
+            pillar_x = x_lo + torch.rand(num_resets, device=self.device) * (x_hi - x_lo)
             pillar_y = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi)
 
+            state = pillar.data.default_root_state[env_ids].clone()
             state[:, 0] = pillar_x + env_origins[:, 0]
             state[:, 1] = pillar_y + env_origins[:, 1]
             state[:, 2] = self.cfg.pillar_z + env_origins[:, 2]
-            state[:, 3] = 1.0
-            state[:, 4:7] = 0.0
+
+            # Randomize yaw (rotation around Z axis)
+            pillar_yaw = torch.zeros(num_resets, device=self.device).uniform_(0.0, 2 * 3.141592653589793)
+            zeros = torch.zeros_like(pillar_yaw)
+            pillar_quat = quat_from_euler_xyz(zeros, zeros, pillar_yaw)
+            state[:, 3:7] = pillar_quat
+
             state[:, 7:] = 0.0
             pillar.write_root_pose_to_sim(state[:, :7], env_ids)
             pillar.write_root_velocity_to_sim(state[:, 7:], env_ids)
@@ -670,33 +791,66 @@ class AEPPODroneEnv(DirectRLEnv):
                 self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
             self.goal_pos_visualizer.set_visibility(True)
 
-            if not hasattr(self, "pillar_zone_visualizers"):
-                r = self.cfg.pillar_collision_radius
-                pillar_marker_cfg = VisualizationMarkersCfg(
-                    prim_path="/Visuals/PillarZones",
-                    markers={
-                        "cylinder": sim_utils.CylinderCfg(
-                            radius=r,
-                            height=2.5,
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(0.0, 1.0, 0.0),
-                                opacity=0.1,
-                            ),
-                        ),
-                    },
-                )
-                self.pillar_zone_visualizers = VisualizationMarkers(pillar_marker_cfg)
-            self.pillar_zone_visualizers.set_visibility(True)
+            if not hasattr(self, "pillar_zone_visualizer_list"):
+                self.pillar_zone_visualizer_list = []
+                offset = self._drone_collision_offset
+                for i, shape in enumerate(self._obstacle_shapes):
+                    if shape["type"] == "sphere":
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/ObstacleZone_{i}",
+                            markers={
+                                "sphere": sim_utils.SphereCfg(
+                                    radius=shape["radius"] + offset,
+                                    visual_material=sim_utils.PreviewSurfaceCfg(
+                                        diffuse_color=(0.0, 1.0, 0.0),
+                                        opacity=0.1,
+                                    ),
+                                ),
+                            },
+                        )
+                    elif shape["type"] == "cylinder":
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/ObstacleZone_{i}",
+                            markers={
+                                "cylinder": sim_utils.CylinderCfg(
+                                    radius=shape["radius"] + offset,
+                                    height=shape["half_z"] * 2,
+                                    visual_material=sim_utils.PreviewSurfaceCfg(
+                                        diffuse_color=(0.0, 1.0, 0.0),
+                                        opacity=0.1,
+                                    ),
+                                ),
+                            },
+                        )
+                    elif shape["type"] == "box":
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/ObstacleZone_{i}",
+                            markers={
+                                "cuboid": sim_utils.CuboidCfg(
+                                    size=(shape["size_x"] + 2 * offset, shape["size_y"] + 2 * offset, shape["half_z"] * 2),
+                                    visual_material=sim_utils.PreviewSurfaceCfg(
+                                        diffuse_color=(0.0, 1.0, 0.0),
+                                        opacity=0.1,
+                                    ),
+                                ),
+                            },
+                        )
+                    else:
+                        raise ValueError(f"Unknown shape type {shape['type']}")
+                    self.pillar_zone_visualizer_list.append(VisualizationMarkers(marker_cfg))
+            for viz in self.pillar_zone_visualizer_list:
+                viz.set_visibility(True)
         else:
             if hasattr(self, "goal_pos_visualizer"):
                 self.goal_pos_visualizer.set_visibility(False)
-            if hasattr(self, "pillar_zone_visualizers"):
-                self.pillar_zone_visualizers.set_visibility(False)
+            if hasattr(self, "pillar_zone_visualizer_list"):
+                for viz in self.pillar_zone_visualizer_list:
+                    viz.set_visibility(False)
 
     def _debug_vis_callback(self, event):
         self.goal_pos_visualizer.visualize(self._desired_pos_w)
-        if hasattr(self, "pillar_zone_visualizers") and len(self._pillars) > 0:
-            pillar_positions = torch.stack(
-                [p.data.root_pos_w[0, :3] for p in self._pillars], dim=0
-            )
-            self.pillar_zone_visualizers.visualize(pillar_positions)
+        if hasattr(self, "pillar_zone_visualizer_list") and len(self._pillars) > 0:
+            for i, (pillar, viz) in enumerate(zip(self._pillars, self.pillar_zone_visualizer_list)):
+                pos = pillar.data.root_pos_w[0, :3].unsqueeze(0)  # (1, 3)
+                quat = pillar.data.root_quat_w[0, :4].unsqueeze(0)  # (1, 4)
+                viz.visualize(pos, quat)
