@@ -134,7 +134,10 @@ class AEPPODroneEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
-        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
+        room_cfg = sim_utils.UsdFileCfg(
+            usd_path=self.cfg.room_usd_path,
+            scale=(2.0, 2.0, 1.0)
+        )
         room_cfg.func("/World/envs/env_0/Room", room_cfg)
 
         # --- Dynamic pillars (spawned as kinematic rigid objects) ---
@@ -488,8 +491,8 @@ class AEPPODroneEnv(DirectRLEnv):
 
         hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 1.9)
         hit_wall = (
-            (pos_local[:, 0] > 1.87) | (pos_local[:, 0] < -1.87)
-            | (pos_local[:, 1] > 1.87) | (pos_local[:, 1] < -1.87)
+            (pos_local[:, 0] > 3.74) | (pos_local[:, 0] < -3.74)
+            | (pos_local[:, 1] > 3.74) | (pos_local[:, 1] < -3.74)
         )
 
         # Check dynamic pillar collisions
@@ -544,6 +547,23 @@ class AEPPODroneEnv(DirectRLEnv):
         self.extras["log"]["Metrics/collision_rate"] = torch.count_nonzero(crash_mask).item() / total_resets
         self.extras["log"]["Metrics/goal_rate"] = torch.count_nonzero(reached_goal_mask).item() / total_resets
         
+        # Log to CMD for PLAY scripts
+        import sys
+        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        if is_play_script:
+            for i, env_id in enumerate(env_ids):
+                env_id_val = env_id.item()
+                step_count = int(self.episode_length_buf[env_id].item())
+                if reached_goal_mask[i]:
+                    status = "SUCCESS (Reached Goal!)"
+                elif crash_mask[i]:
+                    status = "FAILED (Crashed!)"
+                else:
+                    status = "TIMEOUT"
+                print(
+                    f"-------------\n>> [AE] Attempt for Env {env_id_val}: {status} | STEPS = {step_count} \n-------------"
+                )
+        
         self.extras["log"]["Episode_Termination/died"] = torch.count_nonzero(crash_mask).item()
         self.extras["log"]["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"]["Metrics/final_distance_to_goal"] = final_dist.item()
@@ -589,10 +609,10 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + goal_offsets[:, 1]
             self._desired_pos_w[env_ids, 2] = torch.ones(env_count, device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
         else:
-            self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.65, 1.65) + self._terrain.env_origins[env_ids, 0]
-            self._desired_pos_w[env_ids, 1] = -1.0 + self._terrain.env_origins[env_ids, 1]
+            self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-3.3, 3.3) + self._terrain.env_origins[env_ids, 0]
+            self._desired_pos_w[env_ids, 1] = -2.0 + self._terrain.env_origins[env_ids, 1]
             self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-1.65, 1.65)
+            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-3.3, 3.3)
             default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
             default_root_state[:, 1] = self.cfg.spawn_y_offset + self._terrain.env_origins[env_ids, 1]
             default_root_state[:, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)

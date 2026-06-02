@@ -70,25 +70,29 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "Empty_Room.usd")
 
     # ---------- Dynamic Pillars (Domain Randomization) ----------
-    num_pillars: int = 6
+    num_pillars: int = 10
     pillar_spawn: sim_utils.CylinderCfg = sim_utils.CylinderCfg(
-        radius=0.05,  # Exactly matching the thickness of poles from the trained map
+        radius=0.10,  # Doubled radius from 0.05 to test model robustness
         height=3.0,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         collision_props=sim_utils.CollisionPropertiesCfg(),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.15, 0.15)),
     )
-    # Zone-based X randomization: 6 tight zones within the room (±2.5m walls)
+    # Zone-based X randomization: 10 zones with higher density in the middle
     pillar_x_zones: tuple = (
-        (-1.80, -1.40),  # Zone 0
-        (-1.10, -0.70),  # Zone 1
-        (-0.40,  0.00),  # Zone 2
-        ( 0.20,  0.60),  # Zone 3
-        ( 0.80,  1.20),  # Zone 4
-        ( 1.40,  1.80),  # Zone 5
+        (-3.60, -2.80),  # Zone 0
+        (-2.40, -1.80),  # Zone 1
+        (-1.40, -0.90),  # Zone 2 (Middle cluster)
+        (-0.80, -0.30),  # Zone 3 (Middle cluster)
+        (-0.30,  0.10),  # Zone 4 (Center)
+        ( 0.00,  0.40),  # Zone 5 (Center)
+        ( 0.40,  0.90),  # Zone 6 (Middle cluster)
+        ( 1.00,  1.50),  # Zone 7 (Middle cluster)
+        ( 1.80,  2.50),  # Zone 8
+        ( 2.80,  3.60),  # Zone 9
     )
-    # Y jitter to make straight lines impossible
-    pillar_y_range: tuple = (-0.3, 0.3)
+    # Increased Y jitter to create a 2D obstacle field avoiding a pure wall
+    pillar_y_range: tuple = (-1.2, 1.2)
     pillar_z: float = 1.5  # pillar center height
 
     # camera — 128×72 depth as specified in the paper
@@ -149,7 +153,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     goal_radius: float = 0.25
     pillar_collision_radius: float = 0.15
 
-    spawn_y_offset: float = 1.0
+    spawn_y_offset: float = 2.0
     corner_fine_tune: bool = False
     opposite_wall_fine_tune: bool = False
     corner_margin: float = 0.2
