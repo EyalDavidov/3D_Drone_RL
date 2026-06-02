@@ -25,7 +25,7 @@ from isaaclab.utils import configclass
 class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 10.0
+    episode_length_s = 50.0
     debug_vis = True
 
     # simulation
@@ -65,13 +65,20 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = DRONE_CONFIG.replace(
         prim_path="/World/envs/env_.*/Drone"
     )
+    # Enable contact sensors on the drone spawner
+    robot_cfg.spawn.activate_contact_sensors = True
 
     # room — empty room (pillars are now dynamic RigidObjects)
-    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "Empty_Room.usd")
+    room_usd_path: str = os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            "../first_drone/assets/fps_shooter_game_arena_map_v4.usdz"
+        )
+    )
 
     # ---------- Dynamic Obstacles (Domain Randomization) ----------
     # 6 diverse obstacle shapes — defined in env._setup_scene() to avoid @configclass serialization issues
-    num_pillars: int = 6
+    num_pillars: int = 0
     # Zone-based X randomization: 6 tight zones within the room (±2.5m walls)
     pillar_x_zones: tuple = (
         (-1.80, -1.40),  # Zone 0

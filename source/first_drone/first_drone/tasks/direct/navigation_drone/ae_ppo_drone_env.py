@@ -134,8 +134,13 @@ class AEPPODroneEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
-        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path)
-        room_cfg.func("/World/envs/env_0/Room", room_cfg)
+        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path, scale=(0.01, 0.01, 0.01))
+        room_cfg.func(
+            "/World/envs/env_0/Room",
+            room_cfg,
+            translation=(25.0, 25.0, -0.9937),
+            orientation=(0.7071, 0.7071, 0.0, 0.0),
+        )
 
         # --- Dynamic obstacles (diverse shapes, defined here to avoid @configclass serialization) ---
         obstacle_spawns = [
@@ -222,6 +227,15 @@ class AEPPODroneEnv(DirectRLEnv):
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
         self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+
+        from isaaclab.sensors import ContactSensor, ContactSensorCfg
+        contact_sensor_cfg = ContactSensorCfg(
+            prim_path="/World/envs/env_.*/Drone/body",
+            history_length=1,
+            track_pose=False,
+        )
+        self._contact_sensor = ContactSensor(contact_sensor_cfg)
+        self.scene.sensors["contact_sensor"] = self._contact_sensor
 
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
@@ -549,6 +563,9 @@ class AEPPODroneEnv(DirectRLEnv):
         Returns:
             torch.Tensor: Shape (num_envs, num_pillars) with distances to each obstacle's boundary.
         """
+        if len(self._pillars) == 0:
+            return torch.zeros(self.num_envs, 0, device=self.device)
+
         drone_pos = self._robot.data.root_pos_w[:, :3]  # (num_envs, 3)
         distances = []
 
@@ -598,21 +615,27 @@ class AEPPODroneEnv(DirectRLEnv):
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
         hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 1.9)
+        # 50m x 50m arena map bounds: translated by 25.0, 25.0, so the borders are at ±25.0. We use 24.5 as a safety buffer.
         hit_wall = (
-            (pos_local[:, 0] > 1.87) | (pos_local[:, 0] < -1.87)
-            | (pos_local[:, 1] > 1.87) | (pos_local[:, 1] < -1.87)
+            (pos_local[:, 0] > 24.5) | (pos_local[:, 0] < -24.5)
+            | (pos_local[:, 1] > 24.5) | (pos_local[:, 1] < -24.5)
         )
 
-        # Check dynamic obstacle collisions
+        # Check contact sensor for collision with arena meshes
+        contact_force = torch.linalg.norm(self._contact_sensor.data.net_forces_w[:, 0, :], dim=-1)
+        hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold to filter numerical noise
+
+        # Check dynamic obstacle collisions (if any pillars are spawned)
         hit_pillar = torch.zeros_like(hit_wall)
-        obstacle_dists = self._compute_obstacle_distances()
-        for i in range(len(self._pillars)):
-            hit_pillar = hit_pillar | (obstacle_dists[:, i] < self._drone_collision_offset)
+        if len(self._pillars) > 0:
+            obstacle_dists = self._compute_obstacle_distances()
+            for i in range(len(self._pillars)):
+                hit_pillar = hit_pillar | (obstacle_dists[:, i] < self._drone_collision_offset)
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
-        died = hit_floor_or_ceiling | hit_wall | hit_pillar
+        died = hit_floor_or_ceiling | hit_wall | hit_obstacle | hit_pillar
         terminated = died | reached_goal
         return terminated, time_out
 
@@ -715,13 +738,29 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + goal_offsets[:, 1]
             self._desired_pos_w[env_ids, 2] = torch.ones(env_count, device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
         else:
-            self._desired_pos_w[env_ids, 0] = torch.zeros_like(self._desired_pos_w[env_ids, 0]).uniform_(-1.65, 1.65) + self._terrain.env_origins[env_ids, 0]
-            self._desired_pos_w[env_ids, 1] = -1.0 + self._terrain.env_origins[env_ids, 1]
-            self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-1.65, 1.65)
+            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0)
+            spawn_y = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0)
             default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
-            default_root_state[:, 1] = self.cfg.spawn_y_offset + self._terrain.env_origins[env_ids, 1]
+            default_root_state[:, 1] = spawn_y + self._terrain.env_origins[env_ids, 1]
             default_root_state[:, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)
+
+            # Initialize goals
+            goal_x = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids, 0]
+            goal_y = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids, 1]
+            
+            # Resample goals that are too close to spawn (less than 3.0 meters)
+            for _ in range(5):
+                dist = torch.sqrt((goal_x - default_root_state[:, 0])**2 + (goal_y - default_root_state[:, 1])**2)
+                too_close = dist < 3.0
+                if not torch.any(too_close):
+                    break
+                num_close = torch.sum(too_close).item()
+                goal_x[too_close] = torch.zeros(num_close, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids[too_close], 0]
+                goal_y[too_close] = torch.zeros(num_close, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids[too_close], 1]
+            
+            self._desired_pos_w[env_ids, 0] = goal_x
+            self._desired_pos_w[env_ids, 1] = goal_y
+            self._desired_pos_w[env_ids, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)
 
         # Orient drone to face target
         dx = self._desired_pos_w[env_ids, 0] - default_root_state[:, 0]
@@ -785,11 +824,38 @@ class AEPPODroneEnv(DirectRLEnv):
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if not hasattr(self, "goal_pos_visualizer"):
-                marker_cfg = CUBOID_MARKER_CFG.copy()
-                marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
-                marker_cfg.prim_path = "/Visuals/Command/goal_position"
-                self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
+                goal_marker_cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/Command/goal_position",
+                    markers={
+                        "sphere": sim_utils.SphereCfg(
+                            radius=0.25,  # 50cm diameter
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(0.1, 0.8, 1.0),  # Bright cyan
+                                emissive_color=(0.0, 0.4, 0.5),  # Cyan glow
+                                opacity=0.8,
+                            ),
+                        ),
+                    },
+                )
+                self.goal_pos_visualizer = VisualizationMarkers(goal_marker_cfg)
             self.goal_pos_visualizer.set_visibility(True)
+
+            if not hasattr(self, "drone_tracker_visualizer"):
+                drone_marker_cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/DroneTracker",
+                    markers={
+                        "sphere": sim_utils.SphereCfg(
+                            radius=0.25,  # 50cm diameter
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(1.0, 0.1, 0.1),  # Bright red
+                                emissive_color=(0.5, 0.0, 0.0),  # Red glow
+                                opacity=0.7,
+                            ),
+                        ),
+                    },
+                )
+                self.drone_tracker_visualizer = VisualizationMarkers(drone_marker_cfg)
+            self.drone_tracker_visualizer.set_visibility(True)
 
             if not hasattr(self, "pillar_zone_visualizer_list"):
                 self.pillar_zone_visualizer_list = []
@@ -843,12 +909,16 @@ class AEPPODroneEnv(DirectRLEnv):
         else:
             if hasattr(self, "goal_pos_visualizer"):
                 self.goal_pos_visualizer.set_visibility(False)
+            if hasattr(self, "drone_tracker_visualizer"):
+                self.drone_tracker_visualizer.set_visibility(False)
             if hasattr(self, "pillar_zone_visualizer_list"):
                 for viz in self.pillar_zone_visualizer_list:
                     viz.set_visibility(False)
 
     def _debug_vis_callback(self, event):
         self.goal_pos_visualizer.visualize(self._desired_pos_w)
+        if hasattr(self, "drone_tracker_visualizer"):
+            self.drone_tracker_visualizer.visualize(self._robot.data.root_pos_w[:, :3])
         if hasattr(self, "pillar_zone_visualizer_list") and len(self._pillars) > 0:
             for i, (pillar, viz) in enumerate(zip(self._pillars, self.pillar_zone_visualizer_list)):
                 pos = pillar.data.root_pos_w[0, :3].unsqueeze(0)  # (1, 3)
