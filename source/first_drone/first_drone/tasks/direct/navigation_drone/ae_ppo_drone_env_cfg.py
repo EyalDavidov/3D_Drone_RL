@@ -58,7 +58,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=64, env_spacing=6.0, replicate_physics=True
+        num_envs=512, env_spacing=6.0, replicate_physics=True
     )
 
     # robot
@@ -113,6 +113,11 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
         (18.012, 19.012, -8.025, -7.025),
         (-7.988, -6.988, -6.025, -5.025),
         (-20.988, -19.988, -14.025, -13.025),
+        # Outer boundary walls to enable LiDAR scans and proximity penalties to see them
+        (-24.988, -23.988, -24.025, 24.975),
+        (-23.988, 25.012, 23.975, 24.975),
+        (24.012, 25.012, -25.025, 23.975),
+        (-24.988, 24.012, -25.025, -24.025),
     )
     spawn_obstacle_margin: float = 0.5  # safety margin around obstacles for spawning
 
@@ -157,7 +162,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # =========================================================================
     w_progress: float = 10.0
     w_goal: float = 500.0
-    w_time: float = -0.06
+    w_time: float = -0.50
     w_heading: float = 0.05
     w_vel_align: float = 0.2
     vel_align_max_speed: float = 1.0
@@ -167,10 +172,10 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     w_forward_speed: float = 0.3
     w_action: float = -0.005
     w_action_rate: float = -0.02
-    w_sideslip: float = -0.05
-    w_proximity: float = 1.5
-    pillar_proximity_radius: float = 0.5
-    w_speed_proximity: float = -4.0       # penalty for speed when close to obstacles
+    w_sideslip: float = -0.10
+    w_proximity: float = 2.0
+    pillar_proximity_radius: float = 1.2
+    w_speed_proximity: float = -6.0       # penalty for speed when close to obstacles
     w_tilt: float = -0.05                  # penalty for excessive tilt (roll/pitch)
     w_z_deviation: float = -0.10           # penalty for vertical deviation from goal
     goal_radius: float = 0.25
@@ -183,4 +188,4 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     corner_goal_z: float = 1.0
 
     # Curriculum
-    initial_curriculum_level: int = 4
+    initial_curriculum_level: int = 5

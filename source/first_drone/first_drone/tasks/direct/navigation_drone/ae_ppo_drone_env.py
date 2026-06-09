@@ -108,7 +108,7 @@ class AEPPODroneEnv(DirectRLEnv):
             2: (5.0, 10.0),
             3: (10.0, 18.0),
             4: (18.0, 28.0),
-            5: (28.0, 40.0)
+            5: (28.0, 33.0)
         }
 
         # AE visualization state
@@ -250,7 +250,11 @@ class AEPPODroneEnv(DirectRLEnv):
             track_pose=False,
         )
         self._contact_sensor = ContactSensor(contact_sensor_cfg)
-        self.scene.sensors["contact_sensor"] = self._contact_sensor
+        # Hide the drone collision geometry mesh in the viewport so it doesn't render as a grey box
+        from pxr import UsdGeom
+        collision_prim = self.sim.stage.GetPrimAtPath("/World/envs/env_0/Drone/body/body_collision")
+        if collision_prim.IsValid():
+            UsdGeom.Imageable(collision_prim).MakeInvisible()
 
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
@@ -1030,22 +1034,29 @@ class AEPPODroneEnv(DirectRLEnv):
             goal_x_local = spawn_x + dist * torch.cos(angle)
             goal_y_local = spawn_y + dist * torch.sin(angle)
 
-            # Resample goals that are inside map obstacles or out of bounds [-24.0, 24.0]
-            for _ in range(15):
+            # Resample goals that are inside map obstacles or out of bounds [-23.7, 23.7]
+            # We start with the curriculum distances, but if we fail to find a valid spot,
+            # we relax the distance range to guarantee a valid position inside the arena.
+            for attempt in range(25):
                 in_obstacle = self._is_inside_map_obstacle(goal_x_local, goal_y_local)
-                out_of_bounds = (goal_x_local.abs() > 24.0) | (goal_y_local.abs() > 24.0)
+                # Wall at 23.90, collision at 23.85. Keep goal at least 23.70 to avoid forcing drone into walls.
+                out_of_bounds = (goal_x_local.abs() > 23.7) | (goal_y_local.abs() > 23.7)
                 bad = in_obstacle | out_of_bounds
                 if not torch.any(bad):
                     break
                 n = torch.sum(bad).item()
                 
-                # Resample bad environments
+                # For bad environments, resample. Start scaling down distance if we struggle.
+                scale = 1.0
+                if attempt > 10:
+                    scale = max(0.2, 1.0 - 0.05 * (attempt - 10))
+                
                 angle_resample = torch.zeros(n, device=self.device).uniform_(0.0, 2 * 3.1415926535)
-                dist_resample = torch.zeros(n, device=self.device).uniform_(min_d, max_d)
+                dist_resample = torch.zeros(n, device=self.device).uniform_(min_d * scale, max_d * scale)
                 
                 goal_x_local[bad] = spawn_x[bad] + dist_resample * torch.cos(angle_resample)
                 goal_y_local[bad] = spawn_y[bad] + dist_resample * torch.sin(angle_resample)
-
+            
             self._desired_pos_w[env_ids, 0] = goal_x_local + self._terrain.env_origins[env_ids, 0]
             self._desired_pos_w[env_ids, 1] = goal_y_local + self._terrain.env_origins[env_ids, 1]
             self._desired_pos_w[env_ids, 2] = 1.0
@@ -1145,6 +1156,22 @@ class AEPPODroneEnv(DirectRLEnv):
                 self.drone_tracker_visualizer = VisualizationMarkers(drone_marker_cfg)
             self.drone_tracker_visualizer.set_visibility(True)
 
+            if not hasattr(self, "ceiling_visualizer"):
+                ceiling_marker_cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/Ceiling",
+                    markers={
+                        "cuboid": sim_utils.CuboidCfg(
+                            size=(48.0, 48.0, 0.02),  # 48m x 48m thin glass sheet
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(0.0, 0.8, 1.0),  # Cyan color
+                                opacity=0.15,
+                            ),
+                        ),
+                    },
+                )
+                self.ceiling_visualizer = VisualizationMarkers(ceiling_marker_cfg)
+            self.ceiling_visualizer.set_visibility(True)
+
             if not hasattr(self, "pillar_zone_visualizer_list"):
                 self.pillar_zone_visualizer_list = []
                 offset = self._drone_collision_offset
@@ -1197,7 +1224,12 @@ class AEPPODroneEnv(DirectRLEnv):
             try:
                 from omni.isaac.debug_draw import _debug_draw
                 self._draw = _debug_draw.acquire_debug_draw_interface()
-            except ImportError:
+                if self._draw is None:
+                    print("\n[DEBUG] omni.isaac.debug_draw.acquire_debug_draw_interface() returned None!\n")
+                else:
+                    print("\n[DEBUG] Debug draw interface acquired successfully!\n")
+            except ImportError as e:
+                print(f"\n[DEBUG] Failed to import omni.isaac.debug_draw: {e}\n")
                 self._draw = None
         else:
             if hasattr(self, "goal_pos_visualizer"):
@@ -1214,6 +1246,12 @@ class AEPPODroneEnv(DirectRLEnv):
         self.goal_pos_visualizer.visualize(self._desired_pos_w)
         if hasattr(self, "drone_tracker_visualizer"):
             self.drone_tracker_visualizer.visualize(self._robot.data.root_pos_w[:, :3])
+        if hasattr(self, "ceiling_visualizer"):
+            z_ceil = 2.5 + self._terrain.env_origins[0, 2].item()
+            x_origin = self._terrain.env_origins[0, 0].item()
+            y_origin = self._terrain.env_origins[0, 1].item()
+            ceil_pos = torch.tensor([[x_origin, y_origin, z_ceil]], device=self.device)
+            self.ceiling_visualizer.visualize(ceil_pos)
         if hasattr(self, "pillar_zone_visualizer_list") and len(self._pillars) > 0:
             for i, (pillar, viz) in enumerate(zip(self._pillars, self.pillar_zone_visualizer_list)):
                 pos = pillar.data.root_pos_w[0, :3].unsqueeze(0)  # (1, 3)
@@ -1256,4 +1294,44 @@ class AEPPODroneEnv(DirectRLEnv):
                     colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green
 
             thicknesses = [2.0] * num_rays
+
+            # --- Draw ceiling grid at Z = 2.5 ---
+            z_ceil = 2.5 + self._terrain.env_origins[0, 2].item()
+            x_origin = self._terrain.env_origins[0, 0].item()
+            y_origin = self._terrain.env_origins[0, 1].item()
+
+            x_min, x_max = x_origin - 24.0, x_origin + 24.0
+            y_min, y_max = y_origin - 24.0, y_origin + 24.0
+
+            ceil_color = (0.0, 0.8, 1.0, 0.4)  # cyan boundary
+            ceil_thick = 3.0
+
+            boundary_pts = [
+                ((x_min, y_min, z_ceil), (x_max, y_min, z_ceil)),
+                ((x_max, y_min, z_ceil), (x_max, y_max, z_ceil)),
+                ((x_max, y_max, z_ceil), (x_min, y_max, z_ceil)),
+                ((x_min, y_max, z_ceil), (x_min, y_min, z_ceil)),
+            ]
+            for p1, p2 in boundary_pts:
+                start_points.append(p1)
+                end_points.append(p2)
+                colors.append(ceil_color)
+                thicknesses.append(ceil_thick)
+
+            # Draw grid lines inside ceiling
+            grid_color = (0.0, 0.5, 0.8, 0.2)
+            grid_thick = 1.0
+            for x_val in range(-20, 25, 10):
+                x_w = x_origin + x_val
+                start_points.append((x_w, y_min, z_ceil))
+                end_points.append((x_w, y_max, z_ceil))
+                colors.append(grid_color)
+                thicknesses.append(grid_thick)
+            for y_val in range(-20, 25, 10):
+                y_w = y_origin + y_val
+                start_points.append((x_min, y_w, z_ceil))
+                end_points.append((x_max, y_w, z_ceil))
+                colors.append(grid_color)
+                thicknesses.append(grid_thick)
+
             self._draw.draw_lines(start_points, end_points, colors, thicknesses)
