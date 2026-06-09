@@ -52,6 +52,16 @@ sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# Enable the debug_draw extension programmatically so lasers can be rendered
+try:
+    import omni.kit.app
+    ext_manager = omni.kit.app.get_app().get_extension_manager()
+    if not ext_manager.is_extension_enabled("omni.isaac.debug_draw"):
+        print("\n[INFO] Programmatically enabling 'omni.isaac.debug_draw' extension...\n")
+        ext_manager.set_extension_enabled_immediate("omni.isaac.debug_draw", True)
+except Exception as e:
+    print(f"\n[WARNING] Could not enable 'omni.isaac.debug_draw' programmatically: {e}\n")
+
 """Check for installed RSL-RL version."""
 
 import importlib.metadata as metadata
