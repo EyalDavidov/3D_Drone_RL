@@ -90,3 +90,6 @@ action_log.csv
 
 # Depth arena data
 data/
+
+# Temporary scratch folder
+scratch/
