@@ -92,6 +92,30 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     pillar_y_range: tuple = (-0.3, 0.3)
     pillar_z: float = 1.5  # obstacle center height
 
+    # ---------- Arena Map Static Obstacles (2D bounding boxes) ----------
+    # format: [min_x, max_x, min_y, max_y] in local env frame
+    map_obstacles: tuple = (
+        (14.012, 19.012, -2.025, 4.975),
+        (4.012, 9.012, 6.975, 12.975),
+        (-15.988, -10.988, -21.025, -11.025),
+        (0.012, 2.012, -8.025, -1.025),
+        (8.012, 10.012, -17.025, -10.025),
+        (-7.988, -5.988, 1.975, 8.975),
+        (-18.988, -16.988, -4.025, 2.975),
+        (-21.988, -16.988, 8.975, 15.975),
+        (15.012, 17.012, 11.975, 18.975),
+        (-11.318, -2.756, 13.145, 20.975),
+        (-1.988, 3.012, -22.025, -16.025),
+        (17.012, 19.012, -21.025, -14.025),
+        (6.012, 7.012, 18.975, 19.975),
+        (-18.988, -17.988, 20.975, 21.975),
+        (10.012, 11.012, 1.975, 2.975),
+        (18.012, 19.012, -8.025, -7.025),
+        (-7.988, -6.988, -6.025, -5.025),
+        (-20.988, -19.988, -14.025, -13.025),
+    )
+    spawn_obstacle_margin: float = 0.5  # safety margin around obstacles for spawning
+
     # camera — 128×72 depth as specified in the paper
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Drone/body/Camera",
@@ -105,20 +129,20 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     )
 
     # ---------- Spaces ----------
-    # Policy sees the 45-dim flat vector (AE latent + state features)
+    # Policy sees the 49-dim flat vector (AE latent + state features + previous actions)
     action_space = 4
-    observation_space = 45
+    observation_space = 73
     state_space = 0
 
     # ---------- Autoencoder (AE) ----------
     ae_latent_dim: int = 32
-    depth_max: float = 5.0  # max depth clamp in meters (room is ~10m, but 5m gives better contrast)
-    ae_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "vae", "ae_final.pt")
+    depth_max: float = 15.0  # max depth clamp in meters — matches 15m arena AE training
+    ae_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "ae_arena", "ae_final.pt")
 
     # ---------- Flight controller ----------
     llc_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "rsl_rl", "flight_controller_drone_direct", "Flight_Controller", "exported", "policy.pt")
     vel_limit: tuple[float, float, float] = (1.0, 1.0, 0.5)
-    yaw_rate_limit: float = 0.15
+    yaw_rate_limit: float = 0.6
 
     # ---------- Visualization ----------
     show_ae_images: bool = False
@@ -131,22 +155,24 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # =========================================================================
     # REWARDS & CRASH VALUES (Matching Phase 2 navigation_drone config exactly)
     # =========================================================================
-    w_progress: float = 20.0
-    w_goal: float = 300.0
+    w_progress: float = 10.0
+    w_goal: float = 500.0
     w_time: float = -0.06
-    w_heading: float = 0.15
-    w_vel_align: float = 0.5
+    w_heading: float = 0.05
+    w_vel_align: float = 0.2
     vel_align_max_speed: float = 1.0
-    collision_penalty: float = -250.0
+    collision_penalty: float = -1500.0
     w_ang_vel: float = -0.01
-    w_yaw_rate: float = -0.1
+    w_yaw_rate: float = -0.10
     w_forward_speed: float = 0.3
     w_action: float = -0.005
     w_action_rate: float = -0.02
-    w_sideslip: float = -0.2
+    w_sideslip: float = -0.05
     w_proximity: float = 1.5
     pillar_proximity_radius: float = 0.5
-    w_speed_proximity: float = -4.0       # penalty for speed when close to pillars
+    w_speed_proximity: float = -4.0       # penalty for speed when close to obstacles
+    w_tilt: float = -0.05                  # penalty for excessive tilt (roll/pitch)
+    w_z_deviation: float = -0.10           # penalty for vertical deviation from goal
     goal_radius: float = 0.25
     pillar_collision_radius: float = 0.15
 
@@ -155,3 +181,6 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     opposite_wall_fine_tune: bool = False
     corner_margin: float = 0.2
     corner_goal_z: float = 1.0
+
+    # Curriculum
+    initial_curriculum_level: int = 4

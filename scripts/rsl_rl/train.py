@@ -218,6 +218,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
+    # Monkeypatch the logger to log entropy and learning rate under custom/separate paths
+    original_log = runner.logger.log
+    def custom_log(*args, **kwargs):
+        original_log(*args, **kwargs)
+        writer = runner.logger.writer
+        it = kwargs.get("it", runner.current_learning_iteration)
+        loss_dict = kwargs.get("loss_dict", {})
+        learning_rate = kwargs.get("learning_rate", None)
+        
+        if writer is not None:
+            if learning_rate is not None:
+                writer.add_scalar("Learning_Rate/value", learning_rate, it)
+            if "entropy" in loss_dict:
+                writer.add_scalar("Entropy/loss", loss_dict["entropy"], it)
+    runner.logger.log = custom_log
+
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 

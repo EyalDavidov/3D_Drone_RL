@@ -1,0 +1,1 @@
+['collision_enabled', 'contact_offset', 'rest_offset', 'torsional_patch_radius', 'min_torsional_patch_radius']

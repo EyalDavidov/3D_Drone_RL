@@ -243,8 +243,8 @@ def main():
                     policy_obs = obs["policy"]
                 else:
                     policy_obs = obs
-                full_obs = policy_obs[env_idx:env_idx+1]  # (1, 45)
-                state_features = full_obs[:, 32:].clone().detach()  # (1, 13)
+                full_obs = policy_obs[env_idx:env_idx+1]  # (1, 73)
+                state_features = full_obs[:, 32:].clone().detach()  # (1, 41)
 
                 # Compute saliency (needs gradients — outside inference_mode context)
                 try:

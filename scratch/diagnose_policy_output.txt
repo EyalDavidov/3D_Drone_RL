@@ -1,0 +1,1237 @@
+====================================================================================================
+DIAGNOSTIC 2: Policy actions, AE latent, and drone behavior
+Checkpoint: d:\isaac\3D_Drone_RL\logs\rsl_rl\navigation_drone_direct\09-06_12-43\model_4100.pt
+====================================================================================================
+Step 0000:
+  pos_local=(7.66, 15.51, 1.00)
+  vel_body=(-0.009, 0.004, -0.024) speed=0.026
+  ang_vel_body=(2.306, 5.501, 0.853)
+  actions=(fwd=1.000, lat=-0.584, vert=-1.000, yaw=0.635)
+  dist_to_goal=20.97  goal_dir=(-9.8, -18.5, 0.0)
+  AE latent: mean=0.0016, std=1.0473, norm=5.831, delta=0.0000
+
+Step 0010:
+  pos_local=(7.63, 15.45, 1.01)
+  vel_body=(0.581, -0.272, 0.373) speed=0.742
+  ang_vel_body=(-2.208, -1.047, 2.425)
+  actions=(fwd=1.000, lat=0.252, vert=1.000, yaw=-0.014)
+  dist_to_goal=20.90  goal_dir=(-9.8, -18.5, -0.0)
+  AE latent: mean=0.0012, std=1.0484, norm=5.837, delta=0.1541
+
+Step 0020:
+  pos_local=(7.52, 15.26, 1.05)
+  vel_body=(1.058, -0.749, 0.444) speed=1.370
+  ang_vel_body=(-0.563, -1.237, -0.194)
+  actions=(fwd=1.000, lat=-0.923, vert=1.000, yaw=-0.048)
+  dist_to_goal=20.68  goal_dir=(-9.7, -18.3, -0.0)
+  AE latent: mean=0.0013, std=1.0481, norm=5.835, delta=0.0425
+
+Step 0030:
+  pos_local=(7.37, 15.02, 1.09)
+  vel_body=(1.166, -0.692, -0.143) speed=1.363
+  ang_vel_body=(1.368, 0.000, -1.071)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.158)
+  dist_to_goal=20.40  goal_dir=(-9.5, -18.0, -0.1)
+  AE latent: mean=0.0014, std=1.0485, norm=5.838, delta=0.0311
+
+Step 0040:
+  pos_local=(7.22, 14.80, 1.08)
+  vel_body=(1.084, -0.707, -0.165) speed=1.304
+  ang_vel_body=(-0.066, -0.137, -0.043)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.033)
+  dist_to_goal=20.14  goal_dir=(-9.4, -17.8, -0.1)
+  AE latent: mean=0.0014, std=1.0490, norm=5.840, delta=0.0281
+
+Step 0050:
+  pos_local=(7.07, 14.60, 1.05)
+  vel_body=(1.038, -0.723, -0.174) speed=1.277
+  ang_vel_body=(-0.077, 0.021, 0.023)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.001)
+  dist_to_goal=19.89  goal_dir=(-9.2, -17.6, -0.1)
+  AE latent: mean=0.0014, std=1.0495, norm=5.843, delta=0.0248
+
+Step 0060:
+  pos_local=(6.92, 14.40, 1.02)
+  vel_body=(1.019, -0.657, -0.056) speed=1.214
+  ang_vel_body=(1.308, 0.645, 0.997)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.009)
+  dist_to_goal=19.64  goal_dir=(-9.1, -17.4, -0.0)
+  AE latent: mean=0.0015, std=1.0500, norm=5.846, delta=0.0352
+
+Step 0070:
+  pos_local=(6.76, 14.21, 1.02)
+  vel_body=(1.013, -0.716, 0.071) speed=1.242
+  ang_vel_body=(0.283, 0.516, 0.557)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.245)
+  dist_to_goal=19.40  goal_dir=(-8.9, -17.2, -0.0)
+  AE latent: mean=0.0015, std=1.0507, norm=5.850, delta=0.0369
+
+Step 0080:
+  pos_local=(6.58, 14.03, 1.04)
+  vel_body=(0.930, -0.755, 0.032) speed=1.198
+  ang_vel_body=(0.218, 2.373, -0.453)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.080)
+  dist_to_goal=19.17  goal_dir=(-8.8, -17.0, -0.0)
+  AE latent: mean=0.0015, std=1.0515, norm=5.854, delta=0.0382
+
+Step 0090:
+  pos_local=(6.40, 13.87, 1.04)
+  vel_body=(0.989, -0.807, 0.015) speed=1.277
+  ang_vel_body=(0.230, -5.949, -0.450)
+  actions=(fwd=-1.000, lat=-1.000, vert=1.000, yaw=-0.362)
+  dist_to_goal=18.94  goal_dir=(-8.6, -16.9, -0.0)
+  AE latent: mean=0.0015, std=1.0523, norm=5.859, delta=0.0406
+
+Step 0100:
+  pos_local=(6.21, 13.73, 1.08)
+  vel_body=(0.825, -0.785, 0.183) speed=1.153
+  ang_vel_body=(1.620, -4.098, -0.032)
+  actions=(fwd=-1.000, lat=-1.000, vert=1.000, yaw=0.474)
+  dist_to_goal=18.72  goal_dir=(-8.4, -16.7, -0.1)
+  AE latent: mean=0.0016, std=1.0531, norm=5.864, delta=0.0178
+
+Step 0110:
+  pos_local=(6.02, 13.64, 1.13)
+  vel_body=(0.485, -0.861, 0.389) speed=1.062
+  ang_vel_body=(-0.149, 3.123, 1.011)
+  actions=(fwd=0.832, lat=-1.000, vert=0.588, yaw=0.046)
+  dist_to_goal=18.56  goal_dir=(-8.2, -16.7, -0.1)
+  AE latent: mean=0.0015, std=1.0538, norm=5.868, delta=0.0425
+
+Step 0120:
+  pos_local=(5.83, 13.63, 1.20)
+  vel_body=(0.109, -0.959, 0.187) speed=0.983
+  ang_vel_body=(-0.795, -0.766, 1.239)
+  actions=(fwd=-0.827, lat=-1.000, vert=-1.000, yaw=0.367)
+  dist_to_goal=18.47  goal_dir=(-8.0, -16.6, -0.2)
+  AE latent: mean=0.0016, std=1.0537, norm=5.866, delta=0.0161
+
+Step 0130:
+  pos_local=(5.66, 13.72, 1.22)
+  vel_body=(-0.390, -0.936, 0.314) speed=1.062
+  ang_vel_body=(0.826, 0.471, 0.231)
+  actions=(fwd=-1.000, lat=-1.000, vert=1.000, yaw=0.355)
+  dist_to_goal=18.47  goal_dir=(-7.8, -16.7, -0.2)
+  AE latent: mean=0.0016, std=1.0531, norm=5.863, delta=0.0357
+
+Step 0140:
+  pos_local=(5.50, 13.89, 1.29)
+  vel_body=(-0.738, -0.934, 0.425) speed=1.264
+  ang_vel_body=(-0.242, 0.250, 0.235)
+  actions=(fwd=-1.000, lat=-1.000, vert=1.000, yaw=0.024)
+  dist_to_goal=18.56  goal_dir=(-7.7, -16.9, -0.3)
+  AE latent: mean=0.0015, std=1.0522, norm=5.859, delta=0.0433
+
+Step 0150:
+  pos_local=(5.35, 14.08, 1.37)
+  vel_body=(-0.852, -0.904, 0.452) speed=1.322
+  ang_vel_body=(0.077, 0.161, 0.299)
+  actions=(fwd=-1.000, lat=-1.000, vert=1.000, yaw=0.003)
+  dist_to_goal=18.67  goal_dir=(-7.5, -17.1, -0.4)
+  AE latent: mean=0.0015, std=1.0513, norm=5.853, delta=0.0377
+
+Step 0160:
+  pos_local=(5.18, 14.27, 1.46)
+  vel_body=(-0.893, -0.881, 0.462) speed=1.337
+  ang_vel_body=(0.014, 0.041, 0.285)
+  actions=(fwd=-1.000, lat=-1.000, vert=1.000, yaw=0.004)
+  dist_to_goal=18.79  goal_dir=(-7.4, -17.3, -0.5)
+  AE latent: mean=0.0015, std=1.0505, norm=5.849, delta=0.0350
+
+Step 0170:
+  pos_local=(5.01, 14.45, 1.56)
+  vel_body=(-0.902, -0.881, 0.463) speed=1.343
+  ang_vel_body=(-0.039, 0.182, 0.188)
+  actions=(fwd=-0.951, lat=-1.000, vert=1.000, yaw=0.004)
+  dist_to_goal=18.89  goal_dir=(-7.2, -17.5, -0.6)
+  AE latent: mean=0.0014, std=1.0499, norm=5.846, delta=0.0289
+
+Step 0180:
+  pos_local=(4.84, 14.62, 1.65)
+  vel_body=(-0.933, -0.836, 0.283) speed=1.284
+  ang_vel_body=(0.168, 6.933, 0.563)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.697)
+  dist_to_goal=18.99  goal_dir=(-7.0, -17.6, -0.7)
+  AE latent: mean=0.0014, std=1.0490, norm=5.841, delta=0.1413
+
+Step 0190:
+  pos_local=(4.67, 14.66, 1.75)
+  vel_body=(0.007, -0.733, 0.365) speed=0.819
+  ang_vel_body=(3.483, -0.841, 0.085)
+  actions=(fwd=1.000, lat=-0.991, vert=1.000, yaw=0.065)
+  dist_to_goal=18.97  goal_dir=(-6.8, -17.7, -0.7)
+  AE latent: mean=0.0012, std=1.0484, norm=5.837, delta=0.1283
+
+Step 0200:
+  pos_local=(4.55, 14.50, 1.79)
+  vel_body=(0.864, -0.879, 0.446) speed=1.311
+  ang_vel_body=(-1.556, -1.979, 0.165)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.136)
+  dist_to_goal=18.78  goal_dir=(-6.7, -17.5, -0.8)
+  AE latent: mean=0.0013, std=1.0494, norm=5.843, delta=0.0623
+
+Step 0210:
+  pos_local=(4.42, 14.25, 1.84)
+  vel_body=(1.113, -0.887, -0.050) speed=1.425
+  ang_vel_body=(-1.541, -0.678, -0.564)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.331)
+  dist_to_goal=18.50  goal_dir=(-6.6, -17.3, -0.8)
+  AE latent: mean=0.0014, std=1.0505, norm=5.849, delta=0.0506
+
+Step 0220:
+  pos_local=(4.30, 14.01, 1.83)
+  vel_body=(1.049, -0.787, -0.178) speed=1.323
+  ang_vel_body=(0.420, -0.675, -0.573)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.455)
+  dist_to_goal=18.23  goal_dir=(-6.5, -17.0, -0.8)
+  AE latent: mean=0.0014, std=1.0516, norm=5.855, delta=0.0621
+
+Step 0230:
+  pos_local=(4.20, 13.77, 1.81)
+  vel_body=(1.012, -0.785, -0.096) speed=1.284
+  ang_vel_body=(-0.302, -0.046, 1.130)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.021)
+  dist_to_goal=17.97  goal_dir=(-6.4, -16.8, -0.8)
+  AE latent: mean=0.0014, std=1.0529, norm=5.862, delta=0.0553
+
+Step 0240:
+  pos_local=(4.10, 13.54, 1.77)
+  vel_body=(0.969, -0.807, -0.204) speed=1.278
+  ang_vel_body=(-0.309, 0.253, 0.287)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.067)
+  dist_to_goal=17.72  goal_dir=(-6.3, -16.5, -0.8)
+  AE latent: mean=0.0014, std=1.0545, norm=5.871, delta=0.0669
+
+Step 0250:
+  pos_local=(4.03, 13.30, 1.74)
+  vel_body=(1.000, -0.755, -0.131) speed=1.260
+  ang_vel_body=(0.441, -0.272, 0.893)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.223)
+  dist_to_goal=17.46  goal_dir=(-6.2, -16.3, -0.7)
+  AE latent: mean=0.0014, std=1.0561, norm=5.880, delta=0.0637
+
+*** EPISODE ENDED at step 258 ***
+  pos_local=(19.62, 14.06, 1.00)
+  dist_to_goal=26.085
+  reached_goal=False
+  contact_force=0.000N
+  hit_floor_ceiling=False (z=1.000)
+  hit_wall=False
+
+Step 0260:
+  pos_local=(19.62, 14.06, 1.00)
+  vel_body=(0.010, -0.013, 0.059) speed=0.061
+  ang_vel_body=(-2.322, 4.925, 1.111)
+  actions=(fwd=1.000, lat=1.000, vert=1.000, yaw=0.274)
+  dist_to_goal=26.09  goal_dir=(-24.1, -10.0, -0.0)
+  AE latent: mean=0.0031, std=1.0528, norm=5.862, delta=2.4220
+
+Step 0270:
+  pos_local=(19.57, 14.01, 1.03)
+  vel_body=(0.597, 0.092, 0.303) speed=0.676
+  ang_vel_body=(-0.712, -1.319, 0.924)
+  actions=(fwd=1.000, lat=0.599, vert=1.000, yaw=0.028)
+  dist_to_goal=26.02  goal_dir=(-24.1, -9.9, -0.0)
+  AE latent: mean=0.0030, std=1.0522, norm=5.858, delta=0.8084
+
+Step 0280:
+  pos_local=(19.44, 13.89, 1.08)
+  vel_body=(1.023, -0.074, 0.399) speed=1.100
+  ang_vel_body=(-3.550, -1.452, 0.510)
+  actions=(fwd=1.000, lat=1.000, vert=1.000, yaw=-0.017)
+  dist_to_goal=25.85  goal_dir=(-23.9, -9.8, -0.1)
+  AE latent: mean=0.0011, std=1.0566, norm=5.883, delta=0.9161
+
+Step 0290:
+  pos_local=(19.27, 13.75, 1.16)
+  vel_body=(1.113, -0.080, 0.435) speed=1.198
+  ang_vel_body=(-2.555, -0.364, 0.080)
+  actions=(fwd=1.000, lat=1.000, vert=0.725, yaw=0.184)
+  dist_to_goal=25.64  goal_dir=(-23.8, -9.6, -0.2)
+  AE latent: mean=0.0004, std=1.0554, norm=5.876, delta=0.3169
+
+Step 0300:
+  pos_local=(19.09, 13.60, 1.25)
+  vel_body=(1.165, -0.168, 0.375) speed=1.235
+  ang_vel_body=(-3.958, -1.223, 0.548)
+  actions=(fwd=1.000, lat=1.000, vert=-0.310, yaw=0.144)
+  dist_to_goal=25.42  goal_dir=(-23.6, -9.5, -0.3)
+  AE latent: mean=0.0005, std=1.0546, norm=5.872, delta=0.8787
+
+Step 0310:
+  pos_local=(18.91, 13.46, 1.28)
+  vel_body=(1.122, -0.104, -0.051) speed=1.128
+  ang_vel_body=(1.988, 0.257, -0.191)
+  actions=(fwd=1.000, lat=-0.765, vert=-1.000, yaw=0.037)
+  dist_to_goal=25.20  goal_dir=(-23.4, -9.4, -0.3)
+  AE latent: mean=-0.0003, std=1.0524, norm=5.860, delta=0.5390
+
+Step 0320:
+  pos_local=(18.72, 13.34, 1.26)
+  vel_body=(1.068, -0.093, -0.143) speed=1.081
+  ang_vel_body=(0.581, 0.293, -1.401)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.618)
+  dist_to_goal=24.98  goal_dir=(-23.2, -9.2, -0.3)
+  AE latent: mean=-0.0021, std=1.0523, norm=5.859, delta=1.6003
+
+Step 0330:
+  pos_local=(18.55, 13.22, 1.24)
+  vel_body=(1.036, 0.222, -0.059) speed=1.061
+  ang_vel_body=(-1.034, 0.036, 0.042)
+  actions=(fwd=1.000, lat=1.000, vert=-0.515, yaw=0.039)
+  dist_to_goal=24.78  goal_dir=(-23.0, -9.1, -0.2)
+  AE latent: mean=-0.0027, std=1.0523, norm=5.859, delta=0.0678
+
+Step 0340:
+  pos_local=(18.40, 13.06, 1.23)
+  vel_body=(1.071, 0.253, 0.027) speed=1.101
+  ang_vel_body=(-2.025, -0.273, 0.166)
+  actions=(fwd=1.000, lat=1.000, vert=-0.087, yaw=0.029)
+  dist_to_goal=24.58  goal_dir=(-22.9, -9.0, -0.2)
+  AE latent: mean=-0.0029, std=1.0518, norm=5.856, delta=0.2792
+
+Step 0350:
+  pos_local=(18.24, 12.91, 1.23)
+  vel_body=(1.076, 0.200, -0.070) speed=1.097
+  ang_vel_body=(-2.649, -0.349, -0.014)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=0.024)
+  dist_to_goal=24.38  goal_dir=(-22.7, -8.8, -0.2)
+  AE latent: mean=-0.0031, std=1.0520, norm=5.857, delta=0.3056
+
+Step 0360:
+  pos_local=(18.08, 12.76, 1.22)
+  vel_body=(1.071, 0.204, 0.040) speed=1.091
+  ang_vel_body=(-2.144, -0.256, 0.185)
+  actions=(fwd=1.000, lat=1.000, vert=0.147, yaw=0.044)
+  dist_to_goal=24.18  goal_dir=(-22.6, -8.7, -0.2)
+  AE latent: mean=-0.0030, std=1.0523, norm=5.859, delta=0.3954
+
+Step 0370:
+  pos_local=(17.92, 12.62, 1.22)
+  vel_body=(1.069, 0.196, -0.083) speed=1.090
+  ang_vel_body=(-2.392, -0.294, 0.186)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=0.104)
+  dist_to_goal=23.97  goal_dir=(-22.4, -8.5, -0.2)
+  AE latent: mean=-0.0031, std=1.0531, norm=5.863, delta=0.4067
+
+Step 0380:
+  pos_local=(17.76, 12.46, 1.19)
+  vel_body=(1.046, 0.392, -0.137) speed=1.125
+  ang_vel_body=(-0.279, -0.012, 0.521)
+  actions=(fwd=1.000, lat=0.770, vert=-1.000, yaw=0.121)
+  dist_to_goal=23.77  goal_dir=(-22.3, -8.4, -0.2)
+  AE latent: mean=-0.0012, std=1.0562, norm=5.881, delta=1.1898
+
+Step 0390:
+  pos_local=(17.63, 12.28, 1.21)
+  vel_body=(1.120, 0.382, 0.404) speed=1.251
+  ang_vel_body=(4.311, 0.288, -0.378)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=0.131)
+  dist_to_goal=23.58  goal_dir=(-22.1, -8.2, -0.2)
+  AE latent: mean=0.0006, std=1.0565, norm=5.883, delta=0.7110
+
+Step 0400:
+  pos_local=(17.47, 12.11, 1.24)
+  vel_body=(1.138, 0.120, -0.054) speed=1.146
+  ang_vel_body=(1.747, -0.425, -1.241)
+  actions=(fwd=1.000, lat=-0.880, vert=-1.000, yaw=-0.081)
+  dist_to_goal=23.37  goal_dir=(-22.0, -8.0, -0.2)
+  AE latent: mean=-0.0005, std=1.0582, norm=5.892, delta=0.7313
+
+Step 0410:
+  pos_local=(17.26, 12.03, 1.23)
+  vel_body=(1.063, -0.305, -0.189) speed=1.122
+  ang_vel_body=(-3.688, -0.330, -0.013)
+  actions=(fwd=1.000, lat=-0.372, vert=-1.000, yaw=0.013)
+  dist_to_goal=23.15  goal_dir=(-21.7, -7.9, -0.2)
+  AE latent: mean=0.0005, std=1.0571, norm=5.886, delta=0.6820
+
+*** EPISODE ENDED at step 415 ***
+  pos_local=(19.92, 13.99, 1.00)
+  dist_to_goal=24.896
+  reached_goal=False
+  contact_force=0.000N
+  hit_floor_ceiling=False (z=1.000)
+  hit_wall=False
+
+Step 0420:
+  pos_local=(19.92, 13.98, 1.00)
+  vel_body=(0.170, 0.045, 0.143) speed=0.226
+  ang_vel_body=(-1.488, 0.754, 2.086)
+  actions=(fwd=1.000, lat=1.000, vert=1.000, yaw=0.325)
+  dist_to_goal=24.89  goal_dir=(-6.8, -24.0, -0.0)
+  AE latent: mean=0.0016, std=1.0516, norm=5.855, delta=0.7945
+
+Step 0430:
+  pos_local=(19.93, 13.86, 1.03)
+  vel_body=(0.826, -0.200, 0.468) speed=0.970
+  ang_vel_body=(0.804, -0.486, 1.714)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.159)
+  dist_to_goal=24.77  goal_dir=(-6.8, -23.8, -0.0)
+  AE latent: mean=-0.0006, std=1.0534, norm=5.865, delta=0.9653
+
+Step 0440:
+  pos_local=(19.87, 13.61, 1.07)
+  vel_body=(1.131, -0.985, 0.265) speed=1.523
+  ang_vel_body=(-2.606, -1.770, -0.636)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.049)
+  dist_to_goal=24.52  goal_dir=(-6.7, -23.6, -0.1)
+  AE latent: mean=0.0001, std=1.0550, norm=5.874, delta=1.7650
+
+Step 0450:
+  pos_local=(19.79, 13.33, 1.11)
+  vel_body=(1.215, -0.648, -0.070) speed=1.379
+  ang_vel_body=(1.901, 0.202, -1.444)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.080)
+  dist_to_goal=24.22  goal_dir=(-6.6, -23.3, -0.1)
+  AE latent: mean=0.0006, std=1.0522, norm=5.858, delta=1.7251
+
+Step 0460:
+  pos_local=(19.69, 13.08, 1.10)
+  vel_body=(1.116, -0.667, -0.135) speed=1.307
+  ang_vel_body=(-0.163, 0.313, 0.009)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.065)
+  dist_to_goal=23.96  goal_dir=(-6.5, -23.1, -0.1)
+  AE latent: mean=0.0012, std=1.0467, norm=5.828, delta=0.3290
+
+Step 0470:
+  pos_local=(19.57, 12.85, 1.07)
+  vel_body=(1.039, -0.742, -0.184) speed=1.290
+  ang_vel_body=(-0.124, 0.030, 0.272)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.000)
+  dist_to_goal=23.71  goal_dir=(-6.4, -22.8, -0.1)
+  AE latent: mean=0.0006, std=1.0512, norm=5.853, delta=0.2796
+
+Step 0480:
+  pos_local=(19.46, 12.62, 1.04)
+  vel_body=(1.006, -0.755, -0.186) speed=1.272
+  ang_vel_body=(-0.019, 0.049, 0.206)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.005)
+  dist_to_goal=23.46  goal_dir=(-6.3, -22.6, -0.0)
+  AE latent: mean=0.0002, std=1.0552, norm=5.875, delta=0.1785
+
+Step 0490:
+  pos_local=(19.36, 12.40, 1.00)
+  vel_body=(0.992, -0.760, -0.190) speed=1.264
+  ang_vel_body=(-0.044, 0.059, 0.212)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.001)
+  dist_to_goal=23.21  goal_dir=(-6.2, -22.4, -0.0)
+  AE latent: mean=-0.0002, std=1.0584, norm=5.893, delta=0.2239
+
+Step 0500:
+  pos_local=(19.26, 12.17, 0.96)
+  vel_body=(0.993, -0.750, -0.191) speed=1.259
+  ang_vel_body=(0.054, -0.017, 0.068)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.002)
+  dist_to_goal=22.96  goal_dir=(-6.1, -22.1, 0.0)
+  AE latent: mean=-0.0004, std=1.0598, norm=5.901, delta=0.0323
+
+Step 0510:
+  pos_local=(19.17, 11.93, 0.92)
+  vel_body=(0.997, -0.741, -0.188) speed=1.257
+  ang_vel_body=(0.025, -0.018, 0.028)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.000)
+  dist_to_goal=22.71  goal_dir=(-6.0, -21.9, 0.1)
+  AE latent: mean=-0.0004, std=1.0602, norm=5.903, delta=0.0169
+
+Step 0520:
+  pos_local=(19.09, 11.70, 0.89)
+  vel_body=(1.001, -0.736, -0.187) speed=1.256
+  ang_vel_body=(0.009, -0.006, 0.021)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.001)
+  dist_to_goal=22.47  goal_dir=(-5.9, -21.7, 0.1)
+  AE latent: mean=-0.0004, std=1.0606, norm=5.905, delta=0.0424
+
+Step 0530:
+  pos_local=(19.00, 11.47, 0.85)
+  vel_body=(1.001, -0.735, -0.187) speed=1.256
+  ang_vel_body=(-0.001, -0.002, 0.035)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.001)
+  dist_to_goal=22.22  goal_dir=(-5.8, -21.4, 0.2)
+  AE latent: mean=-0.0003, std=1.0612, norm=5.909, delta=0.0205
+
+Step 0540:
+  pos_local=(18.92, 11.23, 0.81)
+  vel_body=(1.004, -0.732, -0.186) speed=1.256
+  ang_vel_body=(0.022, -0.014, 0.006)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.003)
+  dist_to_goal=21.97  goal_dir=(-5.8, -21.2, 0.2)
+  AE latent: mean=-0.0002, std=1.0601, norm=5.902, delta=0.3354
+
+Step 0550:
+  pos_local=(18.83, 11.00, 0.78)
+  vel_body=(1.004, -0.733, -0.189) speed=1.257
+  ang_vel_body=(0.010, -0.036, -0.037)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.020)
+  dist_to_goal=21.72  goal_dir=(-5.7, -21.0, 0.2)
+  AE latent: mean=-0.0001, std=1.0603, norm=5.903, delta=0.1568
+
+Step 0560:
+  pos_local=(18.75, 10.77, 0.74)
+  vel_body=(1.008, -0.725, -0.181) speed=1.255
+  ang_vel_body=(0.004, 0.019, 0.014)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.004)
+  dist_to_goal=21.48  goal_dir=(-5.6, -20.7, 0.3)
+  AE latent: mean=0.0003, std=1.0579, norm=5.890, delta=0.0358
+
+Step 0570:
+  pos_local=(18.66, 10.53, 0.75)
+  vel_body=(0.965, -0.920, 0.505) speed=1.426
+  ang_vel_body=(-1.266, 0.449, 0.884)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.176)
+  dist_to_goal=21.22  goal_dir=(-5.5, -20.5, 0.2)
+  AE latent: mean=-0.0011, std=1.0618, norm=5.912, delta=1.0397
+
+Step 0580:
+  pos_local=(18.56, 10.25, 0.82)
+  vel_body=(1.171, -0.925, 0.069) speed=1.493
+  ang_vel_body=(-1.556, -0.952, -0.634)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.193)
+  dist_to_goal=20.93  goal_dir=(-5.4, -20.2, 0.2)
+  AE latent: mean=-0.0004, std=1.0545, norm=5.871, delta=1.2353
+
+Step 0590:
+  pos_local=(18.47, 9.99, 0.83)
+  vel_body=(1.105, -0.747, -0.087) speed=1.337
+  ang_vel_body=(-0.882, 0.617, 0.082)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.023)
+  dist_to_goal=20.65  goal_dir=(-5.3, -20.0, 0.2)
+  AE latent: mean=0.0004, std=1.0497, norm=5.845, delta=0.6694
+
+Step 0600:
+  pos_local=(18.37, 9.74, 0.86)
+  vel_body=(1.012, -0.833, 0.536) speed=1.417
+  ang_vel_body=(1.028, 1.063, 0.939)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=0.026)
+  dist_to_goal=20.39  goal_dir=(-5.2, -19.7, 0.1)
+  AE latent: mean=0.0006, std=1.0562, norm=5.881, delta=1.1505
+
+Step 0610:
+  pos_local=(18.26, 9.47, 0.94)
+  vel_body=(1.164, -0.984, 0.435) speed=1.585
+  ang_vel_body=(0.085, -0.849, -0.799)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.090)
+  dist_to_goal=20.09  goal_dir=(-5.1, -19.4, 0.1)
+  AE latent: mean=0.0009, std=1.0515, norm=5.855, delta=1.3736
+
+Step 0620:
+  pos_local=(18.17, 9.19, 1.00)
+  vel_body=(1.189, -0.740, -0.083) speed=1.403
+  ang_vel_body=(1.310, 0.302, -0.460)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.146)
+  dist_to_goal=19.80  goal_dir=(-5.0, -19.2, 0.0)
+  AE latent: mean=-0.0000, std=1.0503, norm=5.848, delta=0.9235
+
+Step 0630:
+  pos_local=(18.07, 8.94, 0.99)
+  vel_body=(1.098, -0.716, -0.156) speed=1.320
+  ang_vel_body=(0.201, -0.152, -0.275)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.007)
+  dist_to_goal=19.53  goal_dir=(-4.9, -18.9, 0.0)
+  AE latent: mean=-0.0022, std=1.0497, norm=5.844, delta=0.5697
+
+Step 0640:
+  pos_local=(17.97, 8.70, 0.97)
+  vel_body=(1.051, -0.714, -0.160) speed=1.281
+  ang_vel_body=(-0.157, 0.145, 0.029)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.009)
+  dist_to_goal=19.28  goal_dir=(-4.8, -18.7, 0.0)
+  AE latent: mean=-0.0027, std=1.0497, norm=5.844, delta=0.3597
+
+Step 0650:
+  pos_local=(17.86, 8.47, 0.98)
+  vel_body=(1.024, -0.808, 0.416) speed=1.369
+  ang_vel_body=(0.034, 0.515, 0.387)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.142)
+  dist_to_goal=19.03  goal_dir=(-4.7, -18.4, 0.0)
+  AE latent: mean=-0.0023, std=1.0523, norm=5.859, delta=0.4243
+
+Step 0660:
+  pos_local=(17.73, 8.21, 1.06)
+  vel_body=(1.153, -0.949, 0.475) speed=1.567
+  ang_vel_body=(-0.474, -0.748, -0.406)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.036)
+  dist_to_goal=18.75  goal_dir=(-4.6, -18.2, -0.1)
+  AE latent: mean=-0.0018, std=1.0504, norm=5.848, delta=0.8203
+
+Step 0670:
+  pos_local=(17.59, 7.95, 1.16)
+  vel_body=(1.130, -0.973, 0.554) speed=1.591
+  ang_vel_body=(0.125, 0.430, 0.281)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=0.021)
+  dist_to_goal=18.46  goal_dir=(-4.4, -17.9, -0.2)
+  AE latent: mean=0.0017, std=1.0496, norm=5.844, delta=0.1992
+
+Step 0680:
+  pos_local=(17.45, 7.68, 1.26)
+  vel_body=(1.135, -1.028, 0.529) speed=1.620
+  ang_vel_body=(-0.043, -0.154, 0.074)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=0.018)
+  dist_to_goal=18.16  goal_dir=(-4.3, -17.6, -0.3)
+  AE latent: mean=0.0021, std=1.0488, norm=5.840, delta=0.6205
+
+Step 0690:
+  pos_local=(17.32, 7.40, 1.37)
+  vel_body=(1.191, -0.978, 0.451) speed=1.606
+  ang_vel_body=(-0.388, -0.491, -0.609)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.050)
+  dist_to_goal=17.87  goal_dir=(-4.2, -17.4, -0.4)
+  AE latent: mean=0.0013, std=1.0487, norm=5.839, delta=0.9739
+
+Step 0700:
+  pos_local=(17.23, 7.15, 1.41)
+  vel_body=(1.125, -0.065, -0.010) speed=1.126
+  ang_vel_body=(3.382, 2.249, 0.007)
+  actions=(fwd=1.000, lat=0.293, vert=-1.000, yaw=-0.087)
+  dist_to_goal=17.60  goal_dir=(-4.1, -17.1, -0.4)
+  AE latent: mean=0.0018, std=1.0474, norm=5.832, delta=0.8631
+
+Step 0710:
+  pos_local=(17.24, 6.92, 1.39)
+  vel_body=(1.090, 0.077, -0.227) speed=1.116
+  ang_vel_body=(-0.370, 0.172, -0.706)
+  actions=(fwd=1.000, lat=0.232, vert=-1.000, yaw=0.060)
+  dist_to_goal=17.38  goal_dir=(-4.1, -16.9, -0.4)
+  AE latent: mean=0.0020, std=1.0459, norm=5.824, delta=0.3876
+
+Step 0720:
+  pos_local=(17.27, 6.71, 1.37)
+  vel_body=(1.072, 0.151, -0.150) speed=1.093
+  ang_vel_body=(-0.136, -0.527, -0.021)
+  actions=(fwd=1.000, lat=-0.045, vert=-1.000, yaw=-0.016)
+  dist_to_goal=17.18  goal_dir=(-4.1, -16.7, -0.4)
+  AE latent: mean=0.0019, std=1.0453, norm=5.820, delta=0.1388
+
+Step 0730:
+  pos_local=(17.31, 6.50, 1.35)
+  vel_body=(1.036, 0.209, -0.123) speed=1.064
+  ang_vel_body=(0.149, 0.129, -0.040)
+  actions=(fwd=1.000, lat=0.144, vert=-1.000, yaw=0.007)
+  dist_to_goal=16.99  goal_dir=(-4.2, -16.5, -0.3)
+  AE latent: mean=0.0020, std=1.0453, norm=5.820, delta=0.0506
+
+Step 0740:
+  pos_local=(17.35, 6.29, 1.32)
+  vel_body=(1.032, 0.251, -0.140) speed=1.071
+  ang_vel_body=(-0.193, 0.024, -0.075)
+  actions=(fwd=1.000, lat=0.249, vert=-1.000, yaw=-0.003)
+  dist_to_goal=16.80  goal_dir=(-4.2, -16.3, -0.3)
+  AE latent: mean=0.0020, std=1.0453, norm=5.820, delta=0.0579
+
+Step 0750:
+  pos_local=(17.41, 6.09, 1.29)
+  vel_body=(1.028, 0.364, -0.127) speed=1.098
+  ang_vel_body=(-0.001, 0.052, -0.095)
+  actions=(fwd=1.000, lat=0.432, vert=-1.000, yaw=-0.005)
+  dist_to_goal=16.61  goal_dir=(-4.3, -16.1, -0.3)
+  AE latent: mean=0.0021, std=1.0455, norm=5.821, delta=0.0203
+
+Step 0760:
+  pos_local=(17.48, 5.88, 1.26)
+  vel_body=(1.044, 0.453, -0.119) speed=1.145
+  ang_vel_body=(0.162, -0.041, 0.112)
+  actions=(fwd=1.000, lat=0.521, vert=-1.000, yaw=-0.001)
+  dist_to_goal=16.43  goal_dir=(-4.3, -15.8, -0.3)
+  AE latent: mean=0.0020, std=1.0455, norm=5.821, delta=0.1147
+
+Step 0770:
+  pos_local=(17.56, 5.66, 1.23)
+  vel_body=(1.051, 0.469, -0.122) speed=1.157
+  ang_vel_body=(-0.723, -0.024, 0.035)
+  actions=(fwd=1.000, lat=0.691, vert=-1.000, yaw=0.008)
+  dist_to_goal=16.24  goal_dir=(-4.4, -15.6, -0.2)
+  AE latent: mean=0.0022, std=1.0465, norm=5.827, delta=0.1472
+
+Step 0780:
+  pos_local=(17.66, 5.45, 1.20)
+  vel_body=(1.051, 0.563, -0.105) speed=1.197
+  ang_vel_body=(-0.943, -0.108, 0.042)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=0.016)
+  dist_to_goal=16.06  goal_dir=(-4.5, -15.4, -0.2)
+  AE latent: mean=0.0023, std=1.0474, norm=5.832, delta=0.1923
+
+Step 0790:
+  pos_local=(17.77, 5.23, 1.17)
+  vel_body=(1.053, 0.721, -0.105) speed=1.280
+  ang_vel_body=(-0.110, 0.049, 0.068)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=0.018)
+  dist_to_goal=15.89  goal_dir=(-4.6, -15.2, -0.2)
+  AE latent: mean=0.0021, std=1.0478, norm=5.834, delta=0.0598
+
+*** EPISODE ENDED at step 795 ***
+  pos_local=(16.50, -19.22, 1.00)
+  dist_to_goal=20.141
+  reached_goal=False
+  contact_force=0.000N
+  hit_floor_ceiling=False (z=1.000)
+  hit_wall=False
+
+Step 0800:
+  pos_local=(16.50, -19.22, 1.00)
+  vel_body=(0.152, 0.166, 0.063) speed=0.234
+  ang_vel_body=(-0.092, 1.109, 0.289)
+  actions=(fwd=1.000, lat=1.000, vert=1.000, yaw=0.266)
+  dist_to_goal=20.14  goal_dir=(7.4, 18.7, 0.0)
+  AE latent: mean=0.0009, std=1.0517, norm=5.855, delta=0.2452
+
+Step 0810:
+  pos_local=(16.45, -19.10, 0.99)
+  vel_body=(0.723, 0.559, 0.125) speed=0.923
+  ang_vel_body=(0.552, -0.690, 0.430)
+  actions=(fwd=1.000, lat=1.000, vert=0.203, yaw=-0.054)
+  dist_to_goal=20.05  goal_dir=(7.5, 18.6, 0.0)
+  AE latent: mean=0.0012, std=1.0548, norm=5.873, delta=0.4046
+
+Step 0820:
+  pos_local=(16.34, -18.91, 0.96)
+  vel_body=(0.929, 0.824, -0.063) speed=1.243
+  ang_vel_body=(0.419, -0.126, -0.331)
+  actions=(fwd=1.000, lat=1.000, vert=-0.991, yaw=-0.072)
+  dist_to_goal=19.91  goal_dir=(7.6, 18.4, 0.0)
+  AE latent: mean=-0.0004, std=1.0548, norm=5.873, delta=0.2112
+
+Step 0830:
+  pos_local=(16.22, -18.67, 0.92)
+  vel_body=(0.980, 0.961, -0.110) speed=1.377
+  ang_vel_body=(0.196, -0.157, -0.506)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=-0.004)
+  dist_to_goal=19.74  goal_dir=(7.7, 18.2, 0.1)
+  AE latent: mean=-0.0000, std=1.0528, norm=5.862, delta=0.3460
+
+Step 0840:
+  pos_local=(16.12, -18.41, 0.89)
+  vel_body=(1.028, 0.980, -0.104) speed=1.424
+  ang_vel_body=(-0.082, -0.199, -0.151)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=-0.001)
+  dist_to_goal=19.54  goal_dir=(7.8, 17.9, 0.1)
+  AE latent: mean=0.0001, std=1.0520, norm=5.857, delta=0.0765
+
+Step 0850:
+  pos_local=(16.03, -18.14, 0.87)
+  vel_body=(1.067, 0.968, -0.099) speed=1.444
+  ang_vel_body=(-0.084, -0.125, -0.048)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=-0.007)
+  dist_to_goal=19.33  goal_dir=(7.9, 17.6, 0.1)
+  AE latent: mean=-0.0003, std=1.0519, norm=5.856, delta=0.0763
+
+Step 0860:
+  pos_local=(15.95, -17.86, 0.85)
+  vel_body=(1.083, 0.964, -0.093) speed=1.453
+  ang_vel_body=(-0.060, -0.067, -0.094)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=-0.013)
+  dist_to_goal=19.11  goal_dir=(8.0, 17.4, 0.2)
+  AE latent: mean=-0.0013, std=1.0519, norm=5.857, delta=0.0969
+
+Step 0870:
+  pos_local=(15.88, -17.58, 0.83)
+  vel_body=(1.086, 0.965, -0.090) speed=1.456
+  ang_vel_body=(-0.062, -0.053, -0.114)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=-0.007)
+  dist_to_goal=18.88  goal_dir=(8.1, 17.1, 0.2)
+  AE latent: mean=-0.0018, std=1.0520, norm=5.858, delta=0.2320
+
+Step 0880:
+  pos_local=(15.81, -17.30, 0.81)
+  vel_body=(1.088, 0.965, -0.089) speed=1.457
+  ang_vel_body=(-0.054, -0.043, -0.104)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=-0.006)
+  dist_to_goal=18.66  goal_dir=(8.1, 16.8, 0.2)
+  AE latent: mean=-0.0024, std=1.0522, norm=5.858, delta=0.1363
+
+Step 0890:
+  pos_local=(15.75, -17.02, 0.79)
+  vel_body=(1.093, 0.960, -0.091) speed=1.458
+  ang_vel_body=(-0.019, -0.040, -0.052)
+  actions=(fwd=1.000, lat=0.989, vert=-1.000, yaw=0.001)
+  dist_to_goal=18.43  goal_dir=(8.2, 16.5, 0.2)
+  AE latent: mean=-0.0027, std=1.0523, norm=5.859, delta=0.3171
+
+Step 0900:
+  pos_local=(15.70, -16.73, 0.78)
+  vel_body=(1.122, 0.864, -0.057) speed=1.417
+  ang_vel_body=(-0.557, -0.206, 0.340)
+  actions=(fwd=1.000, lat=1.000, vert=-0.744, yaw=0.045)
+  dist_to_goal=18.20  goal_dir=(8.2, 16.2, 0.2)
+  AE latent: mean=-0.0020, std=1.0532, norm=5.864, delta=0.6663
+
+Step 0910:
+  pos_local=(15.68, -16.46, 0.80)
+  vel_body=(1.186, 0.451, 0.249) speed=1.293
+  ang_vel_body=(2.509, 0.242, 0.055)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=0.341)
+  dist_to_goal=17.97  goal_dir=(8.3, 16.0, 0.2)
+  AE latent: mean=0.0012, std=1.0527, norm=5.861, delta=0.3352
+
+Step 0920:
+  pos_local=(15.72, -16.23, 0.88)
+  vel_body=(1.138, 0.132, 0.228) speed=1.168
+  ang_vel_body=(4.179, 0.604, 0.159)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.094)
+  dist_to_goal=17.74  goal_dir=(8.2, 15.7, 0.1)
+  AE latent: mean=-0.0014, std=1.0554, norm=5.876, delta=0.9505
+
+Step 0930:
+  pos_local=(15.81, -16.02, 0.89)
+  vel_body=(1.124, -0.243, -0.077) speed=1.153
+  ang_vel_body=(0.131, -0.126, -0.227)
+  actions=(fwd=1.000, lat=-0.994, vert=-1.000, yaw=-0.001)
+  dist_to_goal=17.52  goal_dir=(8.1, 15.5, 0.1)
+  AE latent: mean=-0.0003, std=1.0574, norm=5.887, delta=0.4028
+
+Step 0940:
+  pos_local=(15.96, -15.84, 0.85)
+  vel_body=(1.063, -0.535, -0.195) speed=1.206
+  ang_vel_body=(-0.759, 0.177, -0.047)
+  actions=(fwd=1.000, lat=-0.900, vert=-1.000, yaw=0.017)
+  dist_to_goal=17.29  goal_dir=(8.0, 15.3, 0.1)
+  AE latent: mean=0.0002, std=1.0576, norm=5.889, delta=0.3757
+
+Step 0950:
+  pos_local=(16.13, -15.69, 0.83)
+  vel_body=(1.021, -0.405, -0.158) speed=1.110
+  ang_vel_body=(0.647, 0.480, -0.434)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.096)
+  dist_to_goal=17.07  goal_dir=(7.8, 15.2, 0.2)
+  AE latent: mean=-0.0004, std=1.0574, norm=5.887, delta=0.7480
+
+Step 0960:
+  pos_local=(16.26, -15.52, 0.81)
+  vel_body=(1.025, -0.163, -0.100) speed=1.043
+  ang_vel_body=(-1.877, -0.077, 0.299)
+  actions=(fwd=1.000, lat=1.000, vert=-1.000, yaw=0.125)
+  dist_to_goal=16.86  goal_dir=(7.7, 15.0, 0.2)
+  AE latent: mean=-0.0004, std=1.0582, norm=5.892, delta=0.3018
+
+Step 0970:
+  pos_local=(16.35, -15.33, 0.83)
+  vel_body=(1.072, -0.030, 0.385) speed=1.140
+  ang_vel_body=(3.622, 0.425, 0.029)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.027)
+  dist_to_goal=16.65  goal_dir=(7.6, 14.8, 0.2)
+  AE latent: mean=-0.0004, std=1.0579, norm=5.890, delta=0.5143
+
+Step 0980:
+  pos_local=(16.42, -15.12, 0.92)
+  vel_body=(1.109, 0.008, 0.511) speed=1.221
+  ang_vel_body=(2.921, 0.104, -0.265)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.139)
+  dist_to_goal=16.43  goal_dir=(7.5, 14.6, 0.1)
+  AE latent: mean=-0.0008, std=1.0576, norm=5.889, delta=0.6391
+
+Step 0990:
+  pos_local=(16.50, -14.91, 0.96)
+  vel_body=(1.130, -0.059, -0.057) speed=1.133
+  ang_vel_body=(0.945, -0.130, -0.809)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.059)
+  dist_to_goal=16.21  goal_dir=(7.4, 14.4, 0.0)
+  AE latent: mean=0.0007, std=1.0588, norm=5.895, delta=1.0686
+
+Step 1000:
+  pos_local=(16.59, -14.71, 0.96)
+  vel_body=(1.077, -0.032, -0.022) speed=1.077
+  ang_vel_body=(2.422, 0.456, -0.107)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.115)
+  dist_to_goal=15.99  goal_dir=(7.4, 14.2, 0.0)
+  AE latent: mean=-0.0003, std=1.0588, norm=5.895, delta=0.4984
+
+Step 1010:
+  pos_local=(16.67, -14.51, 0.95)
+  vel_body=(1.079, 0.042, -0.067) speed=1.082
+  ang_vel_body=(2.794, 0.283, -0.416)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.061)
+  dist_to_goal=15.78  goal_dir=(7.3, 14.0, 0.1)
+  AE latent: mean=-0.0011, std=1.0592, norm=5.897, delta=0.5894
+
+Step 1020:
+  pos_local=(16.74, -14.30, 0.93)
+  vel_body=(1.078, 0.078, -0.063) speed=1.083
+  ang_vel_body=(2.790, 0.383, -0.364)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.038)
+  dist_to_goal=15.56  goal_dir=(7.2, 13.8, 0.1)
+  AE latent: mean=0.0012, std=1.0571, norm=5.886, delta=1.2536
+
+Step 1030:
+  pos_local=(16.83, -14.10, 0.98)
+  vel_body=(1.086, -0.296, 0.496) speed=1.230
+  ang_vel_body=(-3.522, -0.491, 1.846)
+  actions=(fwd=1.000, lat=1.000, vert=0.913, yaw=0.035)
+  dist_to_goal=15.34  goal_dir=(7.1, 13.6, 0.0)
+  AE latent: mean=-0.0019, std=1.0583, norm=5.893, delta=2.8542
+
+*** EPISODE ENDED at step 1033 ***
+  pos_local=(-4.60, 0.09, 1.00)
+  dist_to_goal=24.557
+  reached_goal=False
+  contact_force=0.000N
+  hit_floor_ceiling=False (z=1.000)
+  hit_wall=False
+
+Step 1040:
+  pos_local=(-4.59, 0.09, 1.03)
+  vel_body=(0.226, -0.077, 0.280) speed=0.368
+  ang_vel_body=(-1.778, 0.103, 3.100)
+  actions=(fwd=1.000, lat=0.395, vert=1.000, yaw=0.084)
+  dist_to_goal=24.54  goal_dir=(23.9, 5.6, -0.0)
+  AE latent: mean=0.0017, std=1.0492, norm=5.842, delta=0.0714
+
+Step 1050:
+  pos_local=(-4.43, 0.13, 1.05)
+  vel_body=(0.862, -0.611, 0.523) speed=1.178
+  ang_vel_body=(-0.815, -1.199, 1.297)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.084)
+  dist_to_goal=24.38  goal_dir=(23.7, 5.5, -0.1)
+  AE latent: mean=0.0020, std=1.0546, norm=5.872, delta=1.0348
+
+Step 1060:
+  pos_local=(-4.16, 0.18, 1.10)
+  vel_body=(1.104, -0.936, 0.458) speed=1.518
+  ang_vel_body=(0.473, 0.227, 0.078)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=0.068)
+  dist_to_goal=24.11  goal_dir=(23.5, 5.5, -0.1)
+  AE latent: mean=-0.0019, std=1.0549, norm=5.874, delta=0.2684
+
+Step 1070:
+  pos_local=(-3.87, 0.23, 1.20)
+  vel_body=(1.109, -1.033, 0.494) speed=1.594
+  ang_vel_body=(-0.346, -0.505, -0.126)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.020)
+  dist_to_goal=23.81  goal_dir=(23.2, 5.4, -0.2)
+  AE latent: mean=-0.0009, std=1.0566, norm=5.883, delta=0.5487
+
+Step 1080:
+  pos_local=(-3.57, 0.30, 1.31)
+  vel_body=(1.155, -0.969, 0.582) speed=1.616
+  ang_vel_body=(0.024, 0.057, 0.035)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.017)
+  dist_to_goal=23.51  goal_dir=(22.9, 5.4, -0.3)
+  AE latent: mean=-0.0020, std=1.0530, norm=5.863, delta=0.0836
+
+Step 1090:
+  pos_local=(-3.28, 0.37, 1.41)
+  vel_body=(1.189, -0.984, 0.317) speed=1.576
+  ang_vel_body=(-1.485, -0.879, 0.208)
+  actions=(fwd=1.000, lat=-1.000, vert=-0.744, yaw=-0.057)
+  dist_to_goal=23.20  goal_dir=(22.6, 5.3, -0.4)
+  AE latent: mean=-0.0025, std=1.0522, norm=5.858, delta=0.9324
+
+Step 1100:
+  pos_local=(-3.00, 0.43, 1.43)
+  vel_body=(1.190, -0.645, -0.045) speed=1.354
+  ang_vel_body=(0.388, 0.108, -0.785)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.002)
+  dist_to_goal=22.92  goal_dir=(22.3, 5.2, -0.4)
+  AE latent: mean=0.0024, std=1.0564, norm=5.882, delta=0.8625
+
+Step 1110:
+  pos_local=(-2.74, 0.47, 1.42)
+  vel_body=(1.120, -0.631, -0.139) speed=1.293
+  ang_vel_body=(-0.031, 0.099, -0.613)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.054)
+  dist_to_goal=22.66  goal_dir=(22.0, 5.2, -0.4)
+  AE latent: mean=0.0009, std=1.0534, norm=5.865, delta=0.8573
+
+Step 1120:
+  pos_local=(-2.48, 0.47, 1.39)
+  vel_body=(1.068, -0.668, -0.151) speed=1.269
+  ang_vel_body=(-0.343, 0.338, 0.104)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.038)
+  dist_to_goal=22.41  goal_dir=(21.8, 5.2, -0.4)
+  AE latent: mean=-0.0003, std=1.0542, norm=5.869, delta=0.3606
+
+Step 1130:
+  pos_local=(-2.23, 0.46, 1.36)
+  vel_body=(1.024, -0.731, -0.190) speed=1.272
+  ang_vel_body=(-0.062, -0.005, 0.175)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.001)
+  dist_to_goal=22.17  goal_dir=(21.5, 5.2, -0.4)
+  AE latent: mean=-0.0016, std=1.0552, norm=5.875, delta=0.4215
+
+Step 1140:
+  pos_local=(-1.98, 0.44, 1.32)
+  vel_body=(1.007, -0.740, -0.186) speed=1.263
+  ang_vel_body=(-0.014, 0.025, 0.111)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.006)
+  dist_to_goal=21.93  goal_dir=(21.3, 5.2, -0.3)
+  AE latent: mean=-0.0016, std=1.0561, norm=5.880, delta=0.0618
+
+Step 1150:
+  pos_local=(-1.73, 0.43, 1.29)
+  vel_body=(0.999, -0.745, -0.189) speed=1.260
+  ang_vel_body=(-0.008, 0.006, 0.099)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.001)
+  dist_to_goal=21.69  goal_dir=(21.0, 5.2, -0.3)
+  AE latent: mean=-0.0016, std=1.0569, norm=5.885, delta=0.0471
+
+Step 1160:
+  pos_local=(-1.48, 0.42, 1.25)
+  vel_body=(1.000, -0.739, -0.186) speed=1.257
+  ang_vel_body=(0.013, 0.011, 0.055)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.003)
+  dist_to_goal=21.45  goal_dir=(20.8, 5.3, -0.2)
+  AE latent: mean=-0.0013, std=1.0571, norm=5.886, delta=0.0298
+
+Step 1170:
+  pos_local=(-1.23, 0.41, 1.21)
+  vel_body=(1.001, -0.737, -0.187) speed=1.257
+  ang_vel_body=(0.027, -0.016, 0.064)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.005)
+  dist_to_goal=21.21  goal_dir=(20.5, 5.3, -0.2)
+  AE latent: mean=-0.0011, std=1.0578, norm=5.890, delta=0.3826
+
+Step 1180:
+  pos_local=(-0.98, 0.41, 1.17)
+  vel_body=(0.975, -0.776, -0.184) speed=1.260
+  ang_vel_body=(-0.358, 0.361, 0.754)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.032)
+  dist_to_goal=20.97  goal_dir=(20.3, 5.3, -0.2)
+  AE latent: mean=-0.0014, std=1.0588, norm=5.895, delta=0.8227
+
+Step 1190:
+  pos_local=(-0.72, 0.41, 1.21)
+  vel_body=(0.962, -1.075, 0.401) speed=1.498
+  ang_vel_body=(-1.669, -0.734, 0.581)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.103)
+  dist_to_goal=20.71  goal_dir=(20.0, 5.3, -0.2)
+  AE latent: mean=-0.0001, std=1.0598, norm=5.901, delta=1.0658
+
+Step 1200:
+  pos_local=(-0.42, 0.45, 1.30)
+  vel_body=(1.089, -0.983, 0.580) speed=1.577
+  ang_vel_body=(0.498, 0.260, 0.317)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.001)
+  dist_to_goal=20.41  goal_dir=(19.7, 5.2, -0.3)
+  AE latent: mean=0.0004, std=1.0575, norm=5.888, delta=0.3488
+
+Step 1210:
+  pos_local=(-0.12, 0.50, 1.40)
+  vel_body=(1.170, -0.986, 0.525) speed=1.618
+  ang_vel_body=(0.255, -0.290, -0.265)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=-0.001)
+  dist_to_goal=20.11  goal_dir=(19.4, 5.2, -0.4)
+  AE latent: mean=0.0017, std=1.0554, norm=5.876, delta=0.5007
+
+Step 1220:
+  pos_local=(0.17, 0.56, 1.51)
+  vel_body=(1.176, -0.970, 0.566) speed=1.626
+  ang_vel_body=(-0.185, -0.073, -0.064)
+  actions=(fwd=1.000, lat=-1.000, vert=1.000, yaw=0.010)
+  dist_to_goal=19.81  goal_dir=(19.1, 5.1, -0.5)
+  AE latent: mean=0.0017, std=1.0547, norm=5.872, delta=0.2708
+
+Step 1230:
+  pos_local=(0.47, 0.61, 1.59)
+  vel_body=(1.222, -0.812, -0.140) speed=1.473
+  ang_vel_body=(0.681, -0.574, -1.954)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.027)
+  dist_to_goal=19.51  goal_dir=(18.8, 5.1, -0.6)
+  AE latent: mean=-0.0003, std=1.0506, norm=5.850, delta=1.7166
+
+Step 1240:
+  pos_local=(0.75, 0.65, 1.60)
+  vel_body=(1.170, -0.616, -0.126) speed=1.328
+  ang_vel_body=(-0.147, 0.015, -0.737)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.066)
+  dist_to_goal=19.24  goal_dir=(18.6, 5.0, -0.6)
+  AE latent: mean=-0.0016, std=1.0511, norm=5.852, delta=0.9943
+
+Step 1250:
+  pos_local=(1.01, 0.66, 1.57)
+  vel_body=(1.064, -0.724, -0.164) speed=1.297
+  ang_vel_body=(-0.359, 0.137, 0.425)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.036)
+  dist_to_goal=18.99  goal_dir=(18.3, 5.0, -0.6)
+  AE latent: mean=-0.0024, std=1.0515, norm=5.854, delta=0.5910
+
+Step 1260:
+  pos_local=(1.26, 0.65, 1.54)
+  vel_body=(1.015, -0.753, -0.189) speed=1.278
+  ang_vel_body=(0.039, 0.008, 0.180)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.007)
+  dist_to_goal=18.74  goal_dir=(18.0, 5.0, -0.5)
+  AE latent: mean=-0.0028, std=1.0509, norm=5.851, delta=0.3654
+
+Step 1270:
+  pos_local=(1.51, 0.66, 1.50)
+  vel_body=(1.006, -0.743, -0.185) speed=1.264
+  ang_vel_body=(0.048, -0.000, 0.035)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.004)
+  dist_to_goal=18.50  goal_dir=(17.8, 5.0, -0.5)
+  AE latent: mean=-0.0026, std=1.0517, norm=5.855, delta=0.0746
+
+Step 1280:
+  pos_local=(1.76, 0.66, 1.47)
+  vel_body=(1.003, -0.738, -0.186) speed=1.259
+  ang_vel_body=(0.002, 0.004, 0.035)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.003)
+  dist_to_goal=18.26  goal_dir=(17.5, 5.0, -0.5)
+  AE latent: mean=-0.0027, std=1.0521, norm=5.858, delta=0.0786
+
+Step 1290:
+  pos_local=(2.01, 0.67, 1.43)
+  vel_body=(1.004, -0.733, -0.185) speed=1.257
+  ang_vel_body=(0.029, -0.007, 0.035)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.008)
+  dist_to_goal=18.01  goal_dir=(17.3, 5.0, -0.4)
+  AE latent: mean=-0.0026, std=1.0518, norm=5.856, delta=0.0584
+
+Step 1300:
+  pos_local=(2.26, 0.68, 1.39)
+  vel_body=(1.004, -0.733, -0.186) speed=1.257
+  ang_vel_body=(0.016, -0.010, 0.011)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.016)
+  dist_to_goal=17.77  goal_dir=(17.1, 5.0, -0.4)
+  AE latent: mean=-0.0027, std=1.0516, norm=5.855, delta=0.1355
+
+Step 1310:
+  pos_local=(2.51, 0.69, 1.36)
+  vel_body=(1.005, -0.731, -0.186) speed=1.256
+  ang_vel_body=(0.009, -0.004, 0.010)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.003)
+  dist_to_goal=17.53  goal_dir=(16.8, 5.0, -0.4)
+  AE latent: mean=-0.0023, std=1.0522, norm=5.858, delta=1.0932
+
+Step 1320:
+  pos_local=(2.76, 0.70, 1.32)
+  vel_body=(1.002, -0.735, -0.188) speed=1.257
+  ang_vel_body=(-0.051, 0.021, 0.014)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.025)
+  dist_to_goal=17.29  goal_dir=(16.6, 5.0, -0.3)
+  AE latent: mean=-0.0023, std=1.0530, norm=5.863, delta=0.0418
+
+Step 1330:
+  pos_local=(3.00, 0.72, 1.28)
+  vel_body=(1.003, -0.734, -0.187) speed=1.257
+  ang_vel_body=(0.034, -0.025, 0.039)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.007)
+  dist_to_goal=17.05  goal_dir=(16.3, 5.0, -0.3)
+  AE latent: mean=-0.0022, std=1.0529, norm=5.863, delta=0.0180
+
+Step 1340:
+  pos_local=(3.25, 0.73, 1.25)
+  vel_body=(1.003, -0.733, -0.186) speed=1.257
+  ang_vel_body=(0.004, -0.006, 0.015)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.001)
+  dist_to_goal=16.80  goal_dir=(16.1, 4.9, -0.2)
+  AE latent: mean=-0.0022, std=1.0532, norm=5.864, delta=0.1817
+
+Step 1350:
+  pos_local=(3.50, 0.75, 1.21)
+  vel_body=(1.003, -0.733, -0.185) speed=1.256
+  ang_vel_body=(-0.011, 0.022, 0.069)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.005)
+  dist_to_goal=16.56  goal_dir=(15.8, 4.9, -0.2)
+  AE latent: mean=-0.0022, std=1.0536, norm=5.866, delta=0.0376
+
+Step 1360:
+  pos_local=(3.75, 0.76, 1.17)
+  vel_body=(1.003, -0.734, -0.187) speed=1.257
+  ang_vel_body=(-0.001, 0.001, 0.022)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.000)
+  dist_to_goal=16.32  goal_dir=(15.6, 4.9, -0.2)
+  AE latent: mean=-0.0021, std=1.0540, norm=5.868, delta=0.0226
+
+Step 1370:
+  pos_local=(4.00, 0.78, 1.13)
+  vel_body=(1.003, -0.734, -0.186) speed=1.256
+  ang_vel_body=(-0.006, 0.006, 0.025)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.001)
+  dist_to_goal=16.08  goal_dir=(15.3, 4.9, -0.1)
+  AE latent: mean=-0.0021, std=1.0540, norm=5.868, delta=0.0250
+
+Step 1380:
+  pos_local=(4.24, 0.80, 1.10)
+  vel_body=(1.002, -0.736, -0.188) speed=1.257
+  ang_vel_body=(-0.054, 0.028, 0.005)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.014)
+  dist_to_goal=15.83  goal_dir=(15.1, 4.9, -0.1)
+  AE latent: mean=-0.0020, std=1.0545, norm=5.871, delta=0.0559
+
+Step 1390:
+  pos_local=(4.49, 0.82, 1.06)
+  vel_body=(1.001, -0.737, -0.186) speed=1.257
+  ang_vel_body=(0.006, 0.005, 0.103)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.002)
+  dist_to_goal=15.59  goal_dir=(14.8, 4.9, -0.1)
+  AE latent: mean=-0.0021, std=1.0550, norm=5.874, delta=0.0191
+
+Step 1400:
+  pos_local=(4.74, 0.85, 1.02)
+  vel_body=(1.001, -0.736, -0.188) speed=1.257
+  ang_vel_body=(0.010, -0.009, 0.024)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.000)
+  dist_to_goal=15.35  goal_dir=(14.6, 4.8, -0.0)
+  AE latent: mean=-0.0020, std=1.0553, norm=5.876, delta=0.0132
+
+Step 1410:
+  pos_local=(4.99, 0.87, 0.98)
+  vel_body=(1.004, -0.731, -0.185) speed=1.256
+  ang_vel_body=(0.011, 0.001, 0.014)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.001)
+  dist_to_goal=15.11  goal_dir=(14.3, 4.8, 0.0)
+  AE latent: mean=-0.0019, std=1.0554, norm=5.876, delta=0.0186
+
+Step 1420:
+  pos_local=(5.23, 0.90, 0.95)
+  vel_body=(1.004, -0.731, -0.186) speed=1.256
+  ang_vel_body=(-0.002, -0.001, 0.024)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.000)
+  dist_to_goal=14.86  goal_dir=(14.1, 4.8, 0.1)
+  AE latent: mean=-0.0018, std=1.0560, norm=5.880, delta=0.0229
+
+Step 1430:
+  pos_local=(5.48, 0.93, 0.91)
+  vel_body=(1.002, -0.735, -0.187) speed=1.257
+  ang_vel_body=(-0.027, 0.013, 0.041)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.002)
+  dist_to_goal=14.62  goal_dir=(13.8, 4.7, 0.1)
+  AE latent: mean=-0.0017, std=1.0564, norm=5.882, delta=0.0408
+
+Step 1440:
+  pos_local=(5.73, 0.95, 0.87)
+  vel_body=(1.002, -0.736, -0.187) speed=1.257
+  ang_vel_body=(0.002, -0.002, 0.033)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.000)
+  dist_to_goal=14.38  goal_dir=(13.6, 4.7, 0.1)
+  AE latent: mean=-0.0015, std=1.0572, norm=5.886, delta=0.0811
+
+Step 1450:
+  pos_local=(5.97, 0.98, 0.83)
+  vel_body=(1.000, -0.738, -0.188) speed=1.257
+  ang_vel_body=(0.014, -0.019, 0.063)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.002)
+  dist_to_goal=14.14  goal_dir=(13.3, 4.7, 0.2)
+  AE latent: mean=-0.0013, std=1.0577, norm=5.889, delta=0.0205
+
+Step 1460:
+  pos_local=(6.22, 1.02, 0.80)
+  vel_body=(1.002, -0.734, -0.186) speed=1.256
+  ang_vel_body=(0.021, -0.011, 0.022)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.001)
+  dist_to_goal=13.89  goal_dir=(13.1, 4.7, 0.2)
+  AE latent: mean=-0.0012, std=1.0586, norm=5.894, delta=0.0184
+
+Step 1470:
+  pos_local=(6.47, 1.05, 0.76)
+  vel_body=(1.005, -0.730, -0.186) speed=1.256
+  ang_vel_body=(0.002, -0.002, -0.014)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.003)
+  dist_to_goal=13.65  goal_dir=(12.8, 4.6, 0.2)
+  AE latent: mean=-0.0009, std=1.0586, norm=5.894, delta=0.0232
+
+Step 1480:
+  pos_local=(6.71, 1.09, 0.72)
+  vel_body=(1.004, -0.733, -0.186) speed=1.257
+  ang_vel_body=(0.014, -0.019, 0.039)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=0.005)
+  dist_to_goal=13.41  goal_dir=(12.6, 4.6, 0.3)
+  AE latent: mean=-0.0005, std=1.0580, norm=5.891, delta=0.0183
+
+Step 1490:
+  pos_local=(6.96, 1.13, 0.69)
+  vel_body=(1.003, -0.733, -0.185) speed=1.256
+  ang_vel_body=(-0.040, 0.039, 0.043)
+  actions=(fwd=1.000, lat=-1.000, vert=-1.000, yaw=-0.003)
+  dist_to_goal=13.17  goal_dir=(12.4, 4.5, 0.3)
+  AE latent: mean=0.0000, std=1.0558, norm=5.879, delta=0.4561
+
+Output saved to: D:\isaac\3D_Drone_RL\scratch\diagnose_policy_output.txt

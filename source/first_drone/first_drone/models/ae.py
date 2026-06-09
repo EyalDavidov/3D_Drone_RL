@@ -44,6 +44,7 @@ class AE(nn.Module):
 
         # Deterministic bottleneck mapping to latent code z
         self.fc_z = nn.Linear(self._encoder_out_dim, latent_dim)
+        self.ln_z = nn.LayerNorm(latent_dim)
 
         # ----- Decoder -----
         # Latent (B, 32) → FC → reshape → 4 transposed conv layers → (B, 1, 72, 128)
@@ -70,7 +71,7 @@ class AE(nn.Module):
             z: Latent code, shape (B, latent_dim).
         """
         h = self.encoder(x)
-        return self.fc_z(h)
+        return self.ln_z(self.fc_z(h))
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Decode latent code back to depth image.

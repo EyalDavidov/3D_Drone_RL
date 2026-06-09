@@ -1,9 +1,9 @@
 """PPO+AE Drone Environment.
 
 Depth (128×72) → AE Encoder → z_img (32-dim)
-z_img + target_rel_body + target_dist + lin_vel + ang_vel + gravity → PPO (45-dim)
+z_img + target_rel_body + target_dist + lin_vel + ang_vel + gravity + prev_actions → PPO (49-dim)
 
-The environment returns a flat 45-dim observation vector (NOT raw images).
+The environment returns a flat 49-dim observation vector (NOT raw images).
 The AE is owned by the environment, trained offline via the training script scripts/train_ae.py,
 and its detached latent is fed to PPO.
 """
@@ -97,6 +97,20 @@ class AEPPODroneEnv(DirectRLEnv):
             ]
         }
 
+        # ----- Curriculum State -----
+        import sys
+        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        default_level = 5 if is_play_script else 1
+        self.curriculum_level = getattr(self.cfg, "initial_curriculum_level", default_level)
+        self.running_goal_rate = 0.0
+        self.curriculum_distances = {
+            1: (2.0, 5.0),
+            2: (5.0, 10.0),
+            3: (10.0, 18.0),
+            4: (18.0, 28.0),
+            5: (28.0, 40.0)
+        }
+
         # AE visualization state
         self._ae_vis_step = 0
 
@@ -116,7 +130,8 @@ class AEPPODroneEnv(DirectRLEnv):
         for key in [
             "progress", "goal", "time", "heading", "vel_align", "ang_vel",
             "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
-            "proximity", "speed_proximity", "stuck", "collision"
+            "proximity", "speed_proximity", "stuck", "collision", "inside_obstacle",
+            "tilt", "z_deviation"
         ]:
             self._env0_log_values["Env0_Reward/" + key] = 0.0
             self._env0_accumulated_rewards[key] = 0.0
@@ -369,19 +384,131 @@ class AEPPODroneEnv(DirectRLEnv):
         # We also need to log total_steps on every single step so it is always present for step alignment!
         self.extras["log"]["Metrics/total_steps"] = float(self.common_step_counter)
         
+        # Manually trigger debug visualization callback on each programmatic step
+        if self.cfg.debug_vis:
+            self._debug_vis_callback(None)
+            
         return obs, rewards, terminated, truncated, info
 
     # ------------------------------------------------------------------
     # Observations
     # ------------------------------------------------------------------
+    def _compute_lidar_scan(self) -> torch.Tensor:
+        """Compute 2D LiDAR range scan in the body frame.
+
+        Casts 12 rays in a 360-degree circle around the drone in the body frame,
+        and returns the distance to the nearest static or dynamic obstacle for each ray.
+
+        Returns:
+            torch.Tensor: Shape (num_envs, 12) containing range readings clamped to [0.1, 10.0] meters.
+        """
+        num_rays = 24
+        max_range = 10.0
+
+        # 1. Get drone local position and yaw
+        pos_local = self._robot.data.root_pos_w[:, :2] - self._terrain.env_origins[:, :2]  # (B, 2)
+        yaw = self._get_drone_yaw()  # (B,)
+
+        # 2. Ray angles in the body frame
+        ray_angles_b = torch.linspace(0, 2 * torch.pi, num_rays + 1, device=self.device)[:-1]  # (R,)
+
+        # Rotate ray angles to the local environment frame (world-aligned)
+        # yaw is shape (B,), ray_angles_b is shape (R,)
+        ray_angles_env = yaw.unsqueeze(1) + ray_angles_b.unsqueeze(0)  # (B, R)
+
+        # Ray directions in environment frame: (B, R, 2)
+        dx = torch.cos(ray_angles_env)
+        dy = torch.sin(ray_angles_env)
+        ray_dirs = torch.stack([dx, dy], dim=-1)  # (B, R, 2)
+
+        # Origin: (B, 1, 2)
+        origin = pos_local.unsqueeze(1)
+
+        # 3. Intersect with 18 static map obstacles
+        if not hasattr(self, "_map_obs_tensor"):
+            obs_list = list(self.cfg.map_obstacles)
+            self._map_obs_tensor = torch.tensor(obs_list, device=self.device, dtype=torch.float)
+
+        O = self._map_obs_tensor.shape[0]
+        B = self.num_envs
+        R = num_rays
+
+        # Prepare tensors for vectorized slab method
+        orig = origin.unsqueeze(2).expand(B, R, O, 2)
+        dirs = ray_dirs.unsqueeze(2).expand(B, R, O, 2)
+        boxes = self._map_obs_tensor.view(1, 1, O, 4).expand(B, R, O, 4)
+
+        # Avoid division by zero
+        sign = torch.sign(dirs)
+        sign = torch.where(sign == 0.0, torch.tensor(1.0, device=self.device), sign)
+        inv_dir = 1.0 / torch.where(dirs.abs() > 1e-8, dirs, sign * 1e-8)
+
+        t1_x = (boxes[..., 0] - orig[..., 0]) * inv_dir[..., 0]
+        t2_x = (boxes[..., 1] - orig[..., 0]) * inv_dir[..., 0]
+        t_min_x = torch.minimum(t1_x, t2_x)
+        t_max_x = torch.maximum(t1_x, t2_x)
+
+        t1_y = (boxes[..., 2] - orig[..., 1]) * inv_dir[..., 1]
+        t2_y = (boxes[..., 3] - orig[..., 1]) * inv_dir[..., 1]
+        t_min_y = torch.minimum(t1_y, t2_y)
+        t_max_y = torch.maximum(t1_y, t2_y)
+
+        t_enter = torch.maximum(t_min_x, t_min_y)
+        t_exit = torch.minimum(t_max_x, t_max_y)
+
+        # Intersects if t_enter < t_exit and t_exit > 0
+        intersects = (t_enter < t_exit) & (t_exit > 0.0)
+        t_hit = torch.where(intersects, t_enter.clamp(min=0.0), torch.tensor(max_range, device=self.device))
+
+        # Distance to nearest static obstacle: min over O
+        min_dist_static, _ = torch.min(t_hit, dim=2)  # (B, R)
+
+        # 4. Intersect with 6 dynamic pillars (circles in 2D)
+        if len(self._pillars) > 0:
+            pillar_positions = torch.stack(
+                [p.data.root_pos_w[:, :2] - self._terrain.env_origins[:, :2] for p in self._pillars], dim=1
+            )  # (B, P, 2)
+            P = len(self._pillars)
+
+            orig_p = origin.unsqueeze(2).expand(B, R, P, 2)
+            dirs_p = ray_dirs.unsqueeze(2).expand(B, R, P, 2)
+            centers = pillar_positions.unsqueeze(1).expand(B, R, P, 2)
+
+            radii = torch.tensor(self._obstacle_collision_radii, device=self.device)  # (P,)
+            radii = radii.view(1, 1, P).expand(B, R, P)
+
+            v = orig_p - centers  # (B, R, P, 2)
+            dot_dv = torch.sum(dirs_p * v, dim=-1)  # (B, R, P)
+            v_sq = torch.sum(v ** 2, dim=-1)  # (B, R, P)
+
+            inside = v_sq < radii**2
+            delta_fourth = dot_dv**2 - v_sq + radii**2  # (B, R, P)
+            intersects_p = (delta_fourth >= 0.0) & ((dot_dv < 0.0) | inside)
+
+            t_hit_p = torch.where(
+                intersects_p,
+                torch.where(inside, torch.tensor(0.0, device=self.device), -dot_dv - torch.sqrt(delta_fourth.clamp(min=0.0))),
+                torch.tensor(max_range, device=self.device)
+            )
+            t_hit_p = t_hit_p.clamp(min=0.0)
+
+            min_dist_dynamic, _ = torch.min(t_hit_p, dim=2)  # (B, R)
+
+            # Combine static and dynamic
+            min_dist = torch.minimum(min_dist_static, min_dist_dynamic)
+        else:
+            min_dist = min_dist_static
+        self._last_lidar_scan = min_dist.clamp(0.1, max_range)
+        return self._last_lidar_scan
+
     def _get_observations(self) -> dict:
-        """Build 45-dim flat observation vector.
+        """Build 73-dim flat observation vector.
 
         Pipeline:
           1. Preprocess depth → (B, 1, 72, 128) normalized
           2. AE encode (detached) → z_img (B, 32)
           3. Compute state features → (B, 13)
-          4. Concatenate → (B, 45) flat policy observation
+          4. Concatenate with previous actions and 2D LiDAR scan → (B, 73) flat policy observation
         """
         # Step 1: preprocess depth
         depth = self._preprocess_depth()
@@ -400,18 +527,27 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w - self._robot.data.root_pos_w, dim=1, keepdim=True
         )  # (B, 1)
 
+        # Normalize target relative position and distance for stable network learning
+        target_dir_b = desired_pos_b / (target_dist + 1e-6)
+        target_dist_scaled = torch.tanh(target_dist / 10.0)
+
+        # Compute 2D LiDAR range scan and normalize to [0, 1]
+        lidar_scan = self._compute_lidar_scan() / 10.0
+
         # Step 4: concatenate all
         obs = torch.cat(
             [
                 z_img,                                # (B, 32) — AE latent
-                desired_pos_b,                        # (B, 3)  — target in body frame
-                target_dist,                          # (B, 1)  — scalar distance
+                target_dir_b,                         # (B, 3)  — target unit direction in body frame
+                target_dist_scaled,                   # (B, 1)  — scaled target distance
                 self._robot.data.root_lin_vel_b,      # (B, 3)  — linear velocity
                 self._robot.data.root_ang_vel_b,      # (B, 3)  — angular velocity
                 self._robot.data.projected_gravity_b,  # (B, 3)  — orientation summary
+                self._actions,                        # (B, 4)  — previous actions
+                lidar_scan,                           # (B, 24) — normalized 2D LiDAR range scan
             ],
             dim=-1,
-        )  # Total: 32 + 3 + 1 + 3 + 3 + 3 = 45
+        )  # Total: 32 + 3 + 1 + 3 + 3 + 3 + 4 + 24 = 73
 
         return {"policy": obs}
 
@@ -473,6 +609,7 @@ class AEPPODroneEnv(DirectRLEnv):
         heading_error = wrap_to_pi(target_yaw - current_yaw)
         heading_alignment = torch.cos(heading_error)
 
+
         # 5. Angular velocity penalty (roll + pitch stability)
         ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
 
@@ -501,17 +638,28 @@ class AEPPODroneEnv(DirectRLEnv):
         speed_factor = (speed / vel_align_max_speed).clamp(0.0, 1.0)
         velocity_alignment = cos_sim * speed_factor
 
-        # Proximity penalty (MAX across all pillars)
+        # Proximity penalty (MAX across all pillars and static map obstacles)
         proximity_penalty = torch.zeros(self.num_envs, device=self.device)
         proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 0.5)
-        obstacle_dists = self._compute_obstacle_distances()
-        for i in range(len(self._pillars)):
-            dist = obstacle_dists[:, i]
-            scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
-            proximity_penalty = torch.maximum(proximity_penalty, scaled)
 
-        # Speed penalty near obstacles: penalize speed proportional to how close we are to any pillar
-        speed_proximity_penalty = speed * proximity_penalty
+        # 1. Dynamic pillars (if any)
+        if len(self._pillars) > 0:
+            obstacle_dists = self._compute_obstacle_distances()
+            for i in range(len(self._pillars)):
+                dist = obstacle_dists[:, i]
+                scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
+                proximity_penalty = torch.maximum(proximity_penalty, scaled)
+
+        # 2. Static map obstacles
+        if len(self.cfg.map_obstacles) > 0:
+            map_obs_dists = self._compute_map_obstacle_distances()  # (num_envs, num_obstacles)
+            scaled_map = ((proximity_radius - map_obs_dists) / (proximity_radius + 1e-6)).clamp(min=0.0)  # (num_envs, num_obstacles)
+            max_scaled_map, _ = torch.max(scaled_map, dim=1)  # (num_envs,)
+            proximity_penalty = torch.maximum(proximity_penalty, max_scaled_map)
+
+        # Make proximity penalty quadratic for a smoother gradient and virtual spring effect
+        proximity_penalty_sq = proximity_penalty ** 2
+        speed_proximity_penalty = speed * proximity_penalty_sq
 
         # Collision
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
@@ -525,6 +673,13 @@ class AEPPODroneEnv(DirectRLEnv):
         # Action rate penalty — smooths out commands, reduces shaking
         action_rate_sq = torch.sum((self._actions - self._previous_actions) ** 2, dim=1)
 
+        # Tilt penalty (encourage drone to stay level and avoid aggressive camera tilting)
+        projected_gravity_b = self._robot.data.projected_gravity_b
+        tilt_penalty = 1.0 - projected_gravity_b[:, 2].abs()
+
+        # Z height deviation penalty
+        z_deviation = (self._robot.data.root_pos_w[:, 2] - self._desired_pos_w[:, 2]).abs()
+
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
@@ -537,10 +692,12 @@ class AEPPODroneEnv(DirectRLEnv):
             "action": self.cfg.w_action * action_sq,
             "action_rate": getattr(self.cfg, "w_action_rate", -0.02) * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
-            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty),
+            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty_sq),
             "speed_proximity": getattr(self.cfg, "w_speed_proximity", -4.0) * speed_proximity_penalty,
             "stuck": stuck_penalty,
             "collision": self.cfg.collision_penalty * died_from_crash,
+            "tilt": getattr(self.cfg, "w_tilt", -2.0) * tilt_penalty,
+            "z_deviation": getattr(self.cfg, "w_z_deviation", -4.0) * z_deviation,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -557,6 +714,43 @@ class AEPPODroneEnv(DirectRLEnv):
 
         return reward
 
+    def _is_inside_map_obstacle(self, x: torch.Tensor, y: torch.Tensor, margin: float | None = None) -> torch.Tensor:
+        """Check if (x, y) local positions are inside any static map obstacle.
+
+        Args:
+            x: Local X coordinates, shape (N,).
+            y: Local Y coordinates, shape (N,).
+            margin: Safety margin around obstacles. If None, uses spawn_obstacle_margin.
+
+        Returns:
+            Boolean tensor of shape (N,), True if inside any obstacle.
+        """
+        if margin is None:
+            margin = getattr(self.cfg, "spawn_obstacle_margin", 0.5)
+        inside = torch.zeros_like(x, dtype=torch.bool)
+        for obs in self.cfg.map_obstacles:
+            min_x, max_x, min_y, max_y = obs
+            inside = inside | (
+                (x >= min_x - margin) & (x <= max_x + margin)
+                & (y >= min_y - margin) & (y <= max_y + margin)
+            )
+        return inside
+
+    def _compute_inside_obstacle_penalty(self) -> torch.Tensor:
+        """Per-step penalty: 1.0 if drone is inside/touching any map obstacle, 0.0 otherwise.
+
+        Uses a tight margin (0.05m) so the penalty fires when the drone is
+        genuinely overlapping an obstacle, not just near it.
+        """
+        pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
+        inside = self._is_inside_map_obstacle(pos_local[:, 0], pos_local[:, 1], margin=0.05)
+        # Also check dynamic pillars
+        if len(self._pillars) > 0:
+            obstacle_dists = self._compute_obstacle_distances()
+            for i in range(len(self._pillars)):
+                inside = inside | (obstacle_dists[:, i] < self._drone_collision_offset)
+        return inside.float()
+
     def _compute_obstacle_distances(self) -> torch.Tensor:
         """Compute the 3D Euclidean distance from the drone center to each obstacle boundary.
 
@@ -570,9 +764,9 @@ class AEPPODroneEnv(DirectRLEnv):
         distances = []
 
         for i, pillar in enumerate(self._pillars):
-            pillar_pos = pillar.data.root_pos_w[:, :3]  # (num_envs, 3)
+            cluster_pos = pillar.data.root_pos_w[:, :3]  # (num_envs, 3)
             # Relative vector in world frame
-            rel_w = drone_pos - pillar_pos  # (num_envs, 3)
+            rel_w = drone_pos - cluster_pos  # (num_envs, 3)
             # Rotate relative vector into the local frame of the pillar
             rel_l = quat_rotate_inverse(pillar.data.root_quat_w, rel_w)  # (num_envs, 3)
 
@@ -606,6 +800,36 @@ class AEPPODroneEnv(DirectRLEnv):
 
         return torch.stack(distances, dim=1)  # (num_envs, num_pillars)
 
+    def _compute_map_obstacle_distances(self) -> torch.Tensor:
+        """Compute the 2D distance from the drone center to each static map obstacle.
+
+        Returns:
+            torch.Tensor: Shape (num_envs, num_obstacles) with 2D distances to each obstacle's boundary.
+        """
+        # Drone local position: shape (num_envs, 2)
+        pos_local = self._robot.data.root_pos_w[:, :2] - self._terrain.env_origins[:, :2]
+        drone_x = pos_local[:, 0].unsqueeze(1)  # (num_envs, 1)
+        drone_y = pos_local[:, 1].unsqueeze(1)  # (num_envs, 1)
+
+        # Convert map_obstacles to tensors on the correct device if not already done
+        if not hasattr(self, "_map_obs_tensor"):
+            obs_list = list(self.cfg.map_obstacles)
+            self._map_obs_tensor = torch.tensor(obs_list, device=self.device, dtype=torch.float)  # (num_obstacles, 4)
+
+        # (num_obstacles, 4) -> split into min_x, max_x, min_y, max_y
+        min_x = self._map_obs_tensor[:, 0].unsqueeze(0)  # (1, num_obstacles)
+        max_x = self._map_obs_tensor[:, 1].unsqueeze(0)  # (1, num_obstacles)
+        min_y = self._map_obs_tensor[:, 2].unsqueeze(0)  # (1, num_obstacles)
+        max_y = self._map_obs_tensor[:, 3].unsqueeze(0)  # (1, num_obstacles)
+
+        # Compute signed distance along each axis
+        dist_x = torch.clamp(min_x - drone_x, min=0.0) + torch.clamp(drone_x - max_x, min=0.0)  # (num_envs, num_obstacles)
+        dist_y = torch.clamp(min_y - drone_y, min=0.0) + torch.clamp(drone_y - max_y, min=0.0)  # (num_envs, num_obstacles)
+
+        # 2D Euclidean distance to the bounding box
+        dist_2d = torch.sqrt(dist_x ** 2 + dist_y ** 2)  # (num_envs, num_obstacles)
+        return dist_2d
+
     # ------------------------------------------------------------------
     # Termination
     # ------------------------------------------------------------------
@@ -614,16 +838,21 @@ class AEPPODroneEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
-        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 1.9)
-        # 50m x 50m arena map bounds: translated by 25.0, 25.0, so the borders are at ±25.0. We use 24.5 as a safety buffer.
+        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.5)
+        # 50m x 50m arena map bounds: physical wall meshes start at X/Y = ±24.0.
+        # With drone collision radius of 0.1m, contact occurs at ±23.90. We use ±23.85 as the termination trigger.
         hit_wall = (
-            (pos_local[:, 0] > 24.5) | (pos_local[:, 0] < -24.5)
-            | (pos_local[:, 1] > 24.5) | (pos_local[:, 1] < -24.5)
+            (pos_local[:, 0] > 23.85) | (pos_local[:, 0] < -23.85)
+            | (pos_local[:, 1] > 23.85) | (pos_local[:, 1] < -23.85)
         )
 
         # Check contact sensor for collision with arena meshes
         contact_force = torch.linalg.norm(self._contact_sensor.data.net_forces_w[:, 0, :], dim=-1)
         hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold to filter numerical noise
+
+        # Geometric check: is the drone inside any static map obstacle bounding box?
+        # Use collision margin of 0.15m for reliable detection at ~1.25 m/s flight speed
+        hit_map_obstacle = self._is_inside_map_obstacle(pos_local[:, 0], pos_local[:, 1], margin=0.15)
 
         # Check dynamic obstacle collisions (if any pillars are spawned)
         hit_pillar = torch.zeros_like(hit_wall)
@@ -635,7 +864,7 @@ class AEPPODroneEnv(DirectRLEnv):
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
-        died = hit_floor_or_ceiling | hit_wall | hit_obstacle | hit_pillar
+        died = hit_floor_or_ceiling | hit_wall | hit_obstacle | hit_map_obstacle | hit_pillar
         terminated = died | reached_goal
         return terminated, time_out
 
@@ -661,6 +890,14 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
         )
         final_dist = dist_per_env.mean()
+        # Collect episode rewards for play script logging before resetting them
+        import sys
+        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        play_episode_sums = {}
+        if is_play_script:
+            for key in self._episode_sums.keys():
+                play_episode_sums[key] = self._episode_sums[key][env_ids].clone()
+
         extras = dict()
         for key in self._episode_sums.keys():
             avg = torch.mean(self._episode_sums[key][env_ids])
@@ -673,12 +910,31 @@ class AEPPODroneEnv(DirectRLEnv):
         reached_goal_mask = dist_per_env < self.cfg.goal_radius
         crash_mask = self.reset_terminated[env_ids] & ~reached_goal_mask
         total_resets = max(len(env_ids), 1)
+        batch_goal_rate = torch.count_nonzero(reached_goal_mask).item() / total_resets
+
+        # Update running goal rate and adjust curriculum dynamically (only during training)
+        if not is_play_script:
+            # Scale alpha by batch size to normalize against individual resets (total_resets=1)
+            alpha = min(total_resets / 1500.0, 0.05)
+            self.running_goal_rate = (1.0 - alpha) * self.running_goal_rate + alpha * batch_goal_rate
+            
+            # Advance curriculum level
+            if self.running_goal_rate > 0.75 and self.curriculum_level < 5:
+                self.curriculum_level += 1
+                self.running_goal_rate = 0.40  # prevent rapid jumping and immediate regression
+                print(f"\n[CURRICULUM] Advanced to Level {self.curriculum_level}! Running goal rate reset to 0.40.\n")
+            # Regress curriculum level
+            elif self.running_goal_rate < 0.40 and self.curriculum_level > getattr(self.cfg, "initial_curriculum_level", 1):
+                self.curriculum_level -= 1
+                self.running_goal_rate = 0.45  # buffer value below level-up threshold
+                print(f"\n[CURRICULUM] Regressed to Level {self.curriculum_level}! Running goal rate reset to 0.45.\n")
+
         self.extras["log"]["Metrics/collision_rate"] = torch.count_nonzero(crash_mask).item() / total_resets
-        self.extras["log"]["Metrics/goal_rate"] = torch.count_nonzero(reached_goal_mask).item() / total_resets
+        self.extras["log"]["Metrics/goal_rate"] = batch_goal_rate
+        self.extras["log"]["Metrics/curriculum_level"] = float(self.curriculum_level)
+        self.extras["log"]["Metrics/running_goal_rate"] = float(self.running_goal_rate)
         
         # Log to CMD for PLAY scripts
-        import sys
-        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
         if is_play_script:
             for i, env_id in enumerate(env_ids):
                 env_id_val = env_id.item()
@@ -689,8 +945,18 @@ class AEPPODroneEnv(DirectRLEnv):
                     status = "FAILED (Crashed!)"
                 else:
                     status = "TIMEOUT"
+                
+                # Calculate total and detailed rewards for this episode
+                ep_rewards = {key: play_episode_sums[key][i].item() for key in play_episode_sums}
+                total_reward = sum(ep_rewards.values())
+                reward_details = ", ".join([f"{k}: {val:.2f}" for k, val in ep_rewards.items()])
+                
                 print(
-                    f"-------------\n>> [AE] Attempt for Env {env_id_val}: {status} | STEPS = {step_count} \n-------------"
+                    f"-------------\n"
+                    f">> [AE] Attempt for Env {env_id_val}: {status} | STEPS = {step_count}\n"
+                    f"   Total Reward: {total_reward:.2f}\n"
+                    f"   Breakdown: {reward_details}\n"
+                    f"-------------"
                 )
         
         self.extras["log"]["Episode_Termination/died"] = torch.count_nonzero(crash_mask).item()
@@ -732,35 +998,57 @@ class AEPPODroneEnv(DirectRLEnv):
 
             default_root_state[:, 0] = self._terrain.env_origins[env_ids, 0] + drone_offsets[:, 0]
             default_root_state[:, 1] = self._terrain.env_origins[env_ids, 1] + drone_offsets[:, 1]
-            default_root_state[:, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)
+            default_root_state[:, 2] = 1.0
 
             self._desired_pos_w[env_ids, 0] = self._terrain.env_origins[env_ids, 0] + goal_offsets[:, 0]
             self._desired_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + goal_offsets[:, 1]
             self._desired_pos_w[env_ids, 2] = torch.ones(env_count, device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
         else:
-            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0)
-            spawn_y = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0)
+            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-20.0, 20.0)
+            spawn_y = torch.zeros(env_count, device=self.device).uniform_(-20.0, 20.0)
+
+            # Resample drone spawns that are inside map obstacles
+            for _ in range(10):
+                in_obstacle = self._is_inside_map_obstacle(spawn_x, spawn_y)
+                if not torch.any(in_obstacle):
+                    break
+                n = torch.sum(in_obstacle).item()
+                spawn_x[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-20.0, 20.0)
+                spawn_y[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-20.0, 20.0)
+
             default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
             default_root_state[:, 1] = spawn_y + self._terrain.env_origins[env_ids, 1]
-            default_root_state[:, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)
+            default_root_state[:, 2] = 1.0
 
-            # Initialize goals
-            goal_x = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids, 0]
-            goal_y = torch.zeros(env_count, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids, 1]
+            # Initialize goals at a distance determined by the curriculum level
+            min_d, max_d = self.curriculum_distances[self.curriculum_level]
             
-            # Resample goals that are too close to spawn (less than 3.0 meters)
-            for _ in range(5):
-                dist = torch.sqrt((goal_x - default_root_state[:, 0])**2 + (goal_y - default_root_state[:, 1])**2)
-                too_close = dist < 3.0
-                if not torch.any(too_close):
+            # Generate a random angle and distance for each environment
+            angle = torch.zeros(env_count, device=self.device).uniform_(0.0, 2 * 3.1415926535)
+            dist = torch.zeros(env_count, device=self.device).uniform_(min_d, max_d)
+            
+            goal_x_local = spawn_x + dist * torch.cos(angle)
+            goal_y_local = spawn_y + dist * torch.sin(angle)
+
+            # Resample goals that are inside map obstacles or out of bounds [-24.0, 24.0]
+            for _ in range(15):
+                in_obstacle = self._is_inside_map_obstacle(goal_x_local, goal_y_local)
+                out_of_bounds = (goal_x_local.abs() > 24.0) | (goal_y_local.abs() > 24.0)
+                bad = in_obstacle | out_of_bounds
+                if not torch.any(bad):
                     break
-                num_close = torch.sum(too_close).item()
-                goal_x[too_close] = torch.zeros(num_close, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids[too_close], 0]
-                goal_y[too_close] = torch.zeros(num_close, device=self.device).uniform_(-15.0, 15.0) + self._terrain.env_origins[env_ids[too_close], 1]
-            
-            self._desired_pos_w[env_ids, 0] = goal_x
-            self._desired_pos_w[env_ids, 1] = goal_y
-            self._desired_pos_w[env_ids, 2] = torch.zeros(env_count, device=self.device).uniform_(0.5, 1.5)
+                n = torch.sum(bad).item()
+                
+                # Resample bad environments
+                angle_resample = torch.zeros(n, device=self.device).uniform_(0.0, 2 * 3.1415926535)
+                dist_resample = torch.zeros(n, device=self.device).uniform_(min_d, max_d)
+                
+                goal_x_local[bad] = spawn_x[bad] + dist_resample * torch.cos(angle_resample)
+                goal_y_local[bad] = spawn_y[bad] + dist_resample * torch.sin(angle_resample)
+
+            self._desired_pos_w[env_ids, 0] = goal_x_local + self._terrain.env_origins[env_ids, 0]
+            self._desired_pos_w[env_ids, 1] = goal_y_local + self._terrain.env_origins[env_ids, 1]
+            self._desired_pos_w[env_ids, 2] = 1.0
 
         # Orient drone to face target
         dx = self._desired_pos_w[env_ids, 0] - default_root_state[:, 0]
@@ -906,6 +1194,11 @@ class AEPPODroneEnv(DirectRLEnv):
                     self.pillar_zone_visualizer_list.append(VisualizationMarkers(marker_cfg))
             for viz in self.pillar_zone_visualizer_list:
                 viz.set_visibility(True)
+            try:
+                from omni.isaac.debug_draw import _debug_draw
+                self._draw = _debug_draw.acquire_debug_draw_interface()
+            except ImportError:
+                self._draw = None
         else:
             if hasattr(self, "goal_pos_visualizer"):
                 self.goal_pos_visualizer.set_visibility(False)
@@ -914,6 +1207,8 @@ class AEPPODroneEnv(DirectRLEnv):
             if hasattr(self, "pillar_zone_visualizer_list"):
                 for viz in self.pillar_zone_visualizer_list:
                     viz.set_visibility(False)
+            if hasattr(self, "_draw") and self._draw is not None:
+                self._draw.clear_lines()
 
     def _debug_vis_callback(self, event):
         self.goal_pos_visualizer.visualize(self._desired_pos_w)
@@ -924,3 +1219,41 @@ class AEPPODroneEnv(DirectRLEnv):
                 pos = pillar.data.root_pos_w[0, :3].unsqueeze(0)  # (1, 3)
                 quat = pillar.data.root_quat_w[0, :4].unsqueeze(0)  # (1, 4)
                 viz.visualize(pos, quat)
+
+        # Draw 2D LiDAR ray lines in world frame for Env 0
+        if hasattr(self, "_draw") and self._draw is not None and hasattr(self, "_last_lidar_scan"):
+            self._draw.clear_lines()
+            import math
+            # Get drone position in world coordinates
+            drone_pos = self._robot.data.root_pos_w[0, :3]  # (3,)
+            p_start = (drone_pos[0].item(), drone_pos[1].item(), drone_pos[2].item())
+
+            # Get drone yaw and ray angles
+            num_rays = 24
+            yaw = self._get_drone_yaw()[0].item()
+            ray_angles_b = torch.linspace(0, 2 * torch.pi, num_rays + 1, device=self.device)[:-1]
+
+            start_points = []
+            end_points = []
+            colors = []
+
+            for i in range(num_rays):
+                dist = self._last_lidar_scan[0, i].item()
+                angle = yaw + ray_angles_b[i].item()
+                # Compute ray end point in world coordinates
+                p_end = (
+                    p_start[0] + dist * math.cos(angle),
+                    p_start[1] + dist * math.sin(angle),
+                    p_start[2],  # keep Z constant at drone's height
+                )
+                start_points.append(p_start)
+                end_points.append(p_end)
+
+                # Laser color: Red if near obstacle collision radius, otherwise green laser
+                if dist < 0.5:
+                    colors.append((1.0, 0.0, 0.0, 1.0))  # Solid red
+                else:
+                    colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green
+
+            thicknesses = [2.0] * num_rays
+            self._draw.draw_lines(start_points, end_points, colors, thicknesses)
