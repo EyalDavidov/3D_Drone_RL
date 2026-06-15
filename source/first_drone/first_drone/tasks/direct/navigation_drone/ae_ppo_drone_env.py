@@ -203,8 +203,8 @@ class AEPPODroneEnv(DirectRLEnv):
             ),
         ]
         # Define shape details for accurate perimeter collision check
-        # r_drone = drone_radius (0.07) + margin (0.03) = 0.10
-        self._drone_collision_offset = 0.10
+        # Scale drone collision offset dynamically based on config's pillar collision radius
+        self._drone_collision_offset = self.cfg.pillar_collision_radius - 0.05
         self._obstacle_shapes = [
             # 0: Thin cylinder (original pillar) - radius 0.05, height 3.0 (half-height 1.5)
             {"type": "cylinder", "radius": 0.05, "half_z": 1.5},
@@ -855,8 +855,8 @@ class AEPPODroneEnv(DirectRLEnv):
         hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold to filter numerical noise
 
         # Geometric check: is the drone inside any static map obstacle bounding box?
-        # Use collision margin of 0.15m for reliable detection at ~1.25 m/s flight speed
-        hit_map_obstacle = self._is_inside_map_obstacle(pos_local[:, 0], pos_local[:, 1], margin=0.15)
+        # Use configurable collision radius for reliable detection
+        hit_map_obstacle = self._is_inside_map_obstacle(pos_local[:, 0], pos_local[:, 1], margin=self.cfg.pillar_collision_radius)
 
         # Check dynamic obstacle collisions (if any pillars are spawned)
         hit_pillar = torch.zeros_like(hit_wall)

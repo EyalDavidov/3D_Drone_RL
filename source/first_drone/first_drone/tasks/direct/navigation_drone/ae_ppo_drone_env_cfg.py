@@ -25,7 +25,7 @@ from isaaclab.utils import configclass
 class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 50.0
+    episode_length_s = 70.0
     debug_vis = True
 
     # simulation
@@ -167,17 +167,17 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     w_vel_align: float = 0.2
     vel_align_max_speed: float = 1.0
     collision_penalty: float = -1500.0
-    w_ang_vel: float = -0.01
+    w_ang_vel: float = -0.02
     w_yaw_rate: float = -0.10
     w_forward_speed: float = 0.3
-    w_action: float = -0.005
-    w_action_rate: float = -0.02
+    w_action: float = -0.008
+    w_action_rate: float = -0.04
     w_sideslip: float = -0.10
     w_proximity: float = 2.0
     pillar_proximity_radius: float = 1.2
     w_speed_proximity: float = -6.0       # penalty for speed when close to obstacles
-    w_tilt: float = -0.05                  # penalty for excessive tilt (roll/pitch)
-    w_z_deviation: float = -0.10           # penalty for vertical deviation from goal
+    w_tilt: float = -0.08                  # penalty for excessive tilt (roll/pitch)
+    w_z_deviation: float = -2.0           # penalty for vertical deviation from goal
     goal_radius: float = 0.25
     pillar_collision_radius: float = 0.15
 
