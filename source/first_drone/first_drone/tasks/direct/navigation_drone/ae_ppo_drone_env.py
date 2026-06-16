@@ -101,7 +101,56 @@ class AEPPODroneEnv(DirectRLEnv):
         import sys
         is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
         default_level = 5 if is_play_script else 1
-        self.curriculum_level = getattr(self.cfg, "initial_curriculum_level", default_level)
+        
+        # Auto-detect curriculum level from resume run if --resume is specified
+        detected_level = None
+        if not is_play_script and ("--resume" in sys.argv or getattr(self.cfg, "resume", False)):
+            try:
+                # 1. Find load_run in sys.argv
+                load_run = None
+                for idx, arg in enumerate(sys.argv):
+                    if arg == "--load_run" and idx + 1 < len(sys.argv):
+                        load_run = sys.argv[idx + 1]
+                        break
+                
+                project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../"))
+                runs_parent_dir = os.path.join(project_root, "logs", "rsl_rl", "navigation_drone_direct")
+                
+                # 2. If load_run is not specified in CLI, try to find the latest run directory
+                if not load_run and os.path.exists(runs_parent_dir):
+                    subdirs = [d for d in os.listdir(runs_parent_dir) if os.path.isdir(os.path.join(runs_parent_dir, d))]
+                    if subdirs:
+                        subdirs = [os.path.join(runs_parent_dir, d) for d in subdirs]
+                        latest_dir = max(subdirs, key=os.path.getmtime)
+                        load_run = os.path.basename(latest_dir)
+                
+                if load_run:
+                    run_dir = os.path.join(runs_parent_dir, load_run)
+                    if os.path.exists(run_dir):
+                        # Find tfevents file
+                        tf_files = []
+                        for root, dirs, files in os.walk(run_dir):
+                            for f in files:
+                                if "tfevents" in f:
+                                    tf_files.append(os.path.join(root, f))
+                        
+                        if tf_files:
+                            from tensorboard.backend.event_processing import event_accumulator
+                            ea = event_accumulator.EventAccumulator(tf_files[0], size_guidance={event_accumulator.SCALARS: 0})
+                            ea.Reload()
+                            if 'Metrics/curriculum_level' in ea.Tags()['scalars']:
+                                events = ea.Scalars('Metrics/curriculum_level')
+                                if events:
+                                    detected_level = int(events[-1].value)
+                                    print(f"\n[CURRICULUM] Auto-detected resume curriculum level: {detected_level} from run {load_run}\n")
+            except Exception as e:
+                print(f"\n[WARNING] Could not auto-detect curriculum level from resume run: {e}\n")
+
+        if detected_level is not None:
+            self.curriculum_level = detected_level
+        else:
+            self.curriculum_level = getattr(self.cfg, "initial_curriculum_level", default_level)
+            
         self.running_goal_rate = 0.0
         self.curriculum_distances = {
             1: (2.0, 5.0),
