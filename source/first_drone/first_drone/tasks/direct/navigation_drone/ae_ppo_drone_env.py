@@ -161,28 +161,28 @@ class AEPPODroneEnv(DirectRLEnv):
         obstacle_spawns = [
             # 0: Thin cylinder (original pillar)
             sim_utils.CylinderCfg(
-                radius=0.05, height=3.0,
+                radius=0.05, height=2.5,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.15, 0.15)),
             ),
             # 1: Wide cuboid (wall segment)
             sim_utils.CuboidCfg(
-                size=(0.15, 0.4, 3.0),
+                size=(0.15, 0.4, 2.5),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, 0.2, 0.2)),
             ),
             # 2: Thick cylinder (tree trunk)
             sim_utils.CylinderCfg(
-                radius=0.15, height=3.0,
+                radius=0.15, height=2.5,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.4, 0.25, 0.1)),
             ),
             # 3: Tall narrow cuboid (pole-like)
             sim_utils.CuboidCfg(
-                size=(0.08, 0.08, 3.0),
+                size=(0.08, 0.08, 2.5),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 0.6)),
@@ -206,14 +206,14 @@ class AEPPODroneEnv(DirectRLEnv):
         # Scale drone collision offset dynamically based on config's pillar collision radius
         self._drone_collision_offset = self.cfg.pillar_collision_radius - 0.05
         self._obstacle_shapes = [
-            # 0: Thin cylinder (original pillar) - radius 0.05, height 3.0 (half-height 1.5)
-            {"type": "cylinder", "radius": 0.05, "half_z": 1.5},
-            # 1: Wide cuboid (wall segment) - size (0.15, 0.4, 3.0), half-extents (0.075, 0.20, 1.5)
-            {"type": "box", "half_x": 0.075, "half_y": 0.20, "half_z": 1.5, "size_x": 0.15, "size_y": 0.40, "height": 3.0},
-            # 2: Thick cylinder (tree trunk) - radius 0.15, height 3.0 (half-height 1.5)
-            {"type": "cylinder", "radius": 0.15, "half_z": 1.5},
-            # 3: Tall narrow cuboid (pole-like) - size (0.08, 0.08, 3.0), half-extents (0.04, 0.04, 1.5)
-            {"type": "box", "half_x": 0.04, "half_y": 0.04, "half_z": 1.5, "size_x": 0.08, "size_y": 0.08, "height": 3.0},
+            # 0: Thin cylinder (original pillar) - radius 0.05, height 2.5 (half-height 1.25)
+            {"type": "cylinder", "radius": 0.05, "half_z": 1.25},
+            # 1: Wide cuboid (wall segment) - size (0.15, 0.4, 2.5), half-extents (0.075, 0.20, 1.25)
+            {"type": "box", "half_x": 0.075, "half_y": 0.20, "half_z": 1.25, "size_x": 0.15, "size_y": 0.40, "height": 2.5},
+            # 2: Thick cylinder (tree trunk) - radius 0.15, height 2.5 (half-height 1.25)
+            {"type": "cylinder", "radius": 0.15, "half_z": 1.25},
+            # 3: Tall narrow cuboid (pole-like) - size (0.08, 0.08, 2.5), half-extents (0.04, 0.04, 1.25)
+            {"type": "box", "half_x": 0.04, "half_y": 0.04, "half_z": 1.25, "size_x": 0.08, "size_y": 0.08, "height": 2.5},
             # 4: Large sphere - radius 0.25
             {"type": "sphere", "radius": 0.25},
             # 5: Flat wide cuboid (barrier/fence) - size (0.05, 0.8, 1.5), half-extents (0.025, 0.40, 0.75)
@@ -681,8 +681,12 @@ class AEPPODroneEnv(DirectRLEnv):
         projected_gravity_b = self._robot.data.projected_gravity_b
         tilt_penalty = 1.0 - projected_gravity_b[:, 2].abs()
 
-        # Z height deviation penalty
-        z_deviation = (self._robot.data.root_pos_w[:, 2] - self._desired_pos_w[:, 2]).abs()
+        # Z height deviation penalty — Soft zone 0.3m-2.2m with quadratic penalty outside
+        z_pos = self._robot.data.root_pos_w[:, 2]
+        z_low, z_high = 0.3, 2.2
+        z_deviation = torch.zeros_like(z_pos)
+        z_deviation = torch.where(z_pos < z_low, (z_low - z_pos) ** 2, z_deviation)
+        z_deviation = torch.where(z_pos > z_high, (z_pos - z_high) ** 2, z_deviation)
 
         rewards = {
             "progress": self.cfg.w_progress * progress,

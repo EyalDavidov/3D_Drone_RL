@@ -90,7 +90,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     )
     # Y jitter to make straight lines impossible
     pillar_y_range: tuple = (-0.3, 0.3)
-    pillar_z: float = 1.5  # obstacle center height
+    pillar_z: float = 1.25  # obstacle center height
 
     # ---------- Arena Map Static Obstacles (2D bounding boxes) ----------
     # format: [min_x, max_x, min_y, max_y] in local env frame
@@ -162,22 +162,22 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # =========================================================================
     w_progress: float = 10.0
     w_goal: float = 500.0
-    w_time: float = -0.50
-    w_heading: float = 0.05
-    w_vel_align: float = 0.2
+    w_time: float = -0.70
+    w_heading: float = 0.5
+    w_vel_align: float = 1.0
     vel_align_max_speed: float = 1.0
     collision_penalty: float = -1500.0
-    w_ang_vel: float = -0.02
-    w_yaw_rate: float = -0.10
-    w_forward_speed: float = 0.3
-    w_action: float = -0.008
-    w_action_rate: float = -0.04
-    w_sideslip: float = -0.10
-    w_proximity: float = 2.0
-    pillar_proximity_radius: float = 1.2
+    w_ang_vel: float = -0.08
+    w_yaw_rate: float = -0.20
+    w_forward_speed: float = 0.5
+    w_action: float = -0.03
+    w_action_rate: float = -0.15
+    w_sideslip: float = -0.5
+    w_proximity: float = 3.0
+    pillar_proximity_radius: float = 0.9
     w_speed_proximity: float = -6.0       # penalty for speed when close to obstacles
     w_tilt: float = -0.08                  # penalty for excessive tilt (roll/pitch)
-    w_z_deviation: float = -2.0           # penalty for vertical deviation from goal
+    w_z_deviation: float = -0.3           # penalty for vertical deviation from goal
     goal_radius: float = 0.25
     pillar_collision_radius: float = 0.15
 
@@ -188,4 +188,4 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     corner_goal_z: float = 1.0
 
     # Curriculum
-    initial_curriculum_level: int = 5
+    initial_curriculum_level: int = 1
