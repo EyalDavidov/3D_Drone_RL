@@ -16,7 +16,7 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
         activation="elu",
         obs_normalization=False,
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
-            init_std=1.0,
+            init_std=0.5,
             std_type="log",
         ),
     )
@@ -41,7 +41,7 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.0,
         num_learning_epochs=5,
         num_mini_batches=8,
-        learning_rate=1.0e-4,
+        learning_rate=3.0e-4,
         schedule="fixed",
         gamma=0.998,
         lam=0.95,

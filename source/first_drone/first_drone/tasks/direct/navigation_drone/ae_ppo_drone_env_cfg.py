@@ -188,4 +188,4 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     corner_goal_z: float = 1.0
 
     # Curriculum
-    initial_curriculum_level: int = 3
+    initial_curriculum_level: int = 1
