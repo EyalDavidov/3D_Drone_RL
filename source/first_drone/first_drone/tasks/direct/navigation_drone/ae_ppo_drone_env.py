@@ -113,7 +113,7 @@ class AEPPODroneEnv(DirectRLEnv):
                         load_run = sys.argv[idx + 1]
                         break
                 
-                project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../"))
+                project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../../"))
                 runs_parent_dir = os.path.join(project_root, "logs", "rsl_rl", "navigation_drone_direct")
                 
                 # 2. If load_run is not specified in CLI, try to find the latest run directory
