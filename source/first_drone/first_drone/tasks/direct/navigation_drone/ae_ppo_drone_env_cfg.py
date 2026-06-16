@@ -162,14 +162,14 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # =========================================================================
     w_progress: float = 10.0
     w_goal: float = 500.0
-    w_time: float = -0.70
-    w_heading: float = 0.5
-    w_vel_align: float = 1.0
+    w_time: float = -1.0
+    w_heading: float = 0.1
+    w_vel_align: float = 0.5
     vel_align_max_speed: float = 1.0
     collision_penalty: float = -1500.0
     w_ang_vel: float = -0.08
     w_yaw_rate: float = -0.20
-    w_forward_speed: float = 0.5
+    w_forward_speed: float = 0.0
     w_action: float = -0.03
     w_action_rate: float = -0.15
     w_sideslip: float = -0.5
