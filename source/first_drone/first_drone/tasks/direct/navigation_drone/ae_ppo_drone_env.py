@@ -628,8 +628,10 @@ class AEPPODroneEnv(DirectRLEnv):
         sideslip_sq = lateral_vel ** 2
 
         # 9. Forward speed bonus — reward forward body velocity toward goal
+        # Decay the bonus near the goal (within 1.5m to 3.0m) to prevent circling/reward-looping behavior
         forward_vel = self._robot.data.root_lin_vel_b[:, 0].clamp(min=0.0)
-        forward_speed_bonus = forward_vel * heading_alignment.clamp(min=0.0)
+        dist_scale = ((curr_dist - 1.5) / 1.5).clamp(0.0, 1.0)
+        forward_speed_bonus = forward_vel * heading_alignment.clamp(min=0.0) * dist_scale
 
         # Velocity alignment
         vel_w = self._robot.data.root_lin_vel_w
