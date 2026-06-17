@@ -630,8 +630,7 @@ class AEPPODroneEnv(DirectRLEnv):
         # 9. Forward speed bonus — reward forward body velocity toward goal
         # Decay the bonus near the goal (within 1.5m to 3.0m) to prevent circling/reward-looping behavior
         forward_vel = self._robot.data.root_lin_vel_b[:, 0].clamp(min=0.0)
-        dist_scale = ((curr_dist - 1.5) / 1.5).clamp(0.0, 1.0)
-        forward_speed_bonus = forward_vel * heading_alignment.clamp(min=0.0) * dist_scale
+        forward_speed_bonus = forward_vel * heading_alignment.clamp(min=0.0)
 
         # Velocity alignment
         vel_w = self._robot.data.root_lin_vel_w
@@ -922,10 +921,8 @@ class AEPPODroneEnv(DirectRLEnv):
         total_resets = max(len(env_ids), 1)
         batch_goal_rate = torch.count_nonzero(reached_goal_mask).item() / total_resets
 
-        # Update running goal rate and adjust curriculum dynamically (only during training)
         if not is_play_script:
-            # Scale alpha by batch size to normalize against individual resets (total_resets=1)
-            alpha = min(total_resets / 1500.0, 0.05)
+            alpha = min(total_resets / 400.0, 0.10)
             self.running_goal_rate = (1.0 - alpha) * self.running_goal_rate + alpha * batch_goal_rate
             
             # Advance curriculum level

@@ -25,7 +25,7 @@ from isaaclab.utils import configclass
 class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 70.0
+    episode_length_s = 30.0
     debug_vis = True
 
     # simulation
@@ -167,8 +167,8 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     w_vel_align: float = 1.0
     vel_align_max_speed: float = 1.0
     collision_penalty: float = -1500.0
-    w_ang_vel: float = -0.08
-    w_yaw_rate: float = -0.20
+    w_ang_vel: float = -0.02
+    w_yaw_rate: float = -0.05
     w_forward_speed: float = 0.5
     w_action: float = -0.03
     w_action_rate: float = -0.15
