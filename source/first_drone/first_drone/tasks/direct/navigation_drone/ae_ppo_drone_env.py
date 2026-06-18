@@ -38,7 +38,7 @@ from isaaclab.markers import CUBOID_MARKER_CFG, VisualizationMarkersCfg  # isort
 from .ae_ppo_drone_env_cfg import AEPPODroneEnvCfg
 from first_drone.models.ae import AE
 from isaaclab.sensors import MultiMeshRayCaster, MultiMeshRayCasterCfg
-import isaaclab.sensors.ray_caster.patterns as patterns
+from isaaclab.sensors.ray_caster.patterns.patterns_cfg import LidarPatternCfg
 
 
 class AEPPODroneEnv(DirectRLEnv):
@@ -260,7 +260,7 @@ class AEPPODroneEnv(DirectRLEnv):
             UsdGeom.Imageable(collision_prim).MakeInvisible()
 
         # Initialize physical LiDAR (MultiMeshRayCaster) for 360 obstacle detection
-        lidar_pattern = patterns.LidarPatternCfg(
+        lidar_pattern = LidarPatternCfg(
             channels=1,
             vertical_fov_range=(0.0, 0.0),
             horizontal_fov_range=(-180.0, 180.0),
