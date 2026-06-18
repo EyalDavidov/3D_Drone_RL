@@ -811,7 +811,7 @@ class AEPPODroneEnv(DirectRLEnv):
         if len(self._pillars) > 0:
             obstacle_dists = self._compute_obstacle_distances()
             for i in range(len(self._pillars)):
-                hit_dynamic_pillar = hit_dynamic_pillar | (obstacle_dists[:, i] < self._drone_collision_offset)
+                hit_dynamic_pillar = hit_dynamic_pillar | (obstacle_dists[:, i] < self.cfg.pillar_collision_radius)
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
