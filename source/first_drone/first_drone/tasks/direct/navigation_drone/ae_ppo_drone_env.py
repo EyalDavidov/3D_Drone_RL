@@ -922,19 +922,19 @@ class AEPPODroneEnv(DirectRLEnv):
         batch_goal_rate = torch.count_nonzero(reached_goal_mask).item() / total_resets
 
         if not is_play_script:
-            alpha = min(total_resets / 400.0, 0.10)
+            alpha = min(total_resets / 800.0, 0.06)
             self.running_goal_rate = (1.0 - alpha) * self.running_goal_rate + alpha * batch_goal_rate
             
             # Advance curriculum level
             if self.running_goal_rate > 0.75 and self.curriculum_level < 5:
                 self.curriculum_level += 1
-                self.running_goal_rate = 0.40  # prevent rapid jumping and immediate regression
-                print(f"\n[CURRICULUM] Advanced to Level {self.curriculum_level}! Running goal rate reset to 0.40.\n")
+                self.running_goal_rate = 0.60  # Buffer to prevent immediate regression on first steps
+                print(f"\n[CURRICULUM] Advanced to Level {self.curriculum_level}! Running goal rate reset to 0.60.\n")
             # Regress curriculum level
             elif self.running_goal_rate < 0.40 and self.curriculum_level > getattr(self.cfg, "initial_curriculum_level", 1):
                 self.curriculum_level -= 1
-                self.running_goal_rate = 0.45  # buffer value below level-up threshold
-                print(f"\n[CURRICULUM] Regressed to Level {self.curriculum_level}! Running goal rate reset to 0.45.\n")
+                self.running_goal_rate = 0.50  # Buffer value for stable recovery
+                print(f"\n[CURRICULUM] Regressed to Level {self.curriculum_level}! Running goal rate reset to 0.50.\n")
 
         self.extras["log"]["Metrics/collision_rate"] = torch.count_nonzero(crash_mask).item() / total_resets
         self.extras["log"]["Metrics/goal_rate"] = batch_goal_rate
