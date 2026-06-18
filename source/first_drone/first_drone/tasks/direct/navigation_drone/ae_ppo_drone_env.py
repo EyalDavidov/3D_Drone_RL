@@ -1191,7 +1191,7 @@ class AEPPODroneEnv(DirectRLEnv):
                 viz.visualize(pos, quat)
 
         # Draw 2D LiDAR ray lines in world frame for Env 0
-        if hasattr(self, "_draw") and self._draw is not None and hasattr(self, "_last_lidar_scan"):
+        if hasattr(self, "_draw") and self._draw is not None and getattr(self, "_last_lidar_scan", None) is not None:
             self._draw.clear_lines()
             import math
             # Get drone position in world coordinates
