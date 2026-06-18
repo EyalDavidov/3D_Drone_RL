@@ -478,14 +478,29 @@ class AEPPODroneEnv(DirectRLEnv):
         # Use the already computed 2D LiDAR range scan and normalize to [0, 1]
         if self._last_lidar_scan is None:
             self._compute_lidar_scan()
-        # Clamping active range for non-masked rays to 1.5m to allow early side-wall avoidance
+            
         lidar_obs_max_range = 1.5
         lidar_scan = self._last_lidar_scan.clone()
-        # 1. Mask out the front 5 rays (indices 0, 1, 2, 22, 23 representing ±30 degrees)
-        # We set them to maximum range so the network is blind to front obstacles via LiDAR
-        front_indices = [0, 1, 2, 22, 23]
-        lidar_scan[:, front_indices] = lidar_obs_max_range
-        # 2. Clamp and normalize the entire scan to [0, 1]
+        
+        # Determine the front LiDAR visibility threshold based on curriculum level
+        if self.curriculum_level == 1 or self.curriculum_level == 2:
+            threshold = 1.5  # Full range assistance
+        elif self.curriculum_level == 3:
+            threshold = 0.8  # Medium range assistance
+        elif self.curriculum_level == 4:
+            threshold = 0.5  # Emergency-only range assistance
+        else:
+            threshold = 0.0  # Completely blind (pure vision navigation)
+
+        # Apply the sensor curriculum threshold to the front 5 rays (indices 0, 1, 2, 22, 23)
+        if threshold < 1.5:
+            front_indices = [0, 1, 2, 22, 23]
+            front_rays = lidar_scan[:, front_indices]
+            blind_mask = front_rays > threshold
+            front_rays[blind_mask] = lidar_obs_max_range
+            lidar_scan[:, front_indices] = front_rays
+
+        # Clamp and normalize the entire scan to [0, 1]
         lidar_scan = lidar_scan.clamp(max=lidar_obs_max_range) / lidar_obs_max_range
 
         # Step 4: concatenate all
@@ -882,10 +897,10 @@ class AEPPODroneEnv(DirectRLEnv):
                 self.running_goal_rate = 0.60  # Buffer to prevent immediate regression on first steps
                 print(f"\n[CURRICULUM] Advanced to Level {self.curriculum_level}! Running goal rate reset to 0.60.\n")
             # Regress curriculum level
-            elif self.running_goal_rate < 0.40 and self.curriculum_level > getattr(self.cfg, "initial_curriculum_level", 1):
+            elif self.running_goal_rate < 0.55 and self.curriculum_level > getattr(self.cfg, "initial_curriculum_level", 1):
                 self.curriculum_level -= 1
-                self.running_goal_rate = 0.50  # Buffer value for stable recovery
-                print(f"\n[CURRICULUM] Regressed to Level {self.curriculum_level}! Running goal rate reset to 0.50.\n")
+                self.running_goal_rate = 0.65  # Buffer value for stable recovery
+                print(f"\n[CURRICULUM] Regressed to Level {self.curriculum_level}! Running goal rate reset to 0.65.\n")
 
         self.extras["log"]["Metrics/collision_rate"] = torch.count_nonzero(crash_mask).item() / total_resets
         self.extras["log"]["Metrics/goal_rate"] = batch_goal_rate
