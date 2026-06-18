@@ -38,7 +38,7 @@ from isaaclab.markers import CUBOID_MARKER_CFG, VisualizationMarkersCfg  # isort
 from .ae_ppo_drone_env_cfg import AEPPODroneEnvCfg
 from first_drone.models.ae import AE
 from isaaclab.sensors import MultiMeshRayCaster, MultiMeshRayCasterCfg
-import isaaclab.sensors.patterns as patterns
+import isaaclab.sensors.ray_caster.patterns as patterns
 
 
 class AEPPODroneEnv(DirectRLEnv):
