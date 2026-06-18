@@ -122,7 +122,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
-    env_cfg.seed = agent_cfg.seed
+    if args_cli.seed is not None:
+        env_cfg.seed = args_cli.seed
+    else:
+        import random
+        env_cfg.seed = random.randint(0, 100000)
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
     # specify directory for logging experiments (locked to the project root folder)
