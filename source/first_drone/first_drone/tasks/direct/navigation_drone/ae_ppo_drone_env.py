@@ -37,6 +37,8 @@ from isaaclab.markers import CUBOID_MARKER_CFG, VisualizationMarkersCfg  # isort
 
 from .ae_ppo_drone_env_cfg import AEPPODroneEnvCfg
 from first_drone.models.ae import AE
+from isaaclab.sensors import MultiMeshRayCaster, MultiMeshRayCasterCfg
+import isaaclab.sensors.patterns as patterns
 
 
 class AEPPODroneEnv(DirectRLEnv):
@@ -88,6 +90,7 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # ----- Depth image buffer -----
         self._last_depth_processed = None
+        self._last_lidar_scan = None
 
         # ----- Episode reward logging -----
         self._episode_sums = {
@@ -256,6 +259,39 @@ class AEPPODroneEnv(DirectRLEnv):
         if collision_prim.IsValid():
             UsdGeom.Imageable(collision_prim).MakeInvisible()
 
+        # Initialize physical LiDAR (MultiMeshRayCaster) for 360 obstacle detection
+        lidar_pattern = patterns.LidarPatternCfg(
+            channels=1,
+            vertical_fov_range=(0.0, 0.0),
+            horizontal_fov_range=(-180.0, 180.0),
+            horizontal_res=360.0 / 24.0
+        )
+
+        mesh_paths = [
+            MultiMeshRayCasterCfg.RaycastTargetCfg(
+                prim_expr="/World/envs/env_.*/Room",
+                track_mesh_transforms=False  # Room is static and doesn't move
+            )
+        ]
+        if self.cfg.num_pillars > 0:
+            mesh_paths.append(
+                MultiMeshRayCasterCfg.RaycastTargetCfg(
+                    prim_expr="/World/envs/env_.*/Obstacle_.*",
+                    track_mesh_transforms=True  # Obstacles relocate on reset
+                )
+            )
+
+        lidar_cfg = MultiMeshRayCasterCfg(
+            prim_path="/World/envs/env_.*/Drone/body",
+            mesh_prim_paths=mesh_paths,
+            pattern_cfg=lidar_pattern,
+            max_distance=10.0,
+            ray_alignment="base"
+        )
+
+        self._lidar = MultiMeshRayCaster(lidar_cfg)
+        self.scene.sensors["lidar"] = self._lidar
+
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
@@ -398,111 +434,15 @@ class AEPPODroneEnv(DirectRLEnv):
     # Observations
     # ------------------------------------------------------------------
     def _compute_lidar_scan(self) -> torch.Tensor:
-        """Compute 2D LiDAR range scan in the body frame.
-
-        Casts 12 rays in a 360-degree circle around the drone in the body frame,
-        and returns the distance to the nearest static or dynamic obstacle for each ray.
-
-        Returns:
-            torch.Tensor: Shape (num_envs, 12) containing range readings clamped to [0.1, 10.0] meters.
-        """
-        num_rays = 24
-        max_range = 10.0
-
-        # 1. Get drone local position and yaw
-        pos_local = self._robot.data.root_pos_w[:, :2] - self._terrain.env_origins[:, :2]  # (B, 2)
-        yaw = self._get_drone_yaw()  # (B,)
-
-        # 2. Ray angles in the body frame
-        ray_angles_b = torch.linspace(0, 2 * torch.pi, num_rays + 1, device=self.device)[:-1]  # (R,)
-
-        # Rotate ray angles to the local environment frame (world-aligned)
-        # yaw is shape (B,), ray_angles_b is shape (R,)
-        ray_angles_env = yaw.unsqueeze(1) + ray_angles_b.unsqueeze(0)  # (B, R)
-
-        # Ray directions in environment frame: (B, R, 2)
-        dx = torch.cos(ray_angles_env)
-        dy = torch.sin(ray_angles_env)
-        ray_dirs = torch.stack([dx, dy], dim=-1)  # (B, R, 2)
-
-        # Origin: (B, 1, 2)
-        origin = pos_local.unsqueeze(1)
-
-        # 3. Intersect with 18 static map obstacles
-        if not hasattr(self, "_map_obs_tensor"):
-            obs_list = list(self.cfg.map_obstacles)
-            self._map_obs_tensor = torch.tensor(obs_list, device=self.device, dtype=torch.float)
-
-        O = self._map_obs_tensor.shape[0]
-        B = self.num_envs
-        R = num_rays
-
-        # Prepare tensors for vectorized slab method
-        orig = origin.unsqueeze(2).expand(B, R, O, 2)
-        dirs = ray_dirs.unsqueeze(2).expand(B, R, O, 2)
-        boxes = self._map_obs_tensor.view(1, 1, O, 4).expand(B, R, O, 4)
-
-        # Avoid division by zero
-        sign = torch.sign(dirs)
-        sign = torch.where(sign == 0.0, torch.tensor(1.0, device=self.device), sign)
-        inv_dir = 1.0 / torch.where(dirs.abs() > 1e-8, dirs, sign * 1e-8)
-
-        t1_x = (boxes[..., 0] - orig[..., 0]) * inv_dir[..., 0]
-        t2_x = (boxes[..., 1] - orig[..., 0]) * inv_dir[..., 0]
-        t_min_x = torch.minimum(t1_x, t2_x)
-        t_max_x = torch.maximum(t1_x, t2_x)
-
-        t1_y = (boxes[..., 2] - orig[..., 1]) * inv_dir[..., 1]
-        t2_y = (boxes[..., 3] - orig[..., 1]) * inv_dir[..., 1]
-        t_min_y = torch.minimum(t1_y, t2_y)
-        t_max_y = torch.maximum(t1_y, t2_y)
-
-        t_enter = torch.maximum(t_min_x, t_min_y)
-        t_exit = torch.minimum(t_max_x, t_max_y)
-
-        # Intersects if t_enter < t_exit and t_exit > 0
-        intersects = (t_enter < t_exit) & (t_exit > 0.0)
-        t_hit = torch.where(intersects, t_enter.clamp(min=0.0), torch.tensor(max_range, device=self.device))
-
-        # Distance to nearest static obstacle: min over O
-        min_dist_static, _ = torch.min(t_hit, dim=2)  # (B, R)
-
-        # 4. Intersect with 6 dynamic pillars (circles in 2D)
-        if len(self._pillars) > 0:
-            pillar_positions = torch.stack(
-                [p.data.root_pos_w[:, :2] - self._terrain.env_origins[:, :2] for p in self._pillars], dim=1
-            )  # (B, P, 2)
-            P = len(self._pillars)
-
-            orig_p = origin.unsqueeze(2).expand(B, R, P, 2)
-            dirs_p = ray_dirs.unsqueeze(2).expand(B, R, P, 2)
-            centers = pillar_positions.unsqueeze(1).expand(B, R, P, 2)
-
-            radii = torch.tensor(self._obstacle_collision_radii, device=self.device)  # (P,)
-            radii = radii.view(1, 1, P).expand(B, R, P)
-
-            v = orig_p - centers  # (B, R, P, 2)
-            dot_dv = torch.sum(dirs_p * v, dim=-1)  # (B, R, P)
-            v_sq = torch.sum(v ** 2, dim=-1)  # (B, R, P)
-
-            inside = v_sq < radii**2
-            delta_fourth = dot_dv**2 - v_sq + radii**2  # (B, R, P)
-            intersects_p = (delta_fourth >= 0.0) & ((dot_dv < 0.0) | inside)
-
-            t_hit_p = torch.where(
-                intersects_p,
-                torch.where(inside, torch.tensor(0.0, device=self.device), -dot_dv - torch.sqrt(delta_fourth.clamp(min=0.0))),
-                torch.tensor(max_range, device=self.device)
-            )
-            t_hit_p = t_hit_p.clamp(min=0.0)
-
-            min_dist_dynamic, _ = torch.min(t_hit_p, dim=2)  # (B, R)
-
-            # Combine static and dynamic
-            min_dist = torch.minimum(min_dist_static, min_dist_dynamic)
-        else:
-            min_dist = min_dist_static
-        self._last_lidar_scan = min_dist.clamp(0.1, max_range)
+        """Compute 2D LiDAR range scan in the body frame using physical MultiMeshRayCaster."""
+        hit_positions = self._lidar.data.ray_hits_w  # (num_envs, 24, 3)
+        sensor_pos = self._lidar.data.pos_w.unsqueeze(1)  # (num_envs, 1, 3)
+        
+        # Calculate Euclidean distances
+        distances = torch.norm(hit_positions - sensor_pos, dim=-1)  # (num_envs, 24)
+        
+        # Clamp to [0.1, 10.0] meters. Non-hits return float('inf') which clamps to 10.0.
+        self._last_lidar_scan = distances.clamp(min=0.1, max=10.0)
         return self._last_lidar_scan
 
     def _get_observations(self) -> dict:
@@ -535,8 +475,10 @@ class AEPPODroneEnv(DirectRLEnv):
         target_dir_b = desired_pos_b / (target_dist + 1e-6)
         target_dist_scaled = torch.tanh(target_dist / 10.0)
 
-        # Compute 2D LiDAR range scan and normalize to [0, 1]
-        lidar_scan = self._compute_lidar_scan() / 10.0
+        # Use the already computed 2D LiDAR range scan and normalize to [0, 1]
+        if self._last_lidar_scan is None:
+            self._compute_lidar_scan()
+        lidar_scan = self._last_lidar_scan / 10.0
 
         # Step 4: concatenate all
         obs = torch.cat(
@@ -643,24 +585,11 @@ class AEPPODroneEnv(DirectRLEnv):
         speed_factor = (speed / vel_align_max_speed).clamp(0.0, 1.0)
         velocity_alignment = cos_sim * speed_factor
 
-        # Proximity penalty (MAX across all pillars and static map obstacles)
-        proximity_penalty = torch.zeros(self.num_envs, device=self.device)
-        proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 0.5)
-
-        # 1. Dynamic pillars (if any)
-        if len(self._pillars) > 0:
-            obstacle_dists = self._compute_obstacle_distances()
-            for i in range(len(self._pillars)):
-                dist = obstacle_dists[:, i]
-                scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
-                proximity_penalty = torch.maximum(proximity_penalty, scaled)
-
-        # 2. Static map obstacles
-        if len(self.cfg.map_obstacles) > 0:
-            map_obs_dists = self._compute_map_obstacle_distances()  # (num_envs, num_obstacles)
-            scaled_map = ((proximity_radius - map_obs_dists) / (proximity_radius + 1e-6)).clamp(min=0.0)  # (num_envs, num_obstacles)
-            max_scaled_map, _ = torch.max(scaled_map, dim=1)  # (num_envs,)
-            proximity_penalty = torch.maximum(proximity_penalty, max_scaled_map)
+        # Proximity penalty (MAX across physical LiDAR scan rays)
+        lidar_scan = self._compute_lidar_scan()
+        min_lidar_dist, _ = torch.min(lidar_scan, dim=1)
+        proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 1.2)
+        proximity_penalty = ((proximity_radius - min_lidar_dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
 
         # Make proximity penalty quadratic for a smoother gradient and virtual spring effect
         proximity_penalty_sq = proximity_penalty ** 2
