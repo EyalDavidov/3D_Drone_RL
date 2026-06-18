@@ -478,7 +478,15 @@ class AEPPODroneEnv(DirectRLEnv):
         # Use the already computed 2D LiDAR range scan and normalize to [0, 1]
         if self._last_lidar_scan is None:
             self._compute_lidar_scan()
-        lidar_scan = self._last_lidar_scan / 10.0
+        # Clamping active range for non-masked rays to 1.5m to allow early side-wall avoidance
+        lidar_obs_max_range = 1.5
+        lidar_scan = self._last_lidar_scan.clone()
+        # 1. Mask out the front 5 rays (indices 0, 1, 2, 22, 23 representing ±30 degrees)
+        # We set them to maximum range so the network is blind to front obstacles via LiDAR
+        front_indices = [0, 1, 2, 22, 23]
+        lidar_scan[:, front_indices] = lidar_obs_max_range
+        # 2. Clamp and normalize the entire scan to [0, 1]
+        lidar_scan = lidar_scan.clamp(max=lidar_obs_max_range) / lidar_obs_max_range
 
         # Step 4: concatenate all
         obs = torch.cat(
@@ -787,17 +795,36 @@ class AEPPODroneEnv(DirectRLEnv):
         contact_force = torch.linalg.norm(self._contact_sensor.data.net_forces_w[:, 0, :], dim=-1)
         hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold
 
-        # 2. Check physical LiDAR distance: crash if drone is closer than 8cm to any obstacle/wall
+        # 2. Check physical LiDAR distance: crash if drone is closer than collision radius to any obstacle/wall
         if self._last_lidar_scan is None:
             self._compute_lidar_scan()
         min_lidar_dist, _ = torch.min(self._last_lidar_scan, dim=1)
-        hit_physical_obstacle = min_lidar_dist < 0.08
+        hit_physical_obstacle = min_lidar_dist < self.cfg.pillar_collision_radius
+
+        # 3. Check analytical boxes (failsafe for LiDAR blind spots / clipping)
+        hit_box_obstacle = self._is_inside_map_obstacle(
+            pos_local[:, 0], pos_local[:, 1], margin=self.cfg.pillar_collision_radius
+        )
+
+        # 4. Check analytical dynamic pillars (failsafe for dynamic obstacles)
+        hit_dynamic_pillar = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if len(self._pillars) > 0:
+            obstacle_dists = self._compute_obstacle_distances()
+            for i in range(len(self._pillars)):
+                hit_dynamic_pillar = hit_dynamic_pillar | (obstacle_dists[:, i] < self._drone_collision_offset)
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
         # Combine termination conditions
-        died = hit_floor_or_ceiling | hit_wall | hit_obstacle | hit_physical_obstacle
+        died = (
+            hit_floor_or_ceiling
+            | hit_wall
+            | hit_obstacle
+            | hit_physical_obstacle
+            | hit_box_obstacle
+            | hit_dynamic_pillar
+        )
         terminated = died | reached_goal
         return terminated, time_out
 
