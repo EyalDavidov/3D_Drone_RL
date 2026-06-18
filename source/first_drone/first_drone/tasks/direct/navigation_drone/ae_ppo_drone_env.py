@@ -101,7 +101,7 @@ class AEPPODroneEnv(DirectRLEnv):
         import sys
         is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
         default_level = 5 if is_play_script else 1
-        self.curriculum_level = getattr(self.cfg, "initial_curriculum_level", default_level)
+        self.curriculum_level = default_level if is_play_script else getattr(self.cfg, "initial_curriculum_level", default_level)
         self.running_goal_rate = 0.0
         self.curriculum_distances = {
             1: (2.0, 5.0),

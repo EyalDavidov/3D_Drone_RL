@@ -14,7 +14,17 @@ def main():
     ea = event_accumulator.EventAccumulator(log_dir)
     ea.Reload()
 
-    tags = ['Metrics/curriculum_level', 'Metrics/running_goal_rate', 'Loss/entropy', 'Policy/mean_std']
+    tags = [
+        'Metrics/curriculum_level', 
+        'Metrics/goal_rate', 
+        'Metrics/running_goal_rate', 
+        'Metrics/collision_rate', 
+        'Loss/entropy', 
+        'Policy/mean_std',
+        'Loss/value',
+        'Episode_Termination/died',
+        'Episode_Termination/time_out'
+    ]
     
     data = {}
     for tag in tags:
@@ -23,15 +33,10 @@ def main():
         else:
             data[tag] = []
 
-    # Print last 30 steps
     if data['Policy/mean_std']:
         steps = [e.step for e in data['Policy/mean_std']]
-        # Print the last 30 points
-        print("\nStep | Curriculum Level | Running Goal Rate | Entropy Loss | Policy Mean STD")
-        print("-" * 75)
-        
-        # We align by step
-        steps_to_show = steps[-30:]
+        print("\nStep | Level | Goal Rate | Run Goal Rate | Col Rate | Died (Col) | Timeouts | Value Loss | Mean STD")
+        print("-" * 115)
         
         # Helper to get value at step
         def get_val_at_step(tag_events, step):
@@ -40,18 +45,31 @@ def main():
                     return e.value
             return None
 
+        # Print all steps from step 1700 onwards
+        steps_to_show = [s for s in steps if s >= 1700]
+        if not steps_to_show:
+            steps_to_show = steps[-30:]
+
         for s in steps_to_show:
             curr = get_val_at_step(data['Metrics/curriculum_level'], s)
+            gr = get_val_at_step(data['Metrics/goal_rate'], s)
             rgr = get_val_at_step(data['Metrics/running_goal_rate'], s)
-            ent = get_val_at_step(data['Loss/entropy'], s)
+            col = get_val_at_step(data['Metrics/collision_rate'], s)
+            died = get_val_at_step(data['Episode_Termination/died'], s)
+            timeouts = get_val_at_step(data['Episode_Termination/time_out'], s)
+            val_loss = get_val_at_step(data['Loss/value'], s)
             std = get_val_at_step(data['Policy/mean_std'], s)
             
-            curr_str = f"{curr:.2f}" if curr is not None else "N/A"
+            curr_str = f"{curr:.1f}" if curr is not None else "N/A"
+            gr_str = f"{gr:.4f}" if gr is not None else "N/A"
             rgr_str = f"{rgr:.4f}" if rgr is not None else "N/A"
-            ent_str = f"{ent:.4f}" if ent is not None else "N/A"
+            col_str = f"{col:.4f}" if col is not None else "N/A"
+            died_str = f"{died:.1f}" if died is not None else "N/A"
+            timeouts_str = f"{timeouts:.1f}" if timeouts is not None else "N/A"
+            val_str = f"{val_loss:.1f}" if val_loss is not None else "N/A"
             std_str = f"{std:.4f}" if std is not None else "N/A"
             
-            print(f"{s:<4d} | {curr_str:<16s} | {rgr_str:<17s} | {ent_str:<12s} | {std_str:<15s}")
+            print(f"{s:<4d} | {curr_str:<5s} | {gr_str:<9s} | {rgr_str:<13s} | {col_str:<8s} | {died_str:<10s} | {timeouts_str:<8s} | {val_str:<10s} | {std_str:<8s}")
             
 if __name__ == "__main__":
     main()

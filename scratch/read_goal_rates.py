@@ -2,10 +2,17 @@ import os
 from tensorboard.backend.event_processing import event_accumulator
 
 def main():
-    log_dir = r"d:\isaac\3D_Drone_RL\logs\rsl_rl\navigation_drone_direct\09-06_01-06"
-    if not os.path.exists(log_dir):
-        print(f"Log directory not found: {log_dir}")
+    ppo_dir = r"d:\isaac\3D_Drone_RL\logs\rsl_rl\navigation_drone_direct"
+    if not os.path.exists(ppo_dir):
+        print(f"Directory not found: {ppo_dir}")
         return
+    import glob
+    dirs = [d for d in glob.glob(os.path.join(ppo_dir, "*")) if os.path.isdir(d)]
+    if not dirs:
+        print("No log directories found.")
+        return
+    log_dir = max(dirs, key=os.path.getmtime)
+    print(f"Reading from: {log_dir}")
 
     ea = event_accumulator.EventAccumulator(log_dir)
     ea.Reload()
@@ -24,24 +31,16 @@ def main():
         print("Step | Raw Goal Rate | Collision Rate | Running Goal Rate | Mean STD")
         print("-" * 75)
         
-        # Print every 10 steps to see the trend clearly
-        for idx in range(0, len(goal_events), 10):
+        # Print the last 35 steps to see the most recent history
+        start_idx = max(0, len(goal_events) - 35)
+        for idx in range(start_idx, len(goal_events)):
             step = goal_events[idx].step
             gr = goal_events[idx].value
             cr = coll_events[idx].value if idx < len(coll_events) else 0.0
             rgr = rgr_events[idx].value if idx < len(rgr_events) else 0.0
             std = std_events[idx].value if idx < len(std_events) else 0.0
             print(f"{step:<4d} | {gr:.4f}         | {cr:.4f}         | {rgr:.4f}            | {std:.4f}")
-            
-        # Also print the last step explicitly
-        last_idx = len(goal_events) - 1
-        if last_idx >= 0 and last_idx % 10 != 0:
-            step = goal_events[last_idx].step
-            gr = goal_events[last_idx].value
-            cr = coll_events[last_idx].value if last_idx < len(coll_events) else 0.0
-            rgr = rgr_events[last_idx].value if last_idx < len(rgr_events) else 0.0
-            std = std_events[last_idx].value if last_idx < len(std_events) else 0.0
-            print(f"{step:<4d} | {gr:.4f}         | {cr:.4f}         | {rgr:.4f}            | {std:.4f}")
+
 
 if __name__ == '__main__':
     main()
