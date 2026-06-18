@@ -778,31 +778,24 @@ class AEPPODroneEnv(DirectRLEnv):
 
         hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.5)
         # 50m x 50m arena map bounds: physical wall meshes start at X/Y = ±24.0.
-        # With drone collision radius of 0.1m, contact occurs at ±23.90. We use ±23.85 as the termination trigger.
         hit_wall = (
             (pos_local[:, 0] > 23.85) | (pos_local[:, 0] < -23.85)
             | (pos_local[:, 1] > 23.85) | (pos_local[:, 1] < -23.85)
         )
 
-        # Check contact sensor for collision with arena meshes
+        # 1. Check contact sensor for physical collision with meshes (forces > 1.0 N)
         contact_force = torch.linalg.norm(self._contact_sensor.data.net_forces_w[:, 0, :], dim=-1)
-        hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold to filter numerical noise
+        hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold
 
-        # Geometric check: is the drone inside any static map obstacle bounding box?
-        # Use configurable collision radius for reliable detection
-        hit_map_obstacle = self._is_inside_map_obstacle(pos_local[:, 0], pos_local[:, 1], margin=self.cfg.pillar_collision_radius)
-
-        # Check dynamic obstacle collisions (if any pillars are spawned)
-        hit_pillar = torch.zeros_like(hit_wall)
-        if len(self._pillars) > 0:
-            obstacle_dists = self._compute_obstacle_distances()
-            for i in range(len(self._pillars)):
-                hit_pillar = hit_pillar | (obstacle_dists[:, i] < self._drone_collision_offset)
+        # 2. Check physical LiDAR distance: crash if drone is closer than 8cm to any obstacle/wall
+        min_lidar_dist, _ = torch.min(self._last_lidar_scan, dim=1)
+        hit_physical_obstacle = min_lidar_dist < 0.08
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
-        died = hit_floor_or_ceiling | hit_wall | hit_obstacle | hit_map_obstacle | hit_pillar
+        # Combine termination conditions
+        died = hit_floor_or_ceiling | hit_wall | hit_obstacle | hit_physical_obstacle
         terminated = died | reached_goal
         return terminated, time_out
 
