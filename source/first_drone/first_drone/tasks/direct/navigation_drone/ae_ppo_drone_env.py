@@ -788,6 +788,8 @@ class AEPPODroneEnv(DirectRLEnv):
         hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold
 
         # 2. Check physical LiDAR distance: crash if drone is closer than 8cm to any obstacle/wall
+        if self._last_lidar_scan is None:
+            self._compute_lidar_scan()
         min_lidar_dist, _ = torch.min(self._last_lidar_scan, dim=1)
         hit_physical_obstacle = min_lidar_dist < 0.08
 
