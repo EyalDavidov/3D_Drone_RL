@@ -379,6 +379,14 @@ class AEPPODroneEnv(DirectRLEnv):
         # 3. Track metrics if env 0 reset in this step
         if terminated[0].item() or truncated[0].item():
             reached_goal = (torch.linalg.norm(self._desired_pos_w[0] - self._robot.data.root_pos_w[0]) < self.cfg.goal_radius).item()
+            if reached_goal:
+                self._env0_last_episode_status = "GOAL REACHED!"
+            elif truncated[0].item():
+                self._env0_last_episode_status = "TIMEOUT"
+            else:
+                reason = getattr(self, "_env0_crash_reason", "Unknown Impact")
+                self._env0_last_episode_status = f"CRASHED ({reason})"
+                
             died = terminated[0].item() and not reached_goal
             self._env0_died_count += float(died)
             self._env0_timeout_count += float(truncated[0].item())
@@ -521,22 +529,17 @@ class AEPPODroneEnv(DirectRLEnv):
 
         import sys
         is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
-        if is_play_script and self.cfg.debug_vis:
-            self._show_lidar_window()
+        if (is_play_script and self.cfg.debug_vis) or getattr(self.cfg, "show_ae_images", False):
+            self._update_dashboard(depth)
 
         return {"policy": obs}
 
-    def _show_ae_images(self, depth: torch.Tensor) -> None:
-        """Show AE input depth and reconstruction side by side."""
+    def _update_dashboard(self, depth: torch.Tensor) -> None:
+        """Render a unified, premium navigation dashboard in a single OpenCV window."""
         if cv2 is None or np is None:
             return
 
-        interval = getattr(self.cfg, "ae_image_display_interval", 20)
-        if self._ae_vis_step % interval != 0:
-            self._ae_vis_step += 1
-            return
-
-        self._ae_vis_step += 1
+        # 1. Compute AE reconstruction
         with torch.no_grad():
             z = self.ae.encode(depth)
             recon = self.ae.decode(z)
@@ -546,40 +549,29 @@ class AEPPODroneEnv(DirectRLEnv):
 
         depth_vis = np.uint8(np.clip(depth_img * 255.0, 0, 255))
         recon_vis = np.uint8(np.clip(recon_img * 255.0, 0, 255))
-        combined = np.hstack([depth_vis, recon_vis])
-        scale = 4
-        combined = cv2.resize(combined, (combined.shape[1] * scale, combined.shape[0] * scale),
-                              interpolation=cv2.INTER_NEAREST)
-        combined = cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR)
 
-        label = "AE depth input (left) | reconstruction (right)"
-        cv2.putText(combined, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.imshow("AE Input/Output", combined)
-        cv2.waitKey(1)
+        # Resize AE images to 256x144 for clarity
+        ae_w, ae_h = 256, 144
+        depth_resized = cv2.resize(depth_vis, (ae_w, ae_h), interpolation=cv2.INTER_NEAREST)
+        recon_resized = cv2.resize(recon_vis, (ae_w, ae_h), interpolation=cv2.INTER_NEAREST)
+        
+        # Convert to BGR
+        depth_bgr = cv2.cvtColor(depth_resized, cv2.COLOR_GRAY2BGR)
+        recon_bgr = cv2.cvtColor(recon_resized, cv2.COLOR_GRAY2BGR)
 
-    def _show_lidar_window(self) -> None:
-        """Show LiDAR scan in a separate OpenCV window as a 2D polar plot."""
-        if cv2 is None or np is None:
-            return
+        # 2. Render LiDAR 2D polar plot (300x300)
+        lidar_size = 300
+        lidar_img = np.zeros((lidar_size, lidar_size, 3), dtype=np.uint8)
+        center = (lidar_size // 2, lidar_size // 2)
 
-        if self._last_lidar_scan is None:
-            return
-
-        # Create a black image
-        img_size = 300
-        img = np.zeros((img_size, img_size, 3), dtype=np.uint8)
-        center = (img_size // 2, img_size // 2)
-
-        # Draw circle grids (e.g. at 1.5m and 5.0m)
+        # Draw range grid circles
         scale = 15.0  # 15 pixels per meter
-        cv2.circle(img, center, int(1.5 * scale), (50, 50, 50), 1)
-        cv2.circle(img, center, int(5.0 * scale), (100, 100, 100), 1)
-        cv2.putText(img, "1.5m", (center[0] + 5, center[1] - int(1.5 * scale)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80, 80, 80), 1)
-        cv2.putText(img, "5.0m", (center[0] + 5, center[1] - int(5.0 * scale)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 120), 1)
+        cv2.circle(lidar_img, center, int(1.5 * scale), (40, 40, 40), 1)
+        cv2.circle(lidar_img, center, int(5.0 * scale), (70, 70, 70), 1)
+        cv2.putText(lidar_img, "1.5m", (center[0] + 5, center[1] - int(1.5 * scale)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (80, 80, 80), 1)
+        cv2.putText(lidar_img, "5.0m", (center[0] + 5, center[1] - int(5.0 * scale)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 100, 100), 1)
 
         num_rays = 24
-        # Lidar Pattern horizontal_fov_range is (-180, 180) degrees.
-        # So ray angles in body frame are from -pi to pi.
         ray_angles_b = torch.linspace(-torch.pi, torch.pi, num_rays + 1, device=self.device)[:-1]
 
         # Draw the 24 rays
@@ -588,13 +580,9 @@ class AEPPODroneEnv(DirectRLEnv):
             dist = self._last_lidar_scan[0, i].item()
             angle = ray_angles_b[i].item()
 
-            # Direction vector in body frame:
             dx_b = math.cos(angle)
             dy_b = math.sin(angle)
 
-            # Map body frame to window coordinate system:
-            # Body X (forward) -> Up (negative Y in window)
-            # Body Y (left) -> Left (negative X in window)
             pt_end = (
                 int(center[0] - dy_b * dist * scale),
                 int(center[1] - dx_b * dist * scale)
@@ -602,34 +590,100 @@ class AEPPODroneEnv(DirectRLEnv):
 
             # Highlight front masked rays (indices 10, 11, 12, 13, 14)
             is_front_masked = i in [10, 11, 12, 13, 14]
-            
-            # Color: Red if very close (< 0.5m), Yellow if masked, Green otherwise
             if dist < 0.5:
-                color = (0, 0, 255)  # Red (BGR)
+                color = (0, 0, 255)  # Red
             elif is_front_masked:
                 color = (0, 255, 255)  # Yellow
             else:
                 color = (0, 255, 0)  # Green
 
-            # Draw ray line
-            cv2.line(img, center, pt_end, color, 1)
-            # Draw hit point
-            cv2.circle(img, pt_end, 3, color, -1)
+            cv2.line(lidar_img, center, pt_end, color, 1)
+            cv2.circle(lidar_img, pt_end, 3, color, -1)
 
-            # Label index on every 4th ray for debugging
             if i % 2 == 0:
                 text_pos = (
                     int(center[0] - dy_b * (dist + 0.3) * scale),
                     int(center[1] - dx_b * (dist + 0.3) * scale)
                 )
-                cv2.putText(img, str(i), text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                cv2.putText(lidar_img, str(i), text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1)
 
-        # Draw a small drone icon in the center
-        cv2.circle(img, center, 6, (255, 0, 0), -1)
-        # Arrow pointing forward (up)
-        cv2.line(img, center, (center[0], center[1] - 12), (255, 255, 255), 2)
+        # Draw drone icon in center
+        cv2.circle(lidar_img, center, 6, (255, 0, 0), -1)
+        cv2.line(lidar_img, center, (center[0], center[1] - 12), (255, 255, 255), 2)
 
-        cv2.imshow("LiDAR 2D Scan (Env 0)", img)
+        # 3. Create the Main Dashboard layout (height=460, width=820)
+        dash = np.zeros((460, 820, 3), dtype=np.uint8)
+
+        # Place LiDAR scan on the left (centered vertically)
+        dash[80:380, 0:300] = lidar_img
+
+        # Place AE images side by side
+        dash[0:144, 300:556] = depth_bgr
+        dash[0:144, 556:812] = recon_bgr
+
+        # Draw labels above AE images
+        cv2.putText(dash, "AE INPUT DEPTH", (310, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, "AE RECONSTRUCTION", (566, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # 4. Fill text statistics on the right bottom panel
+        dist_to_goal = torch.linalg.norm(self._desired_pos_w[0] - self._robot.data.root_pos_w[0]).item()
+        
+        # Calculate total reward and breakdown for Env 0
+        ep_rewards = {key: self._episode_sums[key][0].item() for key in self._episode_sums}
+        total_reward = sum(ep_rewards.values())
+
+        # Determine current status
+        status = "FLYING"
+        status_color = (0, 255, 0)  # Green
+        
+        # If reset occurred in the last step
+        if hasattr(self, "_env0_last_episode_status") and self._env0_last_episode_status:
+            last_status = self._env0_last_episode_status
+            if "SUCCESS" in last_status:
+                last_color = (0, 255, 0)
+            elif "TIMEOUT" in last_status:
+                last_color = (0, 165, 255)
+            else:
+                last_color = (0, 0, 255)
+        else:
+            last_status = "N/A"
+            last_color = (150, 150, 150)
+
+        # Draw dividing lines
+        cv2.line(dash, (300, 0), (300, 460), (50, 50, 50), 1)
+        cv2.line(dash, (300, 150), (820, 150), (50, 50, 50), 1)
+
+        # Write text values (Right Bottom Panel)
+        y_start = 175
+        dy_text = 20
+        
+        # Header Info
+        cv2.putText(dash, "NAVIGATION STATUS:", (310, y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, status, (490, y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 2, cv2.LINE_AA)
+        
+        cv2.putText(dash, "LAST RESULT:", (310, y_start + dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, last_status, (490, y_start + dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, last_color, 1, cv2.LINE_AA)
+
+        cv2.putText(dash, f"Curriculum Level: {self.curriculum_level}", (310, y_start + 2*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, f"Goal Distance: {dist_to_goal:.2f} m", (310, y_start + 3*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, f"Running Goal Rate: {self.running_goal_rate:.2%}", (310, y_start + 4*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, f"Total Episode Reward: {total_reward:.2f}", (310, y_start + 5*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+
+        # Rewards Breakdown Column
+        cv2.putText(dash, "REWARDS BREAKDOWN:", (310, y_start + 7*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 100, 100), 1, cv2.LINE_AA)
+        
+        # Sort and print reward items in two columns to save space
+        items = list(ep_rewards.items())
+        half = (len(items) + 1) // 2
+        for j, (k, val) in enumerate(items):
+            col = 0 if j < half else 1
+            row = j if j < half else j - half
+            x_pos = 310 if col == 0 else 560
+            y_pos = y_start + 8*dy_text + row*16
+            cv2.putText(dash, f"{k}: {val:.2f}", (x_pos, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+
+        # Show unified Dashboard
+        cv2.imshow("Drone Navigation Dashboard (Env 0)", dash)
         cv2.waitKey(1)
 
     # ------------------------------------------------------------------
@@ -911,6 +965,23 @@ class AEPPODroneEnv(DirectRLEnv):
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
+
+        # Capture crash reason for Env 0
+        if self.num_envs > 0:
+            if hit_floor_or_ceiling[0].item():
+                self._env0_crash_reason = "Floor/Ceiling Bounds"
+            elif hit_wall[0].item():
+                self._env0_crash_reason = "Arena Wall Boundary"
+            elif hit_obstacle[0].item():
+                self._env0_crash_reason = "Contact Sensor Impact"
+            elif hit_physical_obstacle[0].item():
+                self._env0_crash_reason = "LiDAR Collision Radius"
+            elif hit_box_obstacle[0].item():
+                self._env0_crash_reason = "Static Wall Bounding Box"
+            elif hit_dynamic_pillar[0].item():
+                self._env0_crash_reason = "Dynamic Pillar Bounding Box"
+            else:
+                self._env0_crash_reason = None
 
         # Combine termination conditions
         died = (
@@ -1393,3 +1464,13 @@ class AEPPODroneEnv(DirectRLEnv):
                 thicknesses.append(grid_thick)
 
             self._draw.draw_lines(start_points, end_points, colors, thicknesses)
+
+        # 3. Follow Camera (Bird's Eye View) for Play Mode
+        import sys
+        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        if is_play_script:
+            import numpy as np
+            drone_pos = self._robot.data.root_pos_w[0, :3].detach().cpu().numpy()
+            # Set camera position slightly behind and above the drone, looking at it (steep downward angle)
+            eye = drone_pos + np.array([-1.5, -1.5, 4.0])
+            self.sim.set_camera_view(eye=eye, target=drone_pos)
