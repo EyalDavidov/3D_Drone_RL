@@ -609,19 +609,19 @@ class AEPPODroneEnv(DirectRLEnv):
         cv2.circle(lidar_img, center, 6, (255, 0, 0), -1)
         cv2.line(lidar_img, center, (center[0], center[1] - 12), (255, 255, 255), 2)
 
-        # 3. Create the Main Dashboard layout (height=460, width=820)
-        dash = np.zeros((460, 820, 3), dtype=np.uint8)
+        # 3. Create the Main Dashboard layout (height=520, width=900)
+        dash = np.zeros((520, 900, 3), dtype=np.uint8)
 
         # Place LiDAR scan on the left (centered vertically)
-        dash[80:380, 0:300] = lidar_img
+        dash[110:410, 0:300] = lidar_img
 
         # Place AE images side by side
-        dash[0:144, 300:556] = depth_bgr
-        dash[0:144, 556:812] = recon_bgr
+        dash[0:144, 340:596] = depth_bgr
+        dash[0:144, 596:852] = recon_bgr
 
         # Draw labels above AE images
-        cv2.putText(dash, "AE INPUT DEPTH", (310, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(dash, "AE RECONSTRUCTION", (566, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, "AE INPUT DEPTH", (350, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, "AE RECONSTRUCTION", (606, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
         # 4. Fill text statistics on the right bottom panel
         dist_to_goal = torch.linalg.norm(self._desired_pos_w[0] - self._robot.data.root_pos_w[0]).item()
@@ -648,27 +648,27 @@ class AEPPODroneEnv(DirectRLEnv):
             last_color = (150, 150, 150)
 
         # Draw dividing lines
-        cv2.line(dash, (300, 0), (300, 460), (50, 50, 50), 1)
-        cv2.line(dash, (300, 150), (820, 150), (50, 50, 50), 1)
+        cv2.line(dash, (320, 0), (320, 520), (50, 50, 50), 1)
+        cv2.line(dash, (320, 150), (900, 150), (50, 50, 50), 1)
 
         # Write text values (Right Bottom Panel)
         y_start = 175
         dy_text = 20
         
         # Header Info
-        cv2.putText(dash, "NAVIGATION STATUS:", (310, y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(dash, status, (490, y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 2, cv2.LINE_AA)
+        cv2.putText(dash, "NAVIGATION STATUS:", (330, y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, status, (530, y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 2, cv2.LINE_AA)
         
-        cv2.putText(dash, "LAST RESULT:", (310, y_start + dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(dash, last_status, (490, y_start + dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, last_color, 1, cv2.LINE_AA)
+        cv2.putText(dash, "LAST RESULT:", (330, y_start + dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, last_status, (530, y_start + dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, last_color, 1, cv2.LINE_AA)
 
-        cv2.putText(dash, f"Curriculum Level: {self.curriculum_level}", (310, y_start + 2*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(dash, f"Goal Distance: {dist_to_goal:.2f} m", (310, y_start + 3*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(dash, f"Running Goal Rate: {self.running_goal_rate:.2%}", (310, y_start + 4*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(dash, f"Total Episode Reward: {total_reward:.2f}", (310, y_start + 5*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, f"Curriculum Level: {self.curriculum_level}", (330, y_start + 2*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, f"Goal Distance: {dist_to_goal:.2f} m", (330, y_start + 3*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, f"Running Goal Rate: {self.running_goal_rate:.2%}", (330, y_start + 4*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(dash, f"Total Episode Reward: {total_reward:.2f}", (330, y_start + 5*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
 
         # Rewards Breakdown Column
-        cv2.putText(dash, "REWARDS BREAKDOWN:", (310, y_start + 7*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 100, 100), 1, cv2.LINE_AA)
+        cv2.putText(dash, "REWARDS BREAKDOWN:", (330, y_start + 7*dy_text), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 100, 100), 1, cv2.LINE_AA)
         
         # Sort and print reward items in two columns to save space
         items = list(ep_rewards.items())
@@ -676,8 +676,8 @@ class AEPPODroneEnv(DirectRLEnv):
         for j, (k, val) in enumerate(items):
             col = 0 if j < half else 1
             row = j if j < half else j - half
-            x_pos = 310 if col == 0 else 560
-            y_pos = y_start + 8*dy_text + row*16
+            x_pos = 330 if col == 0 else 610
+            y_pos = y_start + 8*dy_text + row*18
             cv2.putText(dash, f"{k}: {val:.2f}", (x_pos, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
 
         # Show unified Dashboard
@@ -932,7 +932,9 @@ class AEPPODroneEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
-        hit_floor_or_ceiling = (pos_local[:, 2] < 0.1) | (pos_local[:, 2] > 2.5)
+        hit_floor = pos_local[:, 2] < 0.1
+        hit_ceiling = pos_local[:, 2] > 2.5
+        hit_floor_or_ceiling = hit_floor | hit_ceiling
         # 50m x 50m arena map bounds: physical wall meshes start at X/Y = ±24.0.
         hit_wall = (
             (pos_local[:, 0] > 23.85) | (pos_local[:, 0] < -23.85)
@@ -966,18 +968,45 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # Capture crash reason for Env 0
         if self.num_envs > 0:
-            if hit_floor_or_ceiling[0].item():
-                self._env0_crash_reason = "Floor/Ceiling Bounds"
+            if hit_floor[0].item():
+                self._env0_crash_reason = "Floor Bounds Collision"
+            elif hit_ceiling[0].item():
+                self._env0_crash_reason = "Ceiling Bounds Collision"
             elif hit_wall[0].item():
                 self._env0_crash_reason = "Arena Wall Boundary"
+            elif hit_dynamic_pillar[0].item() or (hit_physical_obstacle[0].item() and len(self._pillars) > 0 and torch.min(self._compute_obstacle_distances()[0]) < self.cfg.pillar_collision_radius + 0.1):
+                self._env0_crash_reason = "Dynamic Pillar Collision"
+            elif hit_box_obstacle[0].item() or (hit_physical_obstacle[0].item() and torch.min(self._compute_map_obstacle_distances()[0]) < self.cfg.pillar_collision_radius + 0.1):
+                self._env0_crash_reason = "Static Wall Collision"
             elif hit_obstacle[0].item():
-                self._env0_crash_reason = "Contact Sensor Impact"
+                # If contact sensor triggered, check height to distinguish floor/ceiling from obstacles
+                z_val = pos_local[0, 2].item()
+                if z_val < 0.25:
+                    self._env0_crash_reason = "Floor Collision (Contact)"
+                elif z_val > 2.35:
+                    self._env0_crash_reason = "Ceiling Collision (Contact)"
+                else:
+                    if len(self._pillars) > 0:
+                        min_pillar_dist = torch.min(self._compute_obstacle_distances()[0]).item()
+                    else:
+                        min_pillar_dist = float('inf')
+                    min_static_dist = torch.min(self._compute_map_obstacle_distances()[0]).item()
+                    
+                    if min_pillar_dist < min_static_dist:
+                        self._env0_crash_reason = "Dynamic Pillar Collision (Contact)"
+                    else:
+                        self._env0_crash_reason = "Static Wall Collision (Contact)"
             elif hit_physical_obstacle[0].item():
-                self._env0_crash_reason = "LiDAR Collision Radius"
-            elif hit_box_obstacle[0].item():
-                self._env0_crash_reason = "Static Wall Bounding Box"
-            elif hit_dynamic_pillar[0].item():
-                self._env0_crash_reason = "Dynamic Pillar Bounding Box"
+                if len(self._pillars) > 0:
+                    min_pillar_dist = torch.min(self._compute_obstacle_distances()[0]).item()
+                else:
+                    min_pillar_dist = float('inf')
+                min_static_dist = torch.min(self._compute_map_obstacle_distances()[0]).item()
+                
+                if min_pillar_dist < min_static_dist:
+                    self._env0_crash_reason = "Dynamic Pillar Collision (LiDAR)"
+                else:
+                    self._env0_crash_reason = "Static Wall Collision (LiDAR)"
             else:
                 self._env0_crash_reason = None
 
@@ -1463,12 +1492,22 @@ class AEPPODroneEnv(DirectRLEnv):
 
             self._draw.draw_lines(start_points, end_points, colors, thicknesses)
 
-        # 3. Follow Camera (Bird's Eye View) for Play Mode
+        # 3. Follow Camera (Chase/Flight View) for Play Mode
         import sys
         is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
         if is_play_script:
             import numpy as np
+            import math
             drone_pos = self._robot.data.root_pos_w[0, :3].detach().cpu().numpy()
-            # Set camera position slightly behind and above the drone, looking at it (steep downward angle)
-            eye = drone_pos + np.array([-1.5, -1.5, 4.0])
+            
+            # Get the drone's yaw heading to orient the chase camera
+            yaw = self._get_drone_yaw()[0].item()
+            
+            # Set camera position behind the drone (distance 3.5m, height 1.8m) looking at it
+            distance = 3.5
+            height = 1.8
+            offset_x = -distance * math.cos(yaw)
+            offset_y = -distance * math.sin(yaw)
+            
+            eye = drone_pos + np.array([offset_x, offset_y, height])
             self.sim.set_camera_view(eye=eye, target=drone_pos)
