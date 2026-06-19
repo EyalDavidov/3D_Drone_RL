@@ -170,14 +170,12 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     w_ang_vel: float = -0.02
     w_yaw_rate: float = -0.05
     w_forward_speed: float = 0.5
-    w_action: float = -0.03
-    w_action_rate: float = -0.15
-    w_sideslip: float = -0.5
-    w_proximity: float = 5.0
-    pillar_proximity_radius: float = 1.5
-    w_speed_proximity: float = -8.0       # penalty for speed when close to obstacles
-    w_tilt: float = -0.08                  # penalty for excessive tilt (roll/pitch)
-    w_z_deviation: float = -0.3           # penalty for vertical deviation from goal
+    w_action: float = -0.005
+    w_action_rate: float = -0.02
+    w_sideslip: float = -0.2
+    w_proximity: float = 1.5
+    pillar_proximity_radius: float = 0.5
+    w_speed_proximity: float = -4.0       # penalty for speed when close to obstacles
     goal_radius: float = 0.25
     pillar_collision_radius: float = 0.15
 

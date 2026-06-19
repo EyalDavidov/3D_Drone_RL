@@ -121,6 +121,21 @@ class AEPPODroneEnv(DirectRLEnv):
         # Debug visualization
         self.set_debug_vis(self.cfg.debug_vis)
 
+        # Legacy checkpoint detection for play compatibility mode
+        self.use_legacy_lidar_mask = False
+        log_dir = getattr(self.cfg, "log_dir", None)
+        if log_dir:
+            is_legacy = any(
+                x in log_dir for x in [
+                    "26-05_", "09-05_", "10-05_", "04-06_", "05-06_", "06-06_", "07-06_",
+                    "09-06_", "10-06_", "15-06_", "16-06_", "17-06_", "18-06_", "19-06_00-37"
+                ]
+            )
+            if is_legacy:
+                self.use_legacy_lidar_mask = True
+                print(f"\n[COMPATIBILITY] Detected legacy model directory: {log_dir}")
+                print("Using legacy LiDAR masking [0, 1, 2, 22, 23] to match its training settings.\n")
+
         # ----- Env 0 100-step logging buffers -----
         self._env0_step_counter = 0
         self._env0_accumulated_rewards = {}
@@ -134,8 +149,7 @@ class AEPPODroneEnv(DirectRLEnv):
         for key in [
             "progress", "goal", "time", "heading", "vel_align", "ang_vel",
             "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
-            "proximity", "speed_proximity", "stuck", "collision", "inside_obstacle",
-            "tilt", "z_deviation"
+            "proximity", "speed_proximity", "stuck", "collision"
         ]:
             self._env0_log_values["Env0_Reward/" + key] = 0.0
             self._env0_accumulated_rewards[key] = 0.0
@@ -499,9 +513,12 @@ class AEPPODroneEnv(DirectRLEnv):
         else:
             threshold = 0.0  # Completely blind (pure vision navigation)
 
-        # Apply the sensor curriculum threshold to the front 5 rays (indices 10, 11, 12, 13, 14)
+        # Apply the sensor curriculum threshold to the front 5 rays
         if threshold < 1.5:
-            front_indices = [10, 11, 12, 13, 14]
+            if getattr(self, "use_legacy_lidar_mask", False):
+                front_indices = [0, 1, 2, 22, 23]
+            else:
+                front_indices = [10, 11, 12, 13, 14]
             front_rays = lidar_scan[:, front_indices]
             blind_mask = front_rays > threshold
             front_rays[blind_mask] = lidar_obs_max_range
@@ -586,8 +603,11 @@ class AEPPODroneEnv(DirectRLEnv):
                 int(center[1] - dx_b * dist * scale)
             )
 
-            # Highlight front masked rays (indices 10, 11, 12, 13, 14)
-            is_front_masked = i in [10, 11, 12, 13, 14]
+            # Highlight front masked rays
+            if getattr(self, "use_legacy_lidar_mask", False):
+                is_front_masked = i in [0, 1, 2, 22, 23]
+            else:
+                is_front_masked = i in [10, 11, 12, 13, 14]
             if dist < 0.5:
                 color = (0, 0, 255)  # Red
             elif is_front_masked:
@@ -741,15 +761,26 @@ class AEPPODroneEnv(DirectRLEnv):
         speed_factor = (speed / vel_align_max_speed).clamp(0.0, 1.0)
         velocity_alignment = cos_sim * speed_factor
 
-        # Proximity penalty (MAX across physical LiDAR scan rays)
-        lidar_scan = self._compute_lidar_scan()
-        min_lidar_dist, _ = torch.min(lidar_scan, dim=1)
-        proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 1.2)
-        proximity_penalty = ((proximity_radius - min_lidar_dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
+        # Proximity penalty: analytical 2D/3D distance to all pillars and static map walls
+        proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 0.5)
+        proximity_penalty = torch.zeros(self.num_envs, device=self.device)
 
-        # Make proximity penalty quadratic for a smoother gradient and virtual spring effect
-        proximity_penalty_sq = proximity_penalty ** 2
-        speed_proximity_penalty = speed * proximity_penalty_sq
+        # 1. Proximity to dynamic pillars
+        if len(self._pillars) > 0:
+            obstacle_dists = self._compute_obstacle_distances()  # (num_envs, num_pillars)
+            for i in range(len(self._pillars)):
+                dist = obstacle_dists[:, i]
+                scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
+                proximity_penalty = torch.maximum(proximity_penalty, scaled)
+
+        # 2. Proximity to static map walls
+        map_dists = self._compute_map_obstacle_distances()  # (num_envs, num_obstacles)
+        for i in range(map_dists.shape[1]):
+            dist = map_dists[:, i]
+            scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
+            proximity_penalty = torch.maximum(proximity_penalty, scaled)
+
+        speed_proximity_penalty = speed * proximity_penalty
 
         # Collision
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
@@ -763,17 +794,6 @@ class AEPPODroneEnv(DirectRLEnv):
         # Action rate penalty — smooths out commands, reduces shaking
         action_rate_sq = torch.sum((self._actions - self._previous_actions) ** 2, dim=1)
 
-        # Tilt penalty (encourage drone to stay level and avoid aggressive camera tilting)
-        projected_gravity_b = self._robot.data.projected_gravity_b
-        tilt_penalty = 1.0 - projected_gravity_b[:, 2].abs()
-
-        # Z height deviation penalty — Soft zone 0.3m-2.2m with quadratic penalty outside
-        z_pos = self._robot.data.root_pos_w[:, 2]
-        z_low, z_high = 0.3, 2.2
-        z_deviation = torch.zeros_like(z_pos)
-        z_deviation = torch.where(z_pos < z_low, (z_low - z_pos) ** 2, z_deviation)
-        z_deviation = torch.where(z_pos > z_high, (z_pos - z_high) ** 2, z_deviation)
-
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
@@ -786,12 +806,10 @@ class AEPPODroneEnv(DirectRLEnv):
             "action": self.cfg.w_action * action_sq,
             "action_rate": getattr(self.cfg, "w_action_rate", -0.02) * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
-            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty_sq),
+            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty),
             "speed_proximity": getattr(self.cfg, "w_speed_proximity", -4.0) * speed_proximity_penalty,
             "stuck": stuck_penalty,
             "collision": self.cfg.collision_penalty * died_from_crash,
-            "tilt": getattr(self.cfg, "w_tilt", -2.0) * tilt_penalty,
-            "z_deviation": getattr(self.cfg, "w_z_deviation", -4.0) * z_deviation,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
