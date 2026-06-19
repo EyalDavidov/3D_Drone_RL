@@ -469,8 +469,6 @@ class AEPPODroneEnv(DirectRLEnv):
         # Step 2: AE encode (no gradients for RL)
         z_img = self.ae.encode_detached(depth)  # (B, 32)
         
-        if getattr(self.cfg, "show_ae_images", False):
-            self._show_ae_images(depth)
 
         # Step 3: state features
         desired_pos_b, _ = subtract_frame_transforms(
