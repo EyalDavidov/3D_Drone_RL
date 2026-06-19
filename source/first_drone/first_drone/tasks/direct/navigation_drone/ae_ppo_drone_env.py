@@ -30,6 +30,7 @@ from isaaclab.utils.math import (
     wrap_to_pi,
     quat_from_euler_xyz,
     euler_xyz_from_quat,
+    quat_rotate,
     quat_rotate_inverse,
 )
 
@@ -1230,15 +1231,23 @@ class AEPPODroneEnv(DirectRLEnv):
         # Draw 2D LiDAR ray lines in world frame for Env 0
         if hasattr(self, "_draw") and self._draw is not None and getattr(self, "_last_lidar_scan", None) is not None:
             self._draw.clear_lines()
-            import math
-            # Get drone position in world coordinates
+            # Get drone position and orientation in world coordinates
             drone_pos = self._robot.data.root_pos_w[0, :3]  # (3,)
+            drone_quat = self._robot.data.root_quat_w[0, :4]  # (4,)
             p_start = (drone_pos[0].item(), drone_pos[1].item(), drone_pos[2].item())
 
-            # Get drone yaw and ray angles
             num_rays = 24
-            yaw = self._get_drone_yaw()[0].item()
             ray_angles_b = torch.linspace(0, 2 * torch.pi, num_rays + 1, device=self.device)[:-1]
+
+            # 1. Define ray directions in the drone's body frame
+            cos_b = torch.cos(ray_angles_b)
+            sin_b = torch.sin(ray_angles_b)
+            zeros_b = torch.zeros_like(ray_angles_b)
+            ray_dirs_b = torch.stack([cos_b, sin_b, zeros_b], dim=-1)  # (24, 3)
+
+            # 2. Rotate ray directions to the world frame using the drone's quaternion
+            quat_w = drone_quat.unsqueeze(0).repeat(num_rays, 1)  # (24, 4)
+            ray_dirs_w = quat_rotate(quat_w, ray_dirs_b)  # (24, 3)
 
             start_points = []
             end_points = []
@@ -1246,12 +1255,12 @@ class AEPPODroneEnv(DirectRLEnv):
 
             for i in range(num_rays):
                 dist = self._last_lidar_scan[0, i].item()
-                angle = yaw + ray_angles_b[i].item()
-                # Compute ray end point in world coordinates
+                dir_w = ray_dirs_w[i]
+                # Compute ray end point in world coordinates using rotated directions
                 p_end = (
-                    p_start[0] + dist * math.cos(angle),
-                    p_start[1] + dist * math.sin(angle),
-                    p_start[2],  # keep Z constant at drone's height
+                    p_start[0] + dist * dir_w[0].item(),
+                    p_start[1] + dist * dir_w[1].item(),
+                    p_start[2] + dist * dir_w[2].item(),
                 )
                 start_points.append(p_start)
                 end_points.append(p_end)
