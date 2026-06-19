@@ -493,9 +493,9 @@ class AEPPODroneEnv(DirectRLEnv):
         else:
             threshold = 0.0  # Completely blind (pure vision navigation)
 
-        # Apply the sensor curriculum threshold to the front 5 rays (indices 0, 1, 2, 22, 23)
+        # Apply the sensor curriculum threshold to the front 5 rays (indices 10, 11, 12, 13, 14)
         if threshold < 1.5:
-            front_indices = [0, 1, 2, 22, 23]
+            front_indices = [10, 11, 12, 13, 14]
             front_rays = lidar_scan[:, front_indices]
             blind_mask = front_rays > threshold
             front_rays[blind_mask] = lidar_obs_max_range
@@ -518,6 +518,11 @@ class AEPPODroneEnv(DirectRLEnv):
             ],
             dim=-1,
         )  # Total: 32 + 3 + 1 + 3 + 3 + 3 + 4 + 24 = 73
+
+        import sys
+        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        if is_play_script and self.cfg.debug_vis:
+            self._show_lidar_window()
 
         return {"policy": obs}
 
@@ -550,6 +555,81 @@ class AEPPODroneEnv(DirectRLEnv):
         label = "AE depth input (left) | reconstruction (right)"
         cv2.putText(combined, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.imshow("AE Input/Output", combined)
+        cv2.waitKey(1)
+
+    def _show_lidar_window(self) -> None:
+        """Show LiDAR scan in a separate OpenCV window as a 2D polar plot."""
+        if cv2 is None or np is None:
+            return
+
+        if self._last_lidar_scan is None:
+            return
+
+        # Create a black image
+        img_size = 300
+        img = np.zeros((img_size, img_size, 3), dtype=np.uint8)
+        center = (img_size // 2, img_size // 2)
+
+        # Draw circle grids (e.g. at 1.5m and 5.0m)
+        scale = 15.0  # 15 pixels per meter
+        cv2.circle(img, center, int(1.5 * scale), (50, 50, 50), 1)
+        cv2.circle(img, center, int(5.0 * scale), (100, 100, 100), 1)
+        cv2.putText(img, "1.5m", (center[0] + 5, center[1] - int(1.5 * scale)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80, 80, 80), 1)
+        cv2.putText(img, "5.0m", (center[0] + 5, center[1] - int(5.0 * scale)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 120), 1)
+
+        num_rays = 24
+        # Lidar Pattern horizontal_fov_range is (-180, 180) degrees.
+        # So ray angles in body frame are from -pi to pi.
+        ray_angles_b = torch.linspace(-torch.pi, torch.pi, num_rays + 1, device=self.device)[:-1]
+
+        # Draw the 24 rays
+        import math
+        for i in range(num_rays):
+            dist = self._last_lidar_scan[0, i].item()
+            angle = ray_angles_b[i].item()
+
+            # Direction vector in body frame:
+            dx_b = math.cos(angle)
+            dy_b = math.sin(angle)
+
+            # Map body frame to window coordinate system:
+            # Body X (forward) -> Up (negative Y in window)
+            # Body Y (left) -> Left (negative X in window)
+            pt_end = (
+                int(center[0] - dy_b * dist * scale),
+                int(center[1] - dx_b * dist * scale)
+            )
+
+            # Highlight front masked rays (indices 10, 11, 12, 13, 14)
+            is_front_masked = i in [10, 11, 12, 13, 14]
+            
+            # Color: Red if very close (< 0.5m), Yellow if masked, Green otherwise
+            if dist < 0.5:
+                color = (0, 0, 255)  # Red (BGR)
+            elif is_front_masked:
+                color = (0, 255, 255)  # Yellow
+            else:
+                color = (0, 255, 0)  # Green
+
+            # Draw ray line
+            cv2.line(img, center, pt_end, color, 1)
+            # Draw hit point
+            cv2.circle(img, pt_end, 3, color, -1)
+
+            # Label index on every 4th ray for debugging
+            if i % 2 == 0:
+                text_pos = (
+                    int(center[0] - dy_b * (dist + 0.3) * scale),
+                    int(center[1] - dx_b * (dist + 0.3) * scale)
+                )
+                cv2.putText(img, str(i), text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+
+        # Draw a small drone icon in the center
+        cv2.circle(img, center, 6, (255, 0, 0), -1)
+        # Arrow pointing forward (up)
+        cv2.line(img, center, (center[0], center[1] - 12), (255, 255, 255), 2)
+
+        cv2.imshow("LiDAR 2D Scan (Env 0)", img)
         cv2.waitKey(1)
 
     # ------------------------------------------------------------------
@@ -1237,7 +1317,7 @@ class AEPPODroneEnv(DirectRLEnv):
             p_start = (drone_pos[0].item(), drone_pos[1].item(), drone_pos[2].item())
 
             num_rays = 24
-            ray_angles_b = torch.linspace(0, 2 * torch.pi, num_rays + 1, device=self.device)[:-1]
+            ray_angles_b = torch.linspace(-torch.pi, torch.pi, num_rays + 1, device=self.device)[:-1]
 
             # 1. Define ray directions in the drone's body frame
             cos_b = torch.cos(ray_angles_b)
