@@ -947,6 +947,7 @@ class AEPPODroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Terminate on floor/ceiling/wall collision or timeout."""
+        self._last_lidar_scan = None  # Reset cached scan to force fresh sensor acquisition for this step
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
