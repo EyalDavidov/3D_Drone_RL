@@ -126,7 +126,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Drone/body/Camera",
         height=72,
         width=128,
-        data_types=["depth"],
+        data_types=["depth", "rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
@@ -192,8 +192,9 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     corner_margin: float = 0.2
     corner_goal_z: float = 1.0
 
-    initial_curriculum_level: int = 5
+    initial_curriculum_level: int = 1
     load_run: str = ""
+    spawn_person: bool = False
 
 
 

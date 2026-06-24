@@ -170,6 +170,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
+    # Pass load_run to environment config if resuming, so environment can detect legacy models
+    if getattr(agent_cfg, "resume", False) and getattr(agent_cfg, "load_run", None):
+        env_cfg.load_run = agent_cfg.load_run
+
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

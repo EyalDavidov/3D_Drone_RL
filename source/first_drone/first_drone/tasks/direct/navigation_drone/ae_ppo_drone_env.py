@@ -1173,7 +1173,11 @@ class AEPPODroneEnv(DirectRLEnv):
             | hit_obstacle
             | hit_dynamic_pillar
         )
-        terminated = died | reached_goal
+        if getattr(self, "is_brain_play", False):
+            # In play mode, only reset on crash (died), do not reset when reaching intermediate waypoints
+            terminated = died
+        else:
+            terminated = died | reached_goal
         return terminated, time_out
 
     # ------------------------------------------------------------------
@@ -1562,7 +1566,13 @@ class AEPPODroneEnv(DirectRLEnv):
                 self._draw.clear_lines()
 
     def _debug_vis_callback(self, event):
-        self.goal_pos_visualizer.visualize(self._desired_pos_w)
+        # Prevent the visual goal sphere from spawning on top of the drone and blocking the camera
+        goal_pos = self._desired_pos_w.clone()
+        drone_pos = self._robot.data.root_pos_w[:, :3]
+        dist_to_drone = torch.norm(goal_pos - drone_pos, dim=-1)
+        too_close = dist_to_drone < 0.65
+        goal_pos[too_close, 2] -= 10.0  # Temporarily hide underground
+        self.goal_pos_visualizer.visualize(goal_pos)
         if hasattr(self, "drone_tracker_visualizer"):
             self.drone_tracker_visualizer.visualize(self._robot.data.root_pos_w[:, :3])
         if hasattr(self, "ceiling_visualizer"):
@@ -1602,34 +1612,25 @@ class AEPPODroneEnv(DirectRLEnv):
             start_points = []
             end_points = []
             colors = []
+            thicknesses = []
 
             for i in range(num_rays):
-                # Use masked scan (what the policy sees) instead of raw physical scan
-                masked_scan = getattr(self, "_last_masked_lidar_scan", self._last_lidar_scan)
-                dist = masked_scan[0, i].item()
+                # Only draw rays that hit an actual obstacle within 9.0m (to exclude non-hits)
+                raw_dist = self._last_lidar_scan[0, i].item()
+                if raw_dist >= 9.0:
+                    continue
+                
                 dir_w = ray_dirs_w[i]
-                # Compute ray end point in world coordinates using rotated directions
+                # Compute ray end point in world coordinates using rotated directions and real distance
                 p_end = (
-                    p_start[0] + dist * dir_w[0].item(),
-                    p_start[1] + dist * dir_w[1].item(),
-                    p_start[2] + dist * dir_w[2].item(),
+                    p_start[0] + raw_dist * dir_w[0].item(),
+                    p_start[1] + raw_dist * dir_w[1].item(),
+                    p_start[2] + raw_dist * dir_w[2].item(),
                 )
                 start_points.append(p_start)
                 end_points.append(p_end)
-
-                # Laser color based on masked status
-                raw_dist = self._last_lidar_scan[0, i].item()
-                is_masked = (raw_dist < 9.9) and (dist > 9.9)  # Physical obstacle hidden by mask
-                if is_masked:
-                    colors.append((1.0, 0.65, 0.0, 0.8))  # Orange — masked obstacle
-                elif dist < 0.5:
-                    colors.append((1.0, 0.0, 0.0, 1.0))  # Solid red — close obstacle
-                elif i in [10, 11, 12, 13, 14]:
-                    colors.append((1.0, 1.0, 0.0, 0.8))  # Yellow — front cone
-                else:
-                    colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green
-
-            thicknesses = [2.0] * num_rays
+                thicknesses.append(2.0)
+                colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green for all active rays
 
             # --- Draw ceiling grid at Z = 2.5 * map_scale ---
             map_scale = getattr(self.cfg, "map_scale", 1.0)

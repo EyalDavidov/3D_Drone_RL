@@ -27,6 +27,16 @@ parser.add_argument("--freeze_ae", action="store_true", default=True, help="If s
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
 
+if getattr(args_cli, "rendering_mode", None) is None:
+    args_cli.rendering_mode = "performance"
+
+training_kit_args = [
+    "--/ngx/enabled=false",
+    "--/rtx-transient/dlssg/enabled=false",
+    "--/rtx-transient/dldenoiser/enabled=false",
+]
+args_cli.kit_args = " ".join([args_cli.kit_args, *training_kit_args]).strip()
+
 # clear out sys.argv
 sys.argv = [sys.argv[0]]
 
@@ -63,6 +73,9 @@ def main():
 
     env_cfg.seed = args_cli.seed
     env_cfg.sim.device = "cuda:0"
+    env_cfg.debug_vis = False
+    env_cfg.show_ae_images = False
+    env_cfg.tiled_camera.data_types = ["depth"]
     agent_cfg.device = "cuda:0"
 
     # Disable wandb if flag is set
@@ -81,6 +94,7 @@ def main():
     env = gym.make(args_cli.task, cfg=env_cfg)
 
     env.unwrapped.cfg.show_ae_images = False
+    print("[INFO] Training camera outputs set to depth-only to reduce Vulkan GPU memory usage.")
 
     # ---- Load AE weights ----
     # Try custom path first, then fall back to config path
