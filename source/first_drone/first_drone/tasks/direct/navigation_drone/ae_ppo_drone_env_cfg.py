@@ -25,7 +25,7 @@ from isaaclab.utils import configclass
 class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 50.0
+    episode_length_s = 30.0
     debug_vis = True
 
     # simulation
@@ -162,22 +162,29 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # =========================================================================
     w_progress: float = 10.0
     w_goal: float = 500.0
-    w_time: float = -0.70
-    w_heading: float = 0.8
+    w_time: float = -0.90  # Balanced time penalty: prevents reward loops without triggering premature self-collisions
+    w_heading: float = 0.50   # Heading alignment reward to prevent the drone from flying sideways / looking away from the goal
     w_vel_align: float = 1.0
     vel_align_max_speed: float = 1.0
-    collision_penalty: float = -1500.0
+    collision_penalty: float = -400.0  # Increased from -200 to heavily penalize crashes compared to timeout
     w_ang_vel: float = -0.02
     w_yaw_rate: float = -0.05
     w_forward_speed: float = 0.5
-    w_action: float = -0.005
-    w_action_rate: float = -0.02
-    w_sideslip: float = -0.2
-    w_proximity: float = 1.5
-    pillar_proximity_radius: float = 0.5
-    w_speed_proximity: float = -4.0       # penalty for speed when close to obstacles
+    w_action: float = -0.005  # Bug #3 fix: -0.03 was 6x too aggressive, suppressing necessary agile maneuvers
+    w_action_rate: float = -0.02  # Smoothes out commands, set to match Orange Run settings
+    w_sideslip: float = -3.0  # Strong lateral penalty: at 0.5m/s lateral vel, -0.75/step forces head-on flight
+    w_proximity: float = 1.5  # Bug #2 fix: 2.0 was too strong with radius=0.5, 1.5 gives proportional gradient
+    pillar_proximity_radius: float = 0.5  # Crucial: 0.5m allows a free 60cm corridor in the center for 1.6m scaled corridors
+    w_speed_proximity: float = -4.0
+    w_tilt: float = -0.08                  # penalty for excessive roll/pitch tilt (matching Orange Run settings)
+    w_z_deviation: float = -0.3           # penalty for floor/ceiling deviation (matching Orange Run settings)
     goal_radius: float = 0.25
-    pillar_collision_radius: float = 0.15
+    pillar_collision_radius: float = 0.11  # Set to 0.11m (Plenty safe for Crazyflie, but allows navigating narrow corridors)
+
+    # ---------- Dynamic Map Scaling & Altitude Corridor ----------
+    map_scale: float = 0.8
+    z_low: float = 0.7
+    z_high: float = 1.5
 
     spawn_y_offset: float = 1.0
     corner_fine_tune: bool = False
@@ -185,5 +192,9 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     corner_margin: float = 0.2
     corner_goal_z: float = 1.0
 
-    # Curriculum
-    initial_curriculum_level: int = 1
+    initial_curriculum_level: int = 5
+    load_run: str = ""
+
+
+
+

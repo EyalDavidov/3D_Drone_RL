@@ -107,12 +107,23 @@ class AEPPODroneEnv(DirectRLEnv):
         default_level = 5 if is_play_script else 1
         self.curriculum_level = default_level if is_play_script else getattr(self.cfg, "initial_curriculum_level", default_level)
         self.running_goal_rate = 0.0
+
+        # Scale map obstacles according to map_scale config
+        map_scale = getattr(self.cfg, "map_scale", 1.0)
+        if map_scale != 1.0:
+            scaled_obstacles = []
+            for obs in self.cfg.map_obstacles:
+                min_x, max_x, min_y, max_y = obs
+                scaled_obstacles.append((min_x * map_scale, max_x * map_scale, min_y * map_scale, max_y * map_scale))
+            self.cfg.map_obstacles = tuple(scaled_obstacles)
+            print(f"\n[MAP] Scaled static obstacles by map_scale = {map_scale}\n")
+
         self.curriculum_distances = {
-            1: (2.0, 5.0),
-            2: (5.0, 10.0),
-            3: (10.0, 18.0),
-            4: (18.0, 28.0),
-            5: (28.0, 33.0)
+            1: (1.5, 3.0),
+            2: (3.0, 5.0),
+            3: (5.0, 7.0),
+            4: (7.0, 9.0),
+            5: (9.0, 12.0)
         }
 
         # AE visualization state
@@ -121,20 +132,34 @@ class AEPPODroneEnv(DirectRLEnv):
         # Debug visualization
         self.set_debug_vis(self.cfg.debug_vis)
 
-        # Legacy checkpoint detection for play compatibility mode
+        # Force legacy LiDAR mask on for all curriculum runs to ensure correct PPO training
         self.use_legacy_lidar_mask = False
-        log_dir = getattr(self.cfg, "log_dir", None)
-        if log_dir:
-            is_legacy = any(
-                x in log_dir for x in [
-                    "26-05_", "09-05_", "10-05_", "04-06_", "05-06_", "06-06_", "07-06_",
-                    "09-06_", "10-06_", "15-06_", "16-06_", "17-06_", "18-06_", "19-06_00-37"
-                ]
-            )
-            if is_legacy:
-                self.use_legacy_lidar_mask = True
-                print(f"\n[COMPATIBILITY] Detected legacy model directory: {log_dir}")
-                print("Using legacy LiDAR masking [0, 1, 2, 22, 23] to match its training settings.\n")
+        print("\n[CURRICULUM] Legacy LiDAR masking disabled for all runs to match successful Red run PPO training.\n")
+
+        # Dynamically set initial episode length based on curriculum level
+        self._update_episode_length(self._get_episode_length_for_level(self.curriculum_level))
+
+        # Track curriculum level for each individual environment to prevent lagging-episode statistics corruption
+        self.env_curriculum_level = torch.ones(self.num_envs, dtype=torch.long, device=self.device) * self.curriculum_level
+
+    def _get_episode_length_for_level(self, level: int) -> float:
+        if level >= 5:
+            return 20.0  # Capped target distance 12.0m needs max 20 seconds to complete
+        elif level == 4:
+            return 18.0
+        elif level == 3:
+            return 15.0
+        else:
+            return 15.0
+
+    def _update_episode_length(self, length_s: float):
+        self.cfg.episode_length_s = length_s
+        print(f"\n[CURRICULUM] Episode length dynamically updated to {length_s}s (max_episode_length steps = {self.max_episode_length})\n")
+
+
+
+
+
 
         # ----- Env 0 100-step logging buffers -----
         self._env0_step_counter = 0
@@ -149,7 +174,7 @@ class AEPPODroneEnv(DirectRLEnv):
         for key in [
             "progress", "goal", "time", "heading", "vel_align", "ang_vel",
             "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
-            "proximity", "speed_proximity", "stuck", "collision"
+            "proximity", "speed_proximity", "stuck", "collision", "tilt", "z_deviation"
         ]:
             self._env0_log_values["Env0_Reward/" + key] = 0.0
             self._env0_accumulated_rewards[key] = 0.0
@@ -167,13 +192,32 @@ class AEPPODroneEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
-        room_cfg = sim_utils.UsdFileCfg(usd_path=self.cfg.room_usd_path, scale=(0.01, 0.01, 0.01))
+        map_scale = getattr(self.cfg, "map_scale", 1.0)
+        # Scale local Y (which becomes parent Z height) by 0.5 * map_scale to compress obstacle heights, and local X/Z by map_scale.
+        room_cfg = sim_utils.UsdFileCfg(
+            usd_path=self.cfg.room_usd_path,
+            scale=(0.01 * map_scale, 0.01 * map_scale * 0.5, 0.01 * map_scale),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+        )
         room_cfg.func(
             "/World/envs/env_0/Room",
             room_cfg,
-            translation=(25.0, 25.0, -0.9937),
+            translation=(25.0 * map_scale, 25.0 * map_scale, -0.9937 * map_scale * 0.5 + 0.01),
             orientation=(0.7071, 0.7071, 0.0, 0.0),
         )
+
+        # Apply CollisionAPI and PhysxCollisionAPI to all meshes inside the room model so they act as physics colliders
+        from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema
+        room_prim = self.sim.stage.GetPrimAtPath("/World/envs/env_0/Room")
+        if room_prim.IsValid():
+            for prim in Usd.PrimRange(room_prim):
+                if prim.IsA(UsdGeom.Mesh):
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        UsdPhysics.CollisionAPI.Apply(prim)
+                    if not prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
+                        PhysxSchema.PhysxCollisionAPI.Apply(prim)
+                    if not prim.HasAPI(PhysxSchema.PhysxTriangleMeshCollisionAPI):
+                        PhysxSchema.PhysxTriangleMeshCollisionAPI.Apply(prim)
 
         # --- Dynamic obstacles (diverse shapes, defined here to avoid @configclass serialization) ---
         obstacle_spawns = [
@@ -268,6 +312,7 @@ class AEPPODroneEnv(DirectRLEnv):
             track_pose=False,
         )
         self._contact_sensor = ContactSensor(contact_sensor_cfg)
+        self.scene.sensors["contact_sensor"] = self._contact_sensor
         # Hide the drone collision geometry mesh in the viewport so it doesn't render as a grey box
         from pxr import UsdGeom
         collision_prim = self.sim.stage.GetPrimAtPath("/World/envs/env_0/Drone/body/body_collision")
@@ -464,9 +509,17 @@ class AEPPODroneEnv(DirectRLEnv):
         # Calculate Euclidean distances
         distances = torch.norm(hit_positions - sensor_pos, dim=-1)  # (num_envs, 24)
         
+        # Filter out hits that are on the floor or ceiling (Z world coordinates)
+        # Floor is at Z=0.0, ceiling is at Z = 2.5 * map_scale. When drone tilts, rays hit the floor/ceiling.
+        map_scale = getattr(self.cfg, "map_scale", 1.0)
+        hit_z = hit_positions[..., 2]  # (num_envs, 24)
+        is_floor_or_ceiling = (hit_z < 0.15) | (hit_z > (2.5 * map_scale - 0.10))
+        distances[is_floor_or_ceiling] = 10.0
+        
         # Clamp to [0.1, 10.0] meters. Non-hits return float('inf') which clamps to 10.0.
         self._last_lidar_scan = distances.clamp(min=0.1, max=10.0)
         return self._last_lidar_scan
+
 
     def _get_observations(self) -> dict:
         """Build 73-dim flat observation vector.
@@ -500,31 +553,50 @@ class AEPPODroneEnv(DirectRLEnv):
         if self._last_lidar_scan is None:
             self._compute_lidar_scan()
             
-        lidar_obs_max_range = 1.5
+        # Determine LiDAR visibility based on curriculum level
+        # KEY DESIGN: Front rays (camera FOV) are ALWAYS limited, even at Level 1-2.
+        # This forces the policy to use the camera from day one, preventing LiDAR-only strategies.
+        lidar_obs_max_range = 10.0
         lidar_scan = self._last_lidar_scan.clone()
+        front_indices = [10, 11, 12, 13, 14]  # Rays within the camera's ~47° FOV
         
-        # Determine the front LiDAR visibility threshold based on curriculum level
-        if self.curriculum_level == 1 or self.curriculum_level == 2:
-            threshold = 1.5  # Full range assistance
+        # Build per-ray limits based on curriculum level
+        limits = torch.ones((self.num_envs, 24), device=self.device) * lidar_obs_max_range  # Default: full range
+        
+        if self.curriculum_level <= 2:
+            # Levels 1-2: Sides/back = full 10m, Front = 2m only (force camera for forward navigation)
+            limits[:, front_indices] = 2.0
         elif self.curriculum_level == 3:
-            threshold = 0.8  # Medium range assistance
+            # Level 3: All rays limited to 0.8m
+            limits[:, :] = 0.8
         elif self.curriculum_level == 4:
-            threshold = 0.5  # Emergency-only range assistance
+            # Level 4: All rays limited to 0.5m (emergency-only)
+            limits[:, :] = 0.5
         else:
-            threshold = 0.0  # Completely blind (pure vision navigation)
-
-        # Apply the sensor curriculum threshold to the front 5 rays
-        if threshold < 1.5:
-            if getattr(self, "use_legacy_lidar_mask", False):
-                front_indices = [0, 1, 2, 22, 23]
-            else:
-                front_indices = [10, 11, 12, 13, 14]
-            front_rays = lidar_scan[:, front_indices]
-            blind_mask = front_rays > threshold
-            front_rays[blind_mask] = lidar_obs_max_range
-            lidar_scan[:, front_indices] = front_rays
-
-        # Clamp and normalize the entire scan to [0, 1]
+            # Level 5: Front = blind (0.0m), sides = last-resort (0.15m)
+            limits[:, :] = 0.15
+            limits[:, front_indices] = 0.0
+        
+        # Apply masking: any ray reading beyond its limit becomes "max range" (no obstacle detected)
+        blind_mask = lidar_scan > limits
+        lidar_scan[blind_mask] = lidar_obs_max_range
+            
+        # Store the masked scan for 3D debug visualization (so viewport matches what the policy sees)
+        self._last_masked_lidar_scan = lidar_scan.clone()
+        
+        # Debug print (once) to verify masking is active
+        if not getattr(self, "_masking_verified", False):
+            import sys
+            is_play = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+            if is_play:
+                raw = self._last_lidar_scan[0]
+                masked = lidar_scan[0]  # Still in meters (not yet normalized)
+                print(f"\n[DEBUG MASKING] Curriculum Level: {self.curriculum_level}")
+                print(f"[DEBUG MASKING] Per-ray limits (env 0): {[f'{v:.2f}' for v in limits[0].tolist()]}")
+                print(f"[DEBUG MASKING] Raw LiDAR (env 0):      {[f'{v:.2f}' for v in raw.tolist()]}")
+                print(f"[DEBUG MASKING] Masked LiDAR (env 0):   {[f'{v:.2f}' for v in masked.tolist()]}")
+                self._masking_verified = True
+        
         lidar_scan = lidar_scan.clamp(max=lidar_obs_max_range) / lidar_obs_max_range
 
         # Step 4: concatenate all
@@ -589,10 +661,41 @@ class AEPPODroneEnv(DirectRLEnv):
         num_rays = 24
         ray_angles_b = torch.linspace(-torch.pi, torch.pi, num_rays + 1, device=self.device)[:-1]
 
+        # Determine active threshold
+        threshold = 10.0
+        if self.curriculum_level == 1 or self.curriculum_level == 2:
+            threshold = 10.0
+        elif self.curriculum_level == 3:
+            threshold = 0.8
+        elif self.curriculum_level == 4:
+            threshold = 0.5
+        else:
+            threshold = 0.0
+
+        # Calculate masked scan for env 0 to show on the dashboard
+        masked_scan = self._last_lidar_scan[0].clone()
+        if threshold < 10.0:
+            if getattr(self, "use_legacy_lidar_mask", False):
+                front_indices = [0, 1, 2, 22, 23]
+                front_rays = masked_scan[front_indices]
+                blind_mask = front_rays > threshold
+                front_rays[blind_mask] = 10.0
+                masked_scan[front_indices] = front_rays
+            else:
+                if self.curriculum_level == 5:
+                    limits = torch.ones(24, device=self.device) * 0.5
+                    front_indices = [10, 11, 12, 13, 14]
+                    limits[front_indices] = 0.0
+                else:
+                    limits = torch.ones(24, device=self.device) * threshold
+                blind_mask = masked_scan > limits
+                masked_scan[blind_mask] = 10.0
+
         # Draw the 24 rays
         import math
         for i in range(num_rays):
-            dist = self._last_lidar_scan[0, i].item()
+            physical_dist = self._last_lidar_scan[0, i].item()
+            dist = masked_scan[i].item()
             angle = ray_angles_b[i].item()
 
             dx_b = math.cos(angle)
@@ -603,17 +706,17 @@ class AEPPODroneEnv(DirectRLEnv):
                 int(center[1] - dx_b * dist * scale)
             )
 
-            # Highlight front masked rays
-            if getattr(self, "use_legacy_lidar_mask", False):
-                is_front_masked = i in [0, 1, 2, 22, 23]
+            is_masked_now = (physical_dist < 9.9) and (dist > 9.9)
+
+            # Determine line color
+            if is_masked_now:
+                color = (0, 165, 255)  # Orange (Masked obstacle!)
+            elif dist < 0.5:
+                color = (0, 0, 255)  # Red (Very close obstacle!)
+            elif i in [10, 11, 12, 13, 14]:
+                color = (0, 255, 255)  # Yellow (Front ray cone)
             else:
-                is_front_masked = i in [10, 11, 12, 13, 14]
-            if dist < 0.5:
-                color = (0, 0, 255)  # Red
-            elif is_front_masked:
-                color = (0, 255, 255)  # Yellow
-            else:
-                color = (0, 255, 0)  # Green
+                color = (0, 255, 0)  # Green (Normal active ray)
 
             cv2.line(lidar_img, center, pt_end, color, 1)
             cv2.circle(lidar_img, pt_end, 3, color, -1)
@@ -746,11 +849,13 @@ class AEPPODroneEnv(DirectRLEnv):
         sideslip_sq = lateral_vel ** 2
 
         # 9. Forward speed bonus — reward forward body velocity toward goal
-        # Decay the bonus near the goal (within 1.5m to 3.0m) to prevent circling/reward-looping behavior
+        # Decay the bonus near the goal to prevent circling/reward-looping behavior (decay starts at 1.5m down to goal_radius)
+        decay = torch.clamp((curr_dist - self.cfg.goal_radius) / (1.5 - self.cfg.goal_radius), min=0.0, max=1.0)
         forward_vel = self._robot.data.root_lin_vel_b[:, 0].clamp(min=0.0)
-        forward_speed_bonus = forward_vel * heading_alignment.clamp(min=0.0)
+        forward_speed_bonus = forward_vel * heading_alignment.clamp(min=0.0) * decay
 
-        # Velocity alignment
+        # Velocity alignment (decayed near goal ONLY when moving towards it to prevent orbiting,
+        # but fully penalized when moving away from the goal to prevent overshooting/looping)
         vel_w = self._robot.data.root_lin_vel_w
         to_goal_w = self._desired_pos_w - self._robot.data.root_pos_w
         speed = torch.linalg.norm(vel_w, dim=1)
@@ -759,27 +864,16 @@ class AEPPODroneEnv(DirectRLEnv):
         cos_sim = dot / vel_align_denom
         vel_align_max_speed = getattr(self.cfg, "vel_align_max_speed", self.cfg.vel_limit[0])
         speed_factor = (speed / vel_align_max_speed).clamp(0.0, 1.0)
-        velocity_alignment = cos_sim * speed_factor
 
-        # Proximity penalty: analytical 2D/3D distance to all pillars and static map walls
-        proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 0.5)
-        proximity_penalty = torch.zeros(self.num_envs, device=self.device)
+        # Symmetric velocity alignment decay near goal to prevent shaking/overshooting oscillations
+        velocity_alignment = cos_sim * speed_factor * decay
 
-        # 1. Proximity to dynamic pillars
-        if len(self._pillars) > 0:
-            obstacle_dists = self._compute_obstacle_distances()  # (num_envs, num_pillars)
-            for i in range(len(self._pillars)):
-                dist = obstacle_dists[:, i]
-                scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
-                proximity_penalty = torch.maximum(proximity_penalty, scaled)
-
-        # 2. Proximity to static map walls
-        map_dists = self._compute_map_obstacle_distances()  # (num_envs, num_obstacles)
-        for i in range(map_dists.shape[1]):
-            dist = map_dists[:, i]
-            scaled = ((proximity_radius - dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
-            proximity_penalty = torch.maximum(proximity_penalty, scaled)
-
+        # Proximity penalty: calculated from the physical LiDAR range scan (matching Red Run exactly)
+        if self._last_lidar_scan is None:
+            self._compute_lidar_scan()
+        min_lidar_dist, _ = torch.min(self._last_lidar_scan, dim=1)
+        proximity_radius = getattr(self.cfg, "pillar_proximity_radius", 1.2)
+        proximity_penalty = ((proximity_radius - min_lidar_dist) / (proximity_radius + 1e-6)).clamp(min=0.0)
         speed_proximity_penalty = speed * proximity_penalty
 
         # Collision
@@ -794,24 +888,42 @@ class AEPPODroneEnv(DirectRLEnv):
         # Action rate penalty — smooths out commands, reduces shaking
         action_rate_sq = torch.sum((self._actions - self._previous_actions) ** 2, dim=1)
 
+        # Tilt penalty (encourage drone to stay level and avoid aggressive camera tilting)
+        projected_gravity_b = self._robot.data.projected_gravity_b
+        tilt_penalty = 1.0 - projected_gravity_b[:, 2].abs()
+
+        # Z height deviation penalty — Soft zone from config with linear penalty outside
+        z_pos = self._robot.data.root_pos_w[:, 2]
+        z_low = getattr(self.cfg, "z_low", 0.7)
+        z_high = getattr(self.cfg, "z_high", 1.5)
+        z_deviation = torch.zeros_like(z_pos)
+        z_deviation = torch.where(z_pos < z_low, z_low - z_pos, z_deviation)
+        z_deviation = torch.where(z_pos > z_high, z_pos - z_high, z_deviation)
+
         rewards = {
             "progress": self.cfg.w_progress * progress,
             "goal": self.cfg.w_goal * reached_goal,
             "time": self.cfg.w_time * time_penalty,
-            "heading": self.cfg.w_heading * heading_alignment,
-            "vel_align": getattr(self.cfg, "w_vel_align", 0.5) * velocity_alignment,
+            "heading": self.cfg.w_heading * heading_alignment,  # Removed avoidance_scale to restore smooth gradients
+            "vel_align": getattr(self.cfg, "w_vel_align", 0.5) * velocity_alignment,  # Removed avoidance_scale
             "ang_vel": self.cfg.w_ang_vel * ang_vel_sq,
             "yaw_rate": getattr(self.cfg, "w_yaw_rate", -0.1) * yaw_action_sq,
-            "forward_speed": getattr(self.cfg, "w_forward_speed", 0.3) * forward_speed_bonus,
+            "forward_speed": getattr(self.cfg, "w_forward_speed", 0.3) * forward_speed_bonus,  # Removed avoidance_scale
             "action": self.cfg.w_action * action_sq,
             "action_rate": getattr(self.cfg, "w_action_rate", -0.02) * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
-            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty),
+            "proximity": getattr(self.cfg, "w_proximity", 1.5) * (-proximity_penalty),  # Linear penalty matching Red Run
             "speed_proximity": getattr(self.cfg, "w_speed_proximity", -4.0) * speed_proximity_penalty,
             "stuck": stuck_penalty,
             "collision": self.cfg.collision_penalty * died_from_crash,
+            "tilt": getattr(self.cfg, "w_tilt", -0.1) * tilt_penalty,
+            "z_deviation": getattr(self.cfg, "w_z_deviation", -0.5) * z_deviation,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+
+        # Clamp step reward to prevent PPO value function explosion.
+        # min=-400 matches the collision_penalty so crashes don't dominate advantage estimates.
+        reward = torch.clamp(reward, min=-400.0, max=600.0)
 
         # Store individual step rewards for env 0 to be accumulated in step()
         self._env0_last_step_rewards = {
@@ -951,28 +1063,47 @@ class AEPPODroneEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
+        map_scale = getattr(self.cfg, "map_scale", 1.0)
         hit_floor = pos_local[:, 2] < 0.1
-        hit_ceiling = pos_local[:, 2] > 2.5
+        hit_ceiling = pos_local[:, 2] > 2.5 * map_scale
         hit_floor_or_ceiling = hit_floor | hit_ceiling
-        # 50m x 50m arena map bounds: physical wall meshes start at X/Y = ±24.0.
+        # Arena map bounds scaled by map_scale: original physical wall meshes start at X/Y = ±24.0.
+        map_scale = getattr(self.cfg, "map_scale", 1.0)
+        wall_limit = 23.85 * map_scale
         hit_wall = (
-            (pos_local[:, 0] > 23.85) | (pos_local[:, 0] < -23.85)
-            | (pos_local[:, 1] > 23.85) | (pos_local[:, 1] < -23.85)
+            (pos_local[:, 0] > wall_limit) | (pos_local[:, 0] < -wall_limit)
+            | (pos_local[:, 1] > wall_limit) | (pos_local[:, 1] < -wall_limit)
         )
 
-        # 1. Check contact sensor for physical collision with meshes (forces > 1.0 N)
+        # Fixed collision radius for stable training and strict centering
+        current_radius = self.cfg.pillar_collision_radius
+
+        # 1. Check contact sensor for physical collision with meshes (forces > 0.1 N)
         contact_force = torch.linalg.norm(self._contact_sensor.data.net_forces_w[:, 0, :], dim=-1)
-        hit_obstacle = contact_force > 1.0  # 1.0 Newton force threshold
+        hit_obstacle = contact_force > 0.1  # 0.1 Newton force threshold (high sensitivity)
+
+        # Debug: print contact forces for env 0 when a collision is detected (only in play mode)
+        import sys
+        import os
+        is_play = "play" in os.path.basename(sys.argv[0])
+        if is_play:
+            if hit_obstacle[0].item():
+                print(f"[COLLISION] Env 0: contact_force={contact_force[0].item():.2f} N, "
+                      f"pos=({pos_local[0,0].item():.2f}, {pos_local[0,1].item():.2f}, {pos_local[0,2].item():.2f})")
+            # Also log total collision count across all envs each step (only if any collisions)
+            total_collisions = hit_obstacle.sum().item()
+            if total_collisions > 0:
+                print(f"[COLLISION] Step {self.common_step_counter}: {int(total_collisions)}/{self.num_envs} envs hit obstacle")
 
         # 2. Check physical LiDAR distance: crash if drone is closer than collision radius to any obstacle/wall
         if self._last_lidar_scan is None:
             self._compute_lidar_scan()
         min_lidar_dist, _ = torch.min(self._last_lidar_scan, dim=1)
-        hit_physical_obstacle = min_lidar_dist < self.cfg.pillar_collision_radius
+        hit_physical_obstacle = min_lidar_dist < current_radius
 
         # 3. Check analytical boxes (failsafe for LiDAR blind spots / clipping)
         hit_box_obstacle = self._is_inside_map_obstacle(
-            pos_local[:, 0], pos_local[:, 1], margin=self.cfg.pillar_collision_radius
+            pos_local[:, 0], pos_local[:, 1], margin=current_radius
         )
 
         # 4. Check analytical dynamic pillars (failsafe for dynamic obstacles)
@@ -980,7 +1111,7 @@ class AEPPODroneEnv(DirectRLEnv):
         if len(self._pillars) > 0:
             obstacle_dists = self._compute_obstacle_distances()
             for i in range(len(self._pillars)):
-                hit_dynamic_pillar = hit_dynamic_pillar | (obstacle_dists[:, i] < self.cfg.pillar_collision_radius)
+                hit_dynamic_pillar = hit_dynamic_pillar | (obstacle_dists[:, i] < current_radius)
 
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
@@ -993,16 +1124,16 @@ class AEPPODroneEnv(DirectRLEnv):
                 self._env0_crash_reason = "Ceiling Bounds Collision"
             elif hit_wall[0].item():
                 self._env0_crash_reason = "Arena Wall Boundary"
-            elif hit_dynamic_pillar[0].item() or (hit_physical_obstacle[0].item() and len(self._pillars) > 0 and torch.min(self._compute_obstacle_distances()[0]) < self.cfg.pillar_collision_radius + 0.1):
+            elif hit_dynamic_pillar[0].item() or (hit_physical_obstacle[0].item() and len(self._pillars) > 0 and torch.min(self._compute_obstacle_distances()[0]) < current_radius + 0.1):
                 self._env0_crash_reason = "Dynamic Pillar Collision"
-            elif hit_box_obstacle[0].item() or (hit_physical_obstacle[0].item() and torch.min(self._compute_map_obstacle_distances()[0]) < self.cfg.pillar_collision_radius + 0.1):
+            elif hit_box_obstacle[0].item() or (hit_physical_obstacle[0].item() and torch.min(self._compute_map_obstacle_distances()[0]) < current_radius + 0.1):
                 self._env0_crash_reason = "Static Wall Collision"
             elif hit_obstacle[0].item():
                 # If contact sensor triggered, check height to distinguish floor/ceiling from obstacles
                 z_val = pos_local[0, 2].item()
                 if z_val < 0.25:
                     self._env0_crash_reason = "Floor Collision (Contact)"
-                elif z_val > 2.35:
+                elif z_val > (2.5 * map_scale - 0.15):
                     self._env0_crash_reason = "Ceiling Collision (Contact)"
                 else:
                     if len(self._pillars) > 0:
@@ -1029,13 +1160,17 @@ class AEPPODroneEnv(DirectRLEnv):
             else:
                 self._env0_crash_reason = None
 
-        # Combine termination conditions
+        # Store exact crash reasons for all envs to support headless evaluation scripts
+        self.crash_reasons = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.crash_reasons = torch.where(hit_floor, torch.tensor(1, device=self.device), self.crash_reasons)
+        self.crash_reasons = torch.where(hit_ceiling, torch.tensor(2, device=self.device), self.crash_reasons)
+        self.crash_reasons = torch.where(hit_wall, torch.tensor(3, device=self.device), self.crash_reasons)
+        self.crash_reasons = torch.where(hit_obstacle | hit_physical_obstacle | hit_box_obstacle | hit_dynamic_pillar, torch.tensor(4, device=self.device), self.crash_reasons)
+
         died = (
             hit_floor_or_ceiling
             | hit_wall
             | hit_obstacle
-            | hit_physical_obstacle
-            | hit_box_obstacle
             | hit_dynamic_pillar
         )
         terminated = died | reached_goal
@@ -1086,19 +1221,34 @@ class AEPPODroneEnv(DirectRLEnv):
         batch_goal_rate = torch.count_nonzero(reached_goal_mask).item() / total_resets
 
         if not is_play_script:
-            alpha = min(total_resets / 800.0, 0.06)
-            self.running_goal_rate = (1.0 - alpha) * self.running_goal_rate + alpha * batch_goal_rate
-            
-            # Advance curriculum level
-            if self.running_goal_rate > 0.75 and self.curriculum_level < 5:
-                self.curriculum_level += 1
-                self.running_goal_rate = 0.60  # Buffer to prevent immediate regression on first steps
-                print(f"\n[CURRICULUM] Advanced to Level {self.curriculum_level}! Running goal rate reset to 0.60.\n")
-            # Regress curriculum level
-            elif self.running_goal_rate < 0.55 and self.curriculum_level > getattr(self.cfg, "initial_curriculum_level", 1):
-                self.curriculum_level -= 1
-                self.running_goal_rate = 0.65  # Buffer value for stable recovery
-                print(f"\n[CURRICULUM] Regressed to Level {self.curriculum_level}! Running goal rate reset to 0.65.\n")
+            # Only count environments that were spawned at the current curriculum level
+            valid_mask = self.env_curriculum_level[env_ids] == self.curriculum_level
+            if torch.any(valid_mask):
+                valid_env_ids = env_ids[valid_mask]
+                valid_dist_per_env = dist_per_env[valid_mask]
+                valid_reached_goal_mask = valid_dist_per_env < self.cfg.goal_radius
+                valid_resets = len(valid_env_ids)
+                valid_goal_rate = torch.count_nonzero(valid_reached_goal_mask).item() / valid_resets
+                
+                alpha = min(valid_resets / 800.0, 0.06)
+                self.running_goal_rate = (1.0 - alpha) * self.running_goal_rate + alpha * valid_goal_rate
+                
+                # Advance curriculum level
+                if self.running_goal_rate > 0.75 and self.curriculum_level < 5:
+                    self.curriculum_level += 1
+                    self.running_goal_rate = 0.50  # Start lower to prove performance; 0.25 margin above regression
+                    print(f"\n[CURRICULUM] Advanced to Level {self.curriculum_level}! Running goal rate reset to 0.50.\n")
+                    self._update_episode_length(self._get_episode_length_for_level(self.curriculum_level))
+                # Regress curriculum level — only if truly failing (needs ~17 bad batches from 0.50)
+                elif self.running_goal_rate < 0.25 and self.curriculum_level > getattr(self.cfg, "initial_curriculum_level", 1):
+                    self.curriculum_level -= 1
+                    self.running_goal_rate = 0.55  # Higher reset for quick re-advancement after brief dip
+                    print(f"\n[CURRICULUM] Regressed to Level {self.curriculum_level}! Running goal rate reset to 0.55.\n")
+                    self._update_episode_length(self._get_episode_length_for_level(self.curriculum_level))
+
+            # Mark all reset environments as starting fresh at the current curriculum level
+            self.env_curriculum_level[env_ids] = self.curriculum_level
+
 
         self.extras["log"]["Metrics/collision_rate"] = torch.count_nonzero(crash_mask).item() / total_resets
         self.extras["log"]["Metrics/goal_rate"] = batch_goal_rate
@@ -1175,8 +1325,10 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + goal_offsets[:, 1]
             self._desired_pos_w[env_ids, 2] = torch.ones(env_count, device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
         else:
-            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-20.0, 20.0)
-            spawn_y = torch.zeros(env_count, device=self.device).uniform_(-20.0, 20.0)
+            map_scale = getattr(self.cfg, "map_scale", 1.0)
+            spawn_limit = 20.0 * map_scale
+            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-spawn_limit, spawn_limit)
+            spawn_y = torch.zeros(env_count, device=self.device).uniform_(-spawn_limit, spawn_limit)
 
             # Resample drone spawns that are inside map obstacles
             for _ in range(10):
@@ -1184,8 +1336,8 @@ class AEPPODroneEnv(DirectRLEnv):
                 if not torch.any(in_obstacle):
                     break
                 n = torch.sum(in_obstacle).item()
-                spawn_x[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-20.0, 20.0)
-                spawn_y[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-20.0, 20.0)
+                spawn_x[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-spawn_limit, spawn_limit)
+                spawn_y[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-spawn_limit, spawn_limit)
 
             default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
             default_root_state[:, 1] = spawn_y + self._terrain.env_origins[env_ids, 1]
@@ -1201,13 +1353,12 @@ class AEPPODroneEnv(DirectRLEnv):
             goal_x_local = spawn_x + dist * torch.cos(angle)
             goal_y_local = spawn_y + dist * torch.sin(angle)
 
-            # Resample goals that are inside map obstacles or out of bounds [-23.7, 23.7]
-            # We start with the curriculum distances, but if we fail to find a valid spot,
-            # we relax the distance range to guarantee a valid position inside the arena.
+            # Resample goals that are inside map obstacles or out of bounds [-23.7, 23.7] scaled
+            # Wall at 23.90, collision at 23.85. Keep goal at least 23.70 to avoid forcing drone into walls.
+            goal_limit = 23.7 * map_scale
             for attempt in range(25):
                 in_obstacle = self._is_inside_map_obstacle(goal_x_local, goal_y_local)
-                # Wall at 23.90, collision at 23.85. Keep goal at least 23.70 to avoid forcing drone into walls.
-                out_of_bounds = (goal_x_local.abs() > 23.7) | (goal_y_local.abs() > 23.7)
+                out_of_bounds = (goal_x_local.abs() > goal_limit) | (goal_y_local.abs() > goal_limit)
                 bad = in_obstacle | out_of_bounds
                 if not torch.any(bad):
                     break
@@ -1324,11 +1475,12 @@ class AEPPODroneEnv(DirectRLEnv):
             self.drone_tracker_visualizer.set_visibility(True)
 
             if not hasattr(self, "ceiling_visualizer"):
+                map_scale = getattr(self.cfg, "map_scale", 1.0)
                 ceiling_marker_cfg = VisualizationMarkersCfg(
                     prim_path="/Visuals/Ceiling",
                     markers={
                         "cuboid": sim_utils.CuboidCfg(
-                            size=(48.0, 48.0, 0.02),  # 48m x 48m thin glass sheet
+                            size=(48.0 * map_scale, 48.0 * map_scale, 0.02),  # Scaled thin glass sheet
                             visual_material=sim_utils.PreviewSurfaceCfg(
                                 diffuse_color=(0.0, 0.8, 1.0),  # Cyan color
                                 opacity=0.15,
@@ -1414,7 +1566,8 @@ class AEPPODroneEnv(DirectRLEnv):
         if hasattr(self, "drone_tracker_visualizer"):
             self.drone_tracker_visualizer.visualize(self._robot.data.root_pos_w[:, :3])
         if hasattr(self, "ceiling_visualizer"):
-            z_ceil = 2.5 + self._terrain.env_origins[0, 2].item()
+            map_scale = getattr(self.cfg, "map_scale", 1.0)
+            z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
             x_origin = self._terrain.env_origins[0, 0].item()
             y_origin = self._terrain.env_origins[0, 1].item()
             ceil_pos = torch.tensor([[x_origin, y_origin, z_ceil]], device=self.device)
@@ -1451,7 +1604,9 @@ class AEPPODroneEnv(DirectRLEnv):
             colors = []
 
             for i in range(num_rays):
-                dist = self._last_lidar_scan[0, i].item()
+                # Use masked scan (what the policy sees) instead of raw physical scan
+                masked_scan = getattr(self, "_last_masked_lidar_scan", self._last_lidar_scan)
+                dist = masked_scan[0, i].item()
                 dir_w = ray_dirs_w[i]
                 # Compute ray end point in world coordinates using rotated directions
                 p_end = (
@@ -1462,21 +1617,27 @@ class AEPPODroneEnv(DirectRLEnv):
                 start_points.append(p_start)
                 end_points.append(p_end)
 
-                # Laser color: Red if near obstacle collision radius, otherwise green laser
-                if dist < 0.5:
-                    colors.append((1.0, 0.0, 0.0, 1.0))  # Solid red
+                # Laser color based on masked status
+                raw_dist = self._last_lidar_scan[0, i].item()
+                is_masked = (raw_dist < 9.9) and (dist > 9.9)  # Physical obstacle hidden by mask
+                if is_masked:
+                    colors.append((1.0, 0.65, 0.0, 0.8))  # Orange — masked obstacle
+                elif dist < 0.5:
+                    colors.append((1.0, 0.0, 0.0, 1.0))  # Solid red — close obstacle
+                elif i in [10, 11, 12, 13, 14]:
+                    colors.append((1.0, 1.0, 0.0, 0.8))  # Yellow — front cone
                 else:
                     colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green
 
             thicknesses = [2.0] * num_rays
 
-            # --- Draw ceiling grid at Z = 2.5 ---
-            z_ceil = 2.5 + self._terrain.env_origins[0, 2].item()
+            # --- Draw ceiling grid at Z = 2.5 * map_scale ---
+            map_scale = getattr(self.cfg, "map_scale", 1.0)
+            z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
             x_origin = self._terrain.env_origins[0, 0].item()
             y_origin = self._terrain.env_origins[0, 1].item()
-
-            x_min, x_max = x_origin - 24.0, x_origin + 24.0
-            y_min, y_max = y_origin - 24.0, y_origin + 24.0
+            x_min, x_max = x_origin - 24.0 * map_scale, x_origin + 24.0 * map_scale
+            y_min, y_max = y_origin - 24.0 * map_scale, y_origin + 24.0 * map_scale
 
             ceil_color = (0.0, 0.8, 1.0, 0.4)  # cyan boundary
             ceil_thick = 3.0
@@ -1497,13 +1658,13 @@ class AEPPODroneEnv(DirectRLEnv):
             grid_color = (0.0, 0.5, 0.8, 0.2)
             grid_thick = 1.0
             for x_val in range(-20, 25, 10):
-                x_w = x_origin + x_val
+                x_w = x_origin + x_val * map_scale
                 start_points.append((x_w, y_min, z_ceil))
                 end_points.append((x_w, y_max, z_ceil))
                 colors.append(grid_color)
                 thicknesses.append(grid_thick)
             for y_val in range(-20, 25, 10):
-                y_w = y_origin + y_val
+                y_w = y_origin + y_val * map_scale
                 start_points.append((x_min, y_w, z_ceil))
                 end_points.append((x_max, y_w, z_ceil))
                 colors.append(grid_color)
@@ -1511,22 +1672,4 @@ class AEPPODroneEnv(DirectRLEnv):
 
             self._draw.draw_lines(start_points, end_points, colors, thicknesses)
 
-        # 3. Follow Camera (Chase/Flight View) for Play Mode
-        import sys
-        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
-        if is_play_script:
-            import numpy as np
-            import math
-            drone_pos = self._robot.data.root_pos_w[0, :3].detach().cpu().numpy()
-            
-            # Get the drone's yaw heading to orient the chase camera
-            yaw = self._get_drone_yaw()[0].item()
-            
-            # Set camera position behind the drone (distance 3.5m, height 1.8m) looking at it
-            distance = 3.5
-            height = 1.8
-            offset_x = -distance * math.cos(yaw)
-            offset_y = -distance * math.sin(yaw)
-            
-            eye = drone_pos + np.array([offset_x, offset_y, height])
-            self.sim.set_camera_view(eye=eye, target=drone_pos)
+
