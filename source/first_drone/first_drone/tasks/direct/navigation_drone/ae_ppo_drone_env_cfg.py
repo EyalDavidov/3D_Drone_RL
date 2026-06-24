@@ -69,12 +69,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
     robot_cfg.spawn.activate_contact_sensors = True
 
     # room — empty room (pillars are now dynamic RigidObjects)
-    room_usd_path: str = os.path.abspath(
-        os.path.join(
-            os.path.dirname(__file__),
-            "../first_drone/assets/fps_shooter_game_arena_map_v4.usdz"
-        )
-    )
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "final_flat.usd")
 
     # ---------- Dynamic Obstacles (Domain Randomization) ----------
     # 6 diverse obstacle shapes — defined in env._setup_scene() to avoid @configclass serialization issues
