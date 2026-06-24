@@ -7,6 +7,8 @@ from .vae_sac_drone_env import SACDroneEnv
 from .vae_sac_drone_env_cfg import SACDroneEnvCfg
 from .ae_ppo_drone_env import AEPPODroneEnv
 from .ae_ppo_drone_env_cfg import AEPPODroneEnvCfg
+from .brain_nav_drone_env import BrainNavDroneEnv
+from .brain_nav_drone_env_cfg import BrainNavDroneEnvCfg
 
 ##
 # Register Gym environments.
@@ -40,6 +42,16 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.ae_ppo_drone_env_cfg:AEPPODroneEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:NavigationPPOCfg",
+    },
+)
+
+gym.register(
+    id="Brain-Nav-Drone-Direct-v0",
+    entry_point=f"{__name__}.brain_nav_drone_env:BrainNavDroneEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.brain_nav_drone_env_cfg:BrainNavDroneEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:NavigationPPOCfg",
     },
 )
