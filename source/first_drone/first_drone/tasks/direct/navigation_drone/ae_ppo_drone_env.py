@@ -9,6 +9,7 @@ and its detached latent is fed to PPO.
 """
 from __future__ import annotations
 
+import math
 import weakref
 
 import gymnasium as gym
@@ -406,9 +407,649 @@ class AEPPODroneEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-    # ------------------------------------------------------------------
-    # Depth preprocessing
-    # ------------------------------------------------------------------
+        if getattr(self.cfg, "use_direct_room_spawn", False):
+            self._cache_room_spawn_bounds()
+
+    def _build_walkable_floor_grid(self, room_prim, origin) -> None:
+        """Rasterize upward-facing floor triangles into a 2D occupancy grid (handles R-shaped maps)."""
+        import numpy as np
+        from pxr import Usd, UsdGeom
+
+        # Only skip character meshes — walls/ceiling are filtered by triangle normal instead.
+        skip_keywords = (
+            "character", "person", "human", "worker", "reallusion", "cc_base",
+            "hair", "body", "cloth", "eye", "teeth", "tongue", "tooth",
+        )
+        floor_tris_xy: list[tuple[float, float, float, float, float, float]] = []
+        mesh_stats = {"checked": 0, "floor_tris": 0}
+
+        for prim in Usd.PrimRange(room_prim):
+            if not prim.IsA(UsdGeom.Mesh):
+                continue
+            path_lower = prim.GetPath().pathString.lower()
+            name_lower = prim.GetName().lower()
+            if any(k in path_lower or k in name_lower for k in skip_keywords):
+                continue
+
+            mesh = UsdGeom.Mesh(prim)
+            points = mesh.GetPointsAttr().Get()
+            face_counts = mesh.GetFaceVertexCountsAttr().Get()
+            face_indices = mesh.GetFaceVertexIndicesAttr().Get()
+            if not points or not face_counts or not face_indices:
+                continue
+
+            mesh_stats["checked"] += 1
+            xformable = UsdGeom.Xformable(prim)
+            world_xf = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            verts_local = []
+            for p in points:
+                pw = world_xf.Transform(p)
+                verts_local.append(
+                    (float(pw[0] - origin[0]), float(pw[1] - origin[1]), float(pw[2] - origin[2]))
+                )
+
+            idx = 0
+            for count in face_counts:
+                face_verts = face_indices[idx : idx + count]
+                idx += count
+                if count < 3:
+                    continue
+                for tri_i in range(1, count - 1):
+                    i0, i1, i2 = face_verts[0], face_verts[tri_i], face_verts[tri_i + 1]
+                    v0, v1, v2 = verts_local[i0], verts_local[i1], verts_local[i2]
+                    # Keep only upward-facing, low-height triangles (floor, not walls/ceiling).
+                    e1 = np.array([v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]])
+                    e2 = np.array([v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]])
+                    normal = np.cross(e1, e2)
+                    norm_len = np.linalg.norm(normal)
+                    if norm_len < 1e-8:
+                        continue
+                    normal = normal / norm_len
+                    avg_z = (v0[2] + v1[2] + v2[2]) / 3.0
+                    if abs(normal[2]) < 0.55 or avg_z > 1.2 or avg_z < -1.0:
+                        continue
+                    floor_tris_xy.append((v0[0], v0[1], v1[0], v1[1], v2[0], v2[1]))
+                    mesh_stats["floor_tris"] += 1
+
+        if not floor_tris_xy:
+            # Fallback: flat meshes (thin in Z) are likely floor slabs.
+            for prim in Usd.PrimRange(room_prim):
+                if not prim.IsA(UsdGeom.Mesh):
+                    continue
+                path_lower = prim.GetPath().pathString.lower()
+                if any(k in path_lower for k in skip_keywords):
+                    continue
+                mesh = UsdGeom.Mesh(prim)
+                points = mesh.GetPointsAttr().Get()
+                face_counts = mesh.GetFaceVertexCountsAttr().Get()
+                face_indices = mesh.GetFaceVertexIndicesAttr().Get()
+                if not points or not face_counts:
+                    continue
+                xformable = UsdGeom.Xformable(prim)
+                world_xf = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                verts_local = []
+                for p in points:
+                    pw = world_xf.Transform(p)
+                    verts_local.append(
+                        (float(pw[0] - origin[0]), float(pw[1] - origin[1]), float(pw[2] - origin[2]))
+                    )
+                z_vals = [v[2] for v in verts_local]
+                if max(z_vals) - min(z_vals) > 0.35:
+                    continue
+                if np.median(z_vals) > 1.2:
+                    continue
+                idx = 0
+                for count in face_counts:
+                    face_verts = face_indices[idx : idx + count]
+                    idx += count
+                    if count < 3:
+                        continue
+                    for tri_i in range(1, count - 1):
+                        i0, i1, i2 = face_verts[0], face_verts[tri_i], face_verts[tri_i + 1]
+                        v0, v1, v2 = verts_local[i0], verts_local[i1], verts_local[i2]
+                        floor_tris_xy.append((v0[0], v0[1], v1[0], v1[1], v2[0], v2[1]))
+                        mesh_stats["floor_tris"] += 1
+
+        self._walkable_grid = None
+        self._walkable_grid_origin = None
+        self._walkable_grid_res = None
+        self._walkable_spawn_cells = None
+        self._interior_walkable_spawn_cells = None
+
+        if not floor_tris_xy:
+            print(
+                f"[MAP] WARNING: No floor triangles found ({mesh_stats['checked']} meshes checked) "
+                f"— using rectangular room bounds for spawn.\n"
+            )
+        self._floor_tris_xy = None
+        self._walkable_grid_unreliable = False
+        return
+
+        self._floor_tris_xy = None  # set after rasterize
+
+        all_x = [c for tri in floor_tris_xy for c in (tri[0], tri[2], tri[4])]
+        all_y = [c for tri in floor_tris_xy for c in (tri[1], tri[3], tri[5])]
+        res = float(getattr(self.cfg, "walkable_grid_resolution", 0.4))
+        margin = float(getattr(self.cfg, "spawn_obstacle_margin", 0.5))
+        raw_min_x, raw_max_x = min(all_x), max(all_x)
+        raw_min_y, raw_max_y = min(all_y), max(all_y)
+        min_x, max_x = raw_min_x, raw_max_x
+        min_y, max_y = raw_min_y, raw_max_y
+
+        nx = max(1, int(math.ceil((max_x - min_x) / res)))
+        ny = max(1, int(math.ceil((max_y - min_y) / res)))
+        grid = np.zeros((nx, ny), dtype=np.uint8)
+
+        try:
+            import cv2
+
+            for x0, y0, x1, y1, x2, y2 in floor_tris_xy:
+                pts = np.array(
+                    [
+                        [int((x0 - min_x) / res), int((y0 - min_y) / res)],
+                        [int((x1 - min_x) / res), int((y1 - min_y) / res)],
+                        [int((x2 - min_x) / res), int((y2 - min_y) / res)],
+                    ],
+                    dtype=np.int32,
+                )
+                cv2.fillConvexPoly(grid, pts, 1)
+
+            walkable_full = grid.astype(bool)
+            # Erode a copy only for spawn safety — keep full footprint for nav/waypoints.
+            erosion_px = max(1, int(math.ceil(margin / res)))
+            kernel = np.ones((erosion_px, erosion_px), np.uint8)
+            spawn_grid = cv2.erode(grid, kernel, iterations=1).astype(bool)
+        except ImportError:
+            for cx_i in range(nx):
+                cx = min_x + (cx_i + 0.5) * res
+                for cy_i in range(ny):
+                    cy = min_y + (cy_i + 0.5) * res
+                    if self._point_in_any_triangle(cx, cy, floor_tris_xy):
+                        grid[cx_i, cy_i] = 1
+            walkable_full = grid.astype(bool)
+            spawn_grid = walkable_full.copy()
+
+        walkable = walkable_full
+        if not walkable.any():
+            print("[MAP] WARNING: Walkable floor grid is empty after rasterize.\n")
+            return
+
+        # Reject degenerate grids (erosion can wipe narrow R-shaped corridors).
+        room_bounds = getattr(self, "_room_bounds_local", None)
+        occupied = np.argwhere(walkable)
+        occ_min_x = min_x + occupied[:, 0].min() * res
+        occ_max_x = min_x + (occupied[:, 0].max() + 1) * res
+        occ_min_y = min_y + occupied[:, 1].min() * res
+        occ_max_y = min_y + (occupied[:, 1].max() + 1) * res
+        footprint_area = max(0.0, occ_max_x - occ_min_x) * max(0.0, occ_max_y - occ_min_y)
+        room_area = 0.0
+        if room_bounds is not None:
+            rx0, rx1, ry0, ry1, _ = room_bounds
+            room_area = max(0.0, rx1 - rx0) * max(0.0, ry1 - ry0)
+        min_cells = int(getattr(self.cfg, "walkable_min_cells", 80))
+        min_area = float(getattr(self.cfg, "walkable_min_area_m2", 20.0))
+        too_small = walkable.sum() < min_cells or footprint_area < min_area
+        if room_area > 0.0 and footprint_area / room_area < 0.12:
+            too_small = True
+        if too_small:
+            print(
+                f"[MAP] WARNING: Walkable grid small ({walkable.sum()} cells, "
+                f"{footprint_area:.1f} m², {mesh_stats['floor_tris']} floor tris) — "
+                f"using room AABB + floor triangles for spawn/waypoints.\n"
+            )
+            self._walkable_grid_unreliable = True
+            self._walkable_grid = None
+            self._walkable_grid_origin = None
+            self._walkable_grid_res = None
+            self._walkable_spawn_cells = None
+            self._interior_walkable_spawn_cells = None
+            self._floor_tris_xy = floor_tris_xy
+            return
+
+        self._floor_tris_xy = floor_tris_xy
+        spawn_source = spawn_grid if spawn_grid.any() else walkable
+        spawn_cells = [
+            (min_x + (ix + 0.5) * res, min_y + (iy + 0.5) * res)
+            for ix in range(nx)
+            for iy in range(ny)
+            if spawn_source[ix, iy]
+        ]
+
+        self._walkable_grid_unreliable = False
+        self._walkable_grid = walkable
+        self._walkable_grid_origin = (min_x, min_y)
+        self._walkable_grid_res = res
+        self._walkable_spawn_cells = torch.tensor(spawn_cells, dtype=torch.float32, device=self.device)
+        interior = self._filter_interior_spawn_cells(spawn_source, min_x, min_y, res)
+        self._interior_walkable_spawn_cells = (
+            interior.to(self.device) if interior is not None and interior.shape[0] > 0 else None
+        )
+
+        # Replace rectangular AABB spawn/debug bounds with the actual walkable footprint.
+        if self._room_bounds_local is not None:
+            _, _, _, _, ceiling_z = self._room_bounds_local
+            self._room_bounds_local = (occ_min_x, occ_max_x, occ_min_y, occ_max_y, ceiling_z)
+
+        print(
+            f"[MAP] Walkable floor grid: {walkable.sum()} cells ({nx}x{ny} @ {res}m), "
+            f"{len(spawn_cells)} spawn points, {mesh_stats['floor_tris']} floor triangles\n"
+            f"[MAP] Walkable footprint (local): X=[{occ_min_x:.2f}, {occ_max_x:.2f}] "
+            f"Y=[{occ_min_y:.2f}, {occ_max_y:.2f}] (raw mesh X=[{raw_min_x:.2f}, {raw_max_x:.2f}] "
+            f"Y=[{raw_min_y:.2f}, {raw_max_y:.2f}])\n"
+        )
+
+    @staticmethod
+    def _filter_interior_spawn_cells(walkable, min_x: float, min_y: float, res: float):
+        """Keep spawn points at least 1 cell away from the walkable footprint edge."""
+        import numpy as np
+        import torch
+
+        nx, ny = walkable.shape
+        interior = []
+        for ix in range(1, nx - 1):
+            for iy in range(1, ny - 1):
+                if not walkable[ix, iy]:
+                    continue
+                patch = walkable[ix - 1 : ix + 2, iy - 1 : iy + 2]
+                if patch.all():
+                    interior.append((min_x + (ix + 0.5) * res, min_y + (iy + 0.5) * res))
+        if not interior:
+            return None
+        return torch.tensor(interior, dtype=torch.float32)
+
+    @staticmethod
+    def _point_in_any_triangle(px: float, py: float, triangles) -> bool:
+        for x0, y0, x1, y1, x2, y2 in triangles:
+            if AEPPODroneEnv._point_in_triangle(px, py, x0, y0, x1, y1, x2, y2):
+                return True
+        return False
+
+    @staticmethod
+    def _point_in_triangle(px, py, x0, y0, x1, y1, x2, y2) -> bool:
+        def sign(ax, ay, bx, by, cx, cy):
+            return (ax - cx) * (by - cy) - (bx - cx) * (ay - cy)
+
+        b1 = sign(px, py, x0, y0, x1, y1) < 0.0
+        b2 = sign(px, py, x1, y1, x2, y2) < 0.0
+        b3 = sign(px, py, x2, y2, x0, y0) < 0.0
+        return (b1 == b2) and (b2 == b3)
+
+    def _is_on_walkable_floor(
+        self, x: torch.Tensor, y: torch.Tensor, margin: float | None = None
+    ) -> torch.Tensor:
+        """Return True for local XY positions that lie on the parsed walkable floor."""
+        if getattr(self, "_walkable_grid", None) is None:
+            return torch.ones_like(x, dtype=torch.bool)
+
+        if margin is None:
+            margin = float(getattr(self.cfg, "spawn_obstacle_margin", 0.5))
+
+        res = self._walkable_grid_res
+        ox, oy = self._walkable_grid_origin
+        nx, ny = self._walkable_grid.shape
+        r_cells = max(1, int(math.ceil(margin / res)))
+        result = torch.zeros_like(x, dtype=torch.bool)
+
+        for i in range(x.numel()):
+            px = float(x[i].item())
+            py = float(y[i].item())
+            cx = int((px - ox) / res)
+            cy = int((py - oy) / res)
+            ok = False
+            for dx in range(-r_cells, r_cells + 1):
+                for dy in range(-r_cells, r_cells + 1):
+                    ix, iy = cx + dx, cy + dy
+                    if 0 <= ix < nx and 0 <= iy < ny and self._walkable_grid[ix, iy]:
+                        cell_x = ox + (ix + 0.5) * res
+                        cell_y = oy + (iy + 0.5) * res
+                        if (cell_x - px) ** 2 + (cell_y - py) ** 2 <= margin ** 2:
+                            ok = True
+                            break
+                if ok:
+                    break
+            result[i] = ok
+        return result
+
+    def _is_on_navigable_floor(
+        self, x: torch.Tensor, y: torch.Tensor, margin: float | None = None
+    ) -> torch.Tensor:
+        """True when XY is on the walkable grid or inside parsed floor triangles."""
+        if getattr(self, "_walkable_grid", None) is not None:
+            on_grid = self._is_on_walkable_floor(x, y, margin=margin)
+            if on_grid.all() or (on_grid.any() and x.numel() == 1):
+                return on_grid
+
+        floor_tris = getattr(self, "_floor_tris_xy", None)
+        if not floor_tris:
+            return self._is_on_walkable_floor(x, y, margin=margin)
+
+        if margin is None:
+            margin = float(getattr(self.cfg, "spawn_obstacle_margin", 0.5))
+
+        result = torch.zeros_like(x, dtype=torch.bool)
+        offsets = (
+            (0.0, 0.0),
+            (margin, 0.0),
+            (-margin, 0.0),
+            (0.0, margin),
+            (0.0, -margin),
+        )
+        for i in range(x.numel()):
+            px = float(x[i].item())
+            py = float(y[i].item())
+            ok = all(
+                self._point_in_any_triangle(px + dx, py + dy, floor_tris)
+                for dx, dy in offsets
+            )
+            result[i] = ok
+        return result
+
+    def _spawn_wall_clearance(self) -> float:
+        """Extra inset from room bounds so spawn matches _get_dones wall termination."""
+        return 0.15
+
+    def _get_safe_spawn_xy_limits(self) -> tuple[float, float, float, float]:
+        """Room bounds shrunk by wall termination margin used in _get_dones."""
+        aabb = getattr(self, "_room_bounds_aabb", None) or getattr(self, "_room_bounds_local", None)
+        if aabb is None:
+            return self._get_spawn_xy_limits()
+        wall_margin = self._spawn_wall_clearance()
+        min_x = aabb[0] + wall_margin
+        max_x = aabb[1] - wall_margin
+        min_y = aabb[2] + wall_margin
+        max_y = aabb[3] - wall_margin
+        if min_x >= max_x or min_y >= max_y:
+            return self._get_spawn_xy_limits()
+        return min_x, max_x, min_y, max_y
+
+    def _sample_navigable_spawn_xy(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample spawn XY in env-local coordinates guaranteed to be on the map floor."""
+        device = self.device
+        min_spawn_cells = int(getattr(self.cfg, "walkable_min_cells", 80))
+        min_x, max_x, min_y, max_y = self._get_safe_spawn_xy_limits()
+        cells = None
+        if not getattr(self, "_walkable_grid_unreliable", False):
+            cells = getattr(self, "_interior_walkable_spawn_cells", None)
+            if cells is None or cells.shape[0] == 0:
+                cells = getattr(self, "_walkable_spawn_cells", None)
+        if cells is not None and cells.shape[0] >= min(20, min_spawn_cells):
+            safe_mask = (
+                (cells[:, 0] >= min_x) & (cells[:, 0] <= max_x)
+                & (cells[:, 1] >= min_y) & (cells[:, 1] <= max_y)
+            )
+            cells = cells[safe_mask]
+        if cells is not None and cells.shape[0] > 0:
+            idx = torch.randint(0, cells.shape[0], (count,), device=device)
+            return cells[idx, 0].to(device), cells[idx, 1].to(device)
+
+        spawn_x = torch.zeros(count, device=device)
+        spawn_y = torch.zeros(count, device=device)
+        for i in range(count):
+            for _ in range(200):
+                sx = float(torch.empty(1, device=device).uniform_(min_x, max_x).item())
+                sy = float(torch.empty(1, device=device).uniform_(min_y, max_y).item())
+                sx_t = torch.tensor([sx], device=device)
+                sy_t = torch.tensor([sy], device=device)
+                if self._is_on_navigable_floor(sx_t, sy_t).item():
+                    if not self._is_inside_map_obstacle(sx_t, sy_t).item():
+                        spawn_x[i] = sx
+                        spawn_y[i] = sy
+                        break
+            else:
+                spawn_x[i] = 0.5 * (min_x + max_x)
+                spawn_y[i] = 0.5 * (min_y + max_y)
+        return spawn_x, spawn_y
+
+    @staticmethod
+    def _rect_boundary_segments(min_x, max_x, min_y, max_y, z_local: float) -> list:
+        return [
+            ((min_x, min_y, z_local), (max_x, min_y, z_local)),
+            ((max_x, min_y, z_local), (max_x, max_y, z_local)),
+            ((max_x, max_y, z_local), (min_x, max_y, z_local)),
+            ((min_x, max_y, z_local), (min_x, min_y, z_local)),
+        ]
+
+    def _get_map_zone_boundary_segments_local(self, z_local: float) -> list:
+        """Return per-zone outlines (room_1..N, corridor, etc.) aligned to USD geometry."""
+        zones = getattr(self, "_map_zones", None)
+        if not zones:
+            return []
+        segments = []
+        for zone in zones.values():
+            lx0, lx1, ly0, ly1 = zone["bounds"]
+            segments.extend(self._rect_boundary_segments(lx0, lx1, ly0, ly1, z_local))
+        return segments
+
+    def _get_walkable_boundary_segments_local(self, z_local: float) -> list:
+        """Return outline segments of the walkable footprint in env-local coordinates."""
+        if getattr(self, "_walkable_grid_unreliable", False) or getattr(self, "_walkable_grid", None) is None:
+            zone_segments = self._get_map_zone_boundary_segments_local(z_local)
+            if zone_segments:
+                return zone_segments
+            raw = getattr(self, "_map_bounds_raw_local", None)
+            if raw is not None:
+                min_x, max_x, min_y, max_y = raw
+                return self._rect_boundary_segments(min_x, max_x, min_y, max_y, z_local)
+            bounds = getattr(self, "_room_bounds_local", None)
+            if bounds is None:
+                return []
+            min_x, max_x, min_y, max_y, _ = bounds
+            return self._rect_boundary_segments(min_x, max_x, min_y, max_y, z_local)
+
+        grid = self._walkable_grid
+        ox, oy = self._walkable_grid_origin
+        res = self._walkable_grid_res
+        nx, ny = grid.shape
+        segments = []
+        for ix in range(nx):
+            for iy in range(ny):
+                if not grid[ix, iy]:
+                    continue
+                x0 = ox + ix * res
+                x1 = ox + (ix + 1) * res
+                y0 = oy + iy * res
+                y1 = oy + (iy + 1) * res
+                if ix == 0 or not grid[ix - 1, iy]:
+                    segments.append(((x0, y0, z_local), (x0, y1, z_local)))
+                if iy == 0 or not grid[ix, iy - 1]:
+                    segments.append(((x0, y0, z_local), (x1, y0, z_local)))
+                if ix == nx - 1 or not grid[ix + 1, iy]:
+                    segments.append(((x1, y0, z_local), (x1, y1, z_local)))
+                if iy == ny - 1 or not grid[ix, iy + 1]:
+                    segments.append(((x0, y1, z_local), (x1, y1, z_local)))
+        return segments
+
+    def _cache_room_spawn_bounds(self):
+        """Cache navigable XY (and ceiling Z) limits from the loaded Room USD in env-local frame."""
+        from pxr import Usd, UsdGeom
+
+        self._walkable_grid = None
+        self._walkable_grid_origin = None
+        self._walkable_grid_res = None
+        self._walkable_spawn_cells = None
+        self._interior_walkable_spawn_cells = None
+        self._room_bounds_local = None
+        self._room_bounds_aabb = None
+        self._map_zones = None
+        self._finish_point_local = None
+        self._floor_tris_xy = None
+        room_prim = self.sim.stage.GetPrimAtPath("/World/envs/env_0/Room")
+        if not room_prim.IsValid():
+            print("[MAP] WARNING: Cannot cache room spawn bounds — Room prim invalid.\n")
+            return
+
+        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"])
+        bbox_range = bbox_cache.ComputeWorldBound(room_prim).GetRange()
+        if bbox_range.IsEmpty():
+            print("[MAP] WARNING: Room bounding box is empty — spawn bounds not updated.\n")
+            return
+
+        origin = self._terrain.env_origins[0].cpu().numpy()
+        margin = float(getattr(self.cfg, "spawn_obstacle_margin", 0.5))
+        min_x = float(bbox_range.GetMin()[0] - origin[0] + margin)
+        max_x = float(bbox_range.GetMax()[0] - origin[0] - margin)
+        min_y = float(bbox_range.GetMin()[1] - origin[1] + margin)
+        max_y = float(bbox_range.GetMax()[1] - origin[1] - margin)
+        max_z = float(bbox_range.GetMax()[2] - origin[2] - 0.15)
+
+        if min_x >= max_x or min_y >= max_y:
+            print("[MAP] WARNING: Room spawn bounds collapsed after margin.\n")
+            return
+
+        self._room_bounds_local = (min_x, max_x, min_y, max_y, max_z)
+        self._room_bounds_aabb = (min_x, max_x, min_y, max_y, max_z)
+        raw_min_x = float(bbox_range.GetMin()[0] - origin[0])
+        raw_max_x = float(bbox_range.GetMax()[0] - origin[0])
+        raw_min_y = float(bbox_range.GetMin()[1] - origin[1])
+        raw_max_y = float(bbox_range.GetMax()[1] - origin[1])
+        self._map_bounds_raw_local = (raw_min_x, raw_max_x, raw_min_y, raw_max_y)
+        self._map_zones = self._extract_map_zones(room_prim, origin, bbox_cache)
+        self._room_segment_centers, self._room_segments = self._extract_room_segment_centers(
+            self._map_zones
+        )
+        self._finish_point_local = self._extract_worker_finish_point(room_prim, origin, bbox_cache)
+        print(
+            f"[MAP] Room spawn bounds (local, margin={margin:.2f}): "
+            f"X=[{min_x:.2f}, {max_x:.2f}] Y=[{min_y:.2f}, {max_y:.2f}] ceiling_z={max_z:.2f}\n"
+            f"[MAP] Raw map envelope (local): "
+            f"X=[{raw_min_x:.2f}, {raw_max_x:.2f}] Y=[{raw_min_y:.2f}, {raw_max_y:.2f}]\n"
+        )
+        if self._map_zones:
+            for name, zone in sorted(self._map_zones.items()):
+                cx, cy, cz = zone["center"]
+                lx0, lx1, ly0, ly1 = zone["bounds"]
+                print(
+                    f"[MAP] Zone {name}: center=({cx:.2f}, {cy:.2f}, {cz:.2f}) "
+                    f"X=[{lx0:.2f}, {lx1:.2f}] Y=[{ly0:.2f}, {ly1:.2f}]"
+                )
+            print()
+        if self._finish_point_local is not None:
+            fx, fy, fz = self._finish_point_local
+            print(f"[MAP] Worker finish point (local): ({fx:.2f}, {fy:.2f}, {fz:.2f})\n")
+        self._build_walkable_floor_grid(room_prim, origin)
+
+    @staticmethod
+    def _extract_map_zones(room_prim, origin, bbox_cache):
+        """Parse room_N, corridor, and side_coridors prims from the loaded USD map."""
+        import re
+
+        from pxr import Usd
+
+        zones: dict[str, dict] = {}
+        inset = 0.35
+        flight_z = 1.0
+        zone_resolvers = (
+            (re.compile(r"^room_(\d+)$", re.IGNORECASE), lambda m: f"room_{int(m.group(1))}"),
+            (re.compile(r"^corridor$", re.IGNORECASE), lambda m: "corridor"),
+            (re.compile(r"^side_coridors$", re.IGNORECASE), lambda m: "side_coridors"),
+        )
+
+        for prim in Usd.PrimRange(room_prim):
+            zone_key = None
+            for pattern, resolver in zone_resolvers:
+                match = pattern.match(prim.GetName())
+                if match:
+                    zone_key = resolver(match)
+                    break
+            if zone_key is None:
+                continue
+            bbox_range = bbox_cache.ComputeWorldBound(prim).GetRange()
+            if bbox_range.IsEmpty():
+                continue
+            mn, mx = bbox_range.GetMin(), bbox_range.GetMax()
+            lx0 = float(mn[0] - origin[0])
+            lx1 = float(mx[0] - origin[0])
+            ly0 = float(mn[1] - origin[1])
+            ly1 = float(mx[1] - origin[1])
+            cx = float(max(lx0 + inset, min(0.5 * (lx0 + lx1), lx1 - inset)))
+            cy = float(max(ly0 + inset, min(0.5 * (ly0 + ly1), ly1 - inset)))
+            zones[zone_key] = {
+                "center": (cx, cy, flight_z),
+                "bounds": (lx0, lx1, ly0, ly1),
+            }
+
+        return zones
+
+    @staticmethod
+    def _extract_worker_finish_point(room_prim, origin, bbox_cache):
+        from pxr import Usd
+
+        for prim in Usd.PrimRange(room_prim):
+            if prim.GetName().lower() != "worker":
+                continue
+            bbox_range = bbox_cache.ComputeWorldBound(prim).GetRange()
+            if bbox_range.IsEmpty():
+                continue
+            mid = bbox_range.GetMidpoint()
+            return (float(mid[0] - origin[0]), float(mid[1] - origin[1]), 1.0)
+        return None
+
+    @staticmethod
+    def _extract_room_segment_centers(map_zones: dict):
+        """Return ordered room centers and room-indexed segment dict from parsed map zones."""
+        if not map_zones:
+            return [], {}
+
+        room_keys = sorted(
+            (k for k in map_zones if k.startswith("room_")),
+            key=lambda k: int(k.split("_", 1)[1]),
+        )
+        segments: dict[int, dict] = {}
+        for key in room_keys:
+            idx = int(key.split("_", 1)[1])
+            segments[idx] = map_zones[key]
+
+        if not segments:
+            return [], {}
+
+        ordered = [segments[i]["center"] for i in sorted(segments.keys())]
+        return ordered, segments
+
+    def _get_spawn_xy_limits(self) -> tuple[float, float, float, float]:
+        """Return local XY spawn limits (min_x, max_x, min_y, max_y)."""
+        bounds = getattr(self, "_room_bounds_local", None)
+        if bounds is not None:
+            return bounds[0], bounds[1], bounds[2], bounds[3]
+        map_scale = getattr(self.cfg, "map_scale", 1.0)
+        limit = 20.0 * map_scale
+        return -limit, limit, -limit, limit
+
+    def _get_room_ceiling_z_local(self) -> float:
+        bounds = getattr(self, "_room_bounds_local", None)
+        if bounds is not None:
+            return bounds[4]
+        return 2.5 * getattr(self.cfg, "map_scale", 1.0)
+
+    def _get_room_debug_xy_bounds_world(self) -> tuple[float, float, float, float, float]:
+        """Return world-frame debug bounds: x_min, x_max, y_min, y_max, z_ceil."""
+        x_origin = self._terrain.env_origins[0, 0].item()
+        y_origin = self._terrain.env_origins[0, 1].item()
+        z_origin = self._terrain.env_origins[0, 2].item()
+        raw = getattr(self, "_map_bounds_raw_local", None)
+        bounds = getattr(self, "_room_bounds_local", None)
+        if raw is not None:
+            min_x, max_x, min_y, max_y = raw
+            max_z = bounds[4] if bounds is not None else self._get_room_ceiling_z_local()
+            return (
+                x_origin + min_x,
+                x_origin + max_x,
+                y_origin + min_y,
+                y_origin + max_y,
+                z_origin + max_z,
+            )
+        if bounds is not None:
+            min_x, max_x, min_y, max_y, max_z = bounds
+            return (
+                x_origin + min_x,
+                x_origin + max_x,
+                y_origin + min_y,
+                y_origin + max_y,
+                z_origin + max_z,
+            )
+        map_scale = getattr(self.cfg, "map_scale", 1.0)
+        half_span = 24.0 * map_scale
+        z_ceil = self._get_room_ceiling_z_local() + z_origin
+        return x_origin - half_span, x_origin + half_span, y_origin - half_span, y_origin + half_span, z_ceil
     def _preprocess_depth(self) -> torch.Tensor:
         """Get, clamp, and normalize depth to [0, 1]."""
         # Raw depth from camera: (B, H, W, 1)
@@ -538,11 +1179,15 @@ class AEPPODroneEnv(DirectRLEnv):
         self.extras["log"]["Metrics/total_steps"] = float(self.common_step_counter)
         
         # Manually trigger debug visualization callback on each programmatic step
-        if self.cfg.debug_vis:
+        if self.cfg.debug_vis and not getattr(self, "_closing", False):
             try:
                 self._debug_vis_callback(None)
-            except ReferenceError:
+            except (ReferenceError, AttributeError):
                 pass
+            except Exception as exc:
+                if not getattr(self, "_debug_vis_error_logged", False):
+                    self._debug_vis_error_logged = True
+                    print(f"[DEBUG VIS] Non-fatal visualization error: {exc}")
             
         return obs, rewards, terminated, truncated, info
 
@@ -1006,6 +1651,9 @@ class AEPPODroneEnv(DirectRLEnv):
                 (x >= min_x - margin) & (x <= max_x + margin)
                 & (y >= min_y - margin) & (y <= max_y + margin)
             )
+        if getattr(self, "_walkable_grid", None) is not None:
+            on_floor = self._is_on_navigable_floor(x, y, margin=margin)
+            inside = inside | (~on_floor)
         return inside
 
     def _compute_inside_obstacle_penalty(self) -> torch.Tensor:
@@ -1084,11 +1732,15 @@ class AEPPODroneEnv(DirectRLEnv):
         drone_y = pos_local[:, 1].unsqueeze(1)  # (num_envs, 1)
 
         # Convert map_obstacles to tensors on the correct device if not already done
-        if not hasattr(self, "_map_obs_tensor"):
+        if not hasattr(self, "_map_obs_tensor") or self._map_obs_tensor.dim() != 2:
             obs_list = list(self.cfg.map_obstacles)
-            self._map_obs_tensor = torch.tensor(obs_list, device=self.device, dtype=torch.float)  # (num_obstacles, 4)
+            if len(obs_list) == 0:
+                self._map_obs_tensor = torch.zeros(0, 4, device=self.device, dtype=torch.float)
+            else:
+                self._map_obs_tensor = torch.tensor(obs_list, device=self.device, dtype=torch.float)
 
-        # (num_obstacles, 4) -> split into min_x, max_x, min_y, max_y
+        if self._map_obs_tensor.shape[0] == 0:
+            return torch.empty(self.num_envs, 0, device=self.device, dtype=torch.float)
         min_x = self._map_obs_tensor[:, 0].unsqueeze(0)  # (1, num_obstacles)
         max_x = self._map_obs_tensor[:, 1].unsqueeze(0)  # (1, num_obstacles)
         min_y = self._map_obs_tensor[:, 2].unsqueeze(0)  # (1, num_obstacles)
@@ -1102,6 +1754,22 @@ class AEPPODroneEnv(DirectRLEnv):
         dist_2d = torch.sqrt(dist_x ** 2 + dist_y ** 2)  # (num_envs, num_obstacles)
         return dist_2d
 
+    def _min_map_obstacle_dist(self, env_idx: int = 0) -> float:
+        """Minimum 2D distance to any static map obstacle, or inf if none configured."""
+        dists = self._compute_map_obstacle_distances()
+        if dists.numel() == 0:
+            return float("inf")
+        return float(torch.min(dists[env_idx]).item())
+
+    def _min_pillar_dist(self, env_idx: int = 0) -> float:
+        """Minimum 2D distance to any dynamic pillar, or inf if none exist."""
+        if len(self._pillars) == 0:
+            return float("inf")
+        dists = self._compute_obstacle_distances()
+        if dists.numel() == 0:
+            return float("inf")
+        return float(torch.min(dists[env_idx]).item())
+
     # ------------------------------------------------------------------
     # Termination
     # ------------------------------------------------------------------
@@ -1109,38 +1777,61 @@ class AEPPODroneEnv(DirectRLEnv):
         """Terminate on floor/ceiling/wall collision or timeout."""
         self._last_lidar_scan = None  # Reset cached scan to force fresh sensor acquisition for this step
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+        if getattr(self, "is_brain_play", False) and getattr(
+            self.cfg, "brain_disable_episode_timeout", True
+        ):
+            time_out = torch.zeros_like(time_out)
         pos_local = self._robot.data.root_pos_w[:, :3] - self._terrain.env_origins
 
         map_scale = getattr(self.cfg, "map_scale", 1.0)
         hit_floor = pos_local[:, 2] < 0.1
-        hit_ceiling = pos_local[:, 2] > 2.5 * map_scale
+        room_bounds = getattr(self, "_room_bounds_local", None)
+        if room_bounds is not None:
+            _, _, _, _, room_max_z = room_bounds
+            hit_ceiling = pos_local[:, 2] > room_max_z
+        else:
+            hit_ceiling = pos_local[:, 2] > 2.5 * map_scale
         hit_floor_or_ceiling = hit_floor | hit_ceiling
-        # Arena map bounds scaled by map_scale: original physical wall meshes start at X/Y = ±24.0.
-        map_scale = getattr(self.cfg, "map_scale", 1.0)
-        wall_limit = 23.85 * map_scale
-        hit_wall = (
-            (pos_local[:, 0] > wall_limit) | (pos_local[:, 0] < -wall_limit)
-            | (pos_local[:, 1] > wall_limit) | (pos_local[:, 1] < -wall_limit)
-        )
+        if room_bounds is not None and not getattr(self, "is_brain_play", False):
+            min_x, max_x, min_y, max_y, _ = room_bounds
+            wall_margin = 0.15
+            hit_wall = (
+                (pos_local[:, 0] > max_x - wall_margin) | (pos_local[:, 0] < min_x + wall_margin)
+                | (pos_local[:, 1] > max_y - wall_margin) | (pos_local[:, 1] < min_y + wall_margin)
+            )
+            if getattr(self, "_walkable_grid", None) is not None:
+                # Walkable void check is for training only — in brain play rely on physics contacts.
+                hit_void = ~self._is_on_walkable_floor(pos_local[:, 0], pos_local[:, 1], margin=0.25)
+                hit_wall = hit_wall | hit_void
+        elif room_bounds is not None and getattr(self, "is_brain_play", False):
+            # R-shaped maps: outer AABB wall check false-positives inside valid rooms (e.g. y=1.5 in room_1).
+            hit_wall = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        else:
+            wall_limit = 23.85 * map_scale
+            hit_wall = (
+                (pos_local[:, 0] > wall_limit) | (pos_local[:, 0] < -wall_limit)
+                | (pos_local[:, 1] > wall_limit) | (pos_local[:, 1] < -wall_limit)
+            )
 
         # Fixed collision radius for stable training and strict centering
         current_radius = self.cfg.pillar_collision_radius
 
-        # 1. Check contact sensor for physical collision with meshes (forces > 0.1 N)
+        # 1. Check contact sensor for physical collision with meshes
         contact_force = torch.linalg.norm(self._contact_sensor.data.net_forces_w[:, 0, :], dim=-1)
-        hit_obstacle = contact_force > 0.1  # 0.1 Newton force threshold (high sensitivity)
+        contact_threshold = 3.0 if getattr(self, "is_brain_play", False) else 0.1
+        hit_obstacle = contact_force > contact_threshold
 
         # Debug: print contact forces for env 0 when a collision is detected (only in play mode)
         import sys
         import os
         is_play = "play" in os.path.basename(sys.argv[0])
         if is_play:
-            if hit_obstacle[0].item():
+            if hit_obstacle[0].item() and contact_force[0].item() > contact_threshold:
                 print(f"[COLLISION] Env 0: contact_force={contact_force[0].item():.2f} N, "
                       f"pos=({pos_local[0,0].item():.2f}, {pos_local[0,1].item():.2f}, {pos_local[0,2].item():.2f})")
             # Also log total collision count across all envs each step (only if any collisions)
             total_collisions = hit_obstacle.sum().item()
-            if total_collisions > 0:
+            if total_collisions > 0 and contact_force.max().item() > contact_threshold:
                 print(f"[COLLISION] Step {self.common_step_counter}: {int(total_collisions)}/{self.num_envs} envs hit obstacle")
 
         # 2. Check physical LiDAR distance: crash if drone is closer than collision radius to any obstacle/wall
@@ -1150,9 +1841,13 @@ class AEPPODroneEnv(DirectRLEnv):
         hit_physical_obstacle = min_lidar_dist < current_radius
 
         # 3. Check analytical boxes (failsafe for LiDAR blind spots / clipping)
-        hit_box_obstacle = self._is_inside_map_obstacle(
-            pos_local[:, 0], pos_local[:, 1], margin=current_radius
-        )
+        if getattr(self, "is_brain_play", False):
+            # Brain play: trust physics contacts/LiDAR only — walkable grid must not trigger crashes.
+            hit_box_obstacle = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        else:
+            hit_box_obstacle = self._is_inside_map_obstacle(
+                pos_local[:, 0], pos_local[:, 1], margin=current_radius
+            )
 
         # 4. Check analytical dynamic pillars (failsafe for dynamic obstacles)
         hit_dynamic_pillar = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1166,15 +1861,32 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # Capture crash reason for Env 0
         if self.num_envs > 0:
-            if hit_floor[0].item():
+            if getattr(self, "is_brain_play", False):
+                if hit_floor[0].item():
+                    self._env0_crash_reason = "Floor Bounds Collision"
+                elif hit_ceiling[0].item():
+                    self._env0_crash_reason = "Ceiling Bounds Collision"
+                elif hit_wall[0].item():
+                    self._env0_crash_reason = "Arena Wall Boundary"
+                elif hit_obstacle[0].item() or hit_dynamic_pillar[0].item():
+                    self._env0_crash_reason = "Obstacle Collision"
+                else:
+                    self._env0_crash_reason = None
+            elif hit_floor[0].item():
                 self._env0_crash_reason = "Floor Bounds Collision"
             elif hit_ceiling[0].item():
                 self._env0_crash_reason = "Ceiling Bounds Collision"
             elif hit_wall[0].item():
                 self._env0_crash_reason = "Arena Wall Boundary"
-            elif hit_dynamic_pillar[0].item() or (hit_physical_obstacle[0].item() and len(self._pillars) > 0 and torch.min(self._compute_obstacle_distances()[0]) < current_radius + 0.1):
+            elif hit_dynamic_pillar[0].item() or (
+                hit_physical_obstacle[0].item()
+                and self._min_pillar_dist(0) < current_radius + 0.1
+            ):
                 self._env0_crash_reason = "Dynamic Pillar Collision"
-            elif hit_box_obstacle[0].item() or (hit_physical_obstacle[0].item() and torch.min(self._compute_map_obstacle_distances()[0]) < current_radius + 0.1):
+            elif hit_box_obstacle[0].item() or (
+                hit_physical_obstacle[0].item()
+                and self._min_map_obstacle_dist(0) < current_radius + 0.1
+            ):
                 self._env0_crash_reason = "Static Wall Collision"
             elif hit_obstacle[0].item():
                 # If contact sensor triggered, check height to distinguish floor/ceiling from obstacles
@@ -1184,23 +1896,17 @@ class AEPPODroneEnv(DirectRLEnv):
                 elif z_val > (2.5 * map_scale - 0.15):
                     self._env0_crash_reason = "Ceiling Collision (Contact)"
                 else:
-                    if len(self._pillars) > 0:
-                        min_pillar_dist = torch.min(self._compute_obstacle_distances()[0]).item()
-                    else:
-                        min_pillar_dist = float('inf')
-                    min_static_dist = torch.min(self._compute_map_obstacle_distances()[0]).item()
-                    
+                    min_pillar_dist = self._min_pillar_dist(0)
+                    min_static_dist = self._min_map_obstacle_dist(0)
+
                     if min_pillar_dist < min_static_dist:
                         self._env0_crash_reason = "Dynamic Pillar Collision (Contact)"
                     else:
                         self._env0_crash_reason = "Static Wall Collision (Contact)"
             elif hit_physical_obstacle[0].item():
-                if len(self._pillars) > 0:
-                    min_pillar_dist = torch.min(self._compute_obstacle_distances()[0]).item()
-                else:
-                    min_pillar_dist = float('inf')
-                min_static_dist = torch.min(self._compute_map_obstacle_distances()[0]).item()
-                
+                min_pillar_dist = self._min_pillar_dist(0)
+                min_static_dist = self._min_map_obstacle_dist(0)
+
                 if min_pillar_dist < min_static_dist:
                     self._env0_crash_reason = "Dynamic Pillar Collision (LiDAR)"
                 else:
@@ -1222,8 +1928,13 @@ class AEPPODroneEnv(DirectRLEnv):
             | hit_dynamic_pillar
         )
         if getattr(self, "is_brain_play", False):
-            # In play mode, only reset on crash (died), do not reset when reaching intermediate waypoints
-            terminated = died
+            # In play mode, only reset on crash (died), do not reset when reaching intermediate waypoints.
+            # brain_reset_on_crash=False keeps the sim running after a wall hit (no auto-reset).
+            self._last_died = died
+            if getattr(self.cfg, "brain_reset_on_crash", True):
+                terminated = died
+            else:
+                terminated = torch.zeros_like(died)
         else:
             terminated = died | reached_goal
         return terminated, time_out
@@ -1268,7 +1979,16 @@ class AEPPODroneEnv(DirectRLEnv):
         
         # Collision & goal rates (across all envs in this reset batch)
         reached_goal_mask = dist_per_env < self.cfg.goal_radius
-        crash_mask = self.reset_terminated[env_ids] & ~reached_goal_mask
+        if getattr(self, "is_brain_play", False):
+            # SCAN locks the goal on the drone — distance is ~0 and must not read as SUCCESS.
+            last_died = getattr(self, "_last_died", None)
+            if last_died is not None:
+                crash_mask = last_died[env_ids]
+            else:
+                crash_mask = self.reset_terminated[env_ids]
+            reached_goal_mask = torch.zeros_like(reached_goal_mask)
+        else:
+            crash_mask = self.reset_terminated[env_ids] & ~reached_goal_mask
         total_resets = max(len(env_ids), 1)
         batch_goal_rate = torch.count_nonzero(reached_goal_mask).item() / total_resets
 
@@ -1312,7 +2032,9 @@ class AEPPODroneEnv(DirectRLEnv):
             for i, env_id in enumerate(env_ids):
                 env_id_val = env_id.item()
                 step_count = int(self.episode_length_buf[env_id].item())
-                if reached_goal_mask[i]:
+                if getattr(self, "is_brain_play", False):
+                    status = "FAILED (Crashed!)" if crash_mask[i] else "RESET (Brain play)"
+                elif reached_goal_mask[i]:
                     status = "SUCCESS (Reached Goal!)"
                 elif crash_mask[i]:
                     status = "FAILED (Crashed!)"
@@ -1377,23 +2099,32 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids, 1] = self._terrain.env_origins[env_ids, 1] + goal_offsets[:, 1]
             self._desired_pos_w[env_ids, 2] = torch.ones(env_count, device=self.device) * getattr(self.cfg, "corner_goal_z", 1.0)
         else:
-            map_scale = getattr(self.cfg, "map_scale", 1.0)
-            spawn_limit = 20.0 * map_scale
-            spawn_x = torch.zeros(env_count, device=self.device).uniform_(-spawn_limit, spawn_limit)
-            spawn_y = torch.zeros(env_count, device=self.device).uniform_(-spawn_limit, spawn_limit)
+            spawn_cells = getattr(self, "_interior_walkable_spawn_cells", None)
+            if spawn_cells is None or spawn_cells.shape[0] == 0:
+                spawn_cells = getattr(self, "_walkable_spawn_cells", None)
+            if spawn_cells is not None and spawn_cells.shape[0] > 0:
+                idx = torch.randint(0, spawn_cells.shape[0], (env_count,), device=self.device)
+                spawn_x = spawn_cells[idx, 0].to(self.device)
+                spawn_y = spawn_cells[idx, 1].to(self.device)
+            else:
+                min_x, max_x, min_y, max_y = self._get_spawn_xy_limits()
+                spawn_x = torch.zeros(env_count, device=self.device).uniform_(min_x, max_x)
+                spawn_y = torch.zeros(env_count, device=self.device).uniform_(min_y, max_y)
 
-            # Resample drone spawns that are inside map obstacles
-            for _ in range(10):
-                in_obstacle = self._is_inside_map_obstacle(spawn_x, spawn_y)
-                if not torch.any(in_obstacle):
-                    break
-                n = torch.sum(in_obstacle).item()
-                spawn_x[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-spawn_limit, spawn_limit)
-                spawn_y[in_obstacle] = torch.zeros(n, device=self.device).uniform_(-spawn_limit, spawn_limit)
+                # Resample drone spawns that are inside map obstacles or off the walkable floor
+                for _ in range(25):
+                    in_obstacle = self._is_inside_map_obstacle(spawn_x, spawn_y)
+                    if not torch.any(in_obstacle):
+                        break
+                    n = torch.sum(in_obstacle).item()
+                    spawn_x[in_obstacle] = torch.zeros(n, device=self.device).uniform_(min_x, max_x)
+                    spawn_y[in_obstacle] = torch.zeros(n, device=self.device).uniform_(min_y, max_y)
 
             default_root_state[:, 0] = spawn_x + self._terrain.env_origins[env_ids, 0]
             default_root_state[:, 1] = spawn_y + self._terrain.env_origins[env_ids, 1]
             default_root_state[:, 2] = 1.0
+
+            min_x, max_x, min_y, max_y = self._get_spawn_xy_limits()
 
             # Initialize goals at a distance determined by the curriculum level
             min_d, max_d = self.curriculum_distances[self.curriculum_level]
@@ -1405,12 +2136,13 @@ class AEPPODroneEnv(DirectRLEnv):
             goal_x_local = spawn_x + dist * torch.cos(angle)
             goal_y_local = spawn_y + dist * torch.sin(angle)
 
-            # Resample goals that are inside map obstacles or out of bounds [-23.7, 23.7] scaled
-            # Wall at 23.90, collision at 23.85. Keep goal at least 23.70 to avoid forcing drone into walls.
-            goal_limit = 23.7 * map_scale
+            # Resample goals that are inside map obstacles or outside the active room bounds
             for attempt in range(25):
                 in_obstacle = self._is_inside_map_obstacle(goal_x_local, goal_y_local)
-                out_of_bounds = (goal_x_local.abs() > goal_limit) | (goal_y_local.abs() > goal_limit)
+                out_of_bounds = (
+                    (goal_x_local < min_x) | (goal_x_local > max_x)
+                    | (goal_y_local < min_y) | (goal_y_local > max_y)
+                )
                 bad = in_obstacle | out_of_bounds
                 if not torch.any(bad):
                     break
@@ -1544,12 +2276,18 @@ class AEPPODroneEnv(DirectRLEnv):
             self.drone_tracker_visualizer.set_visibility(True)
 
             if not hasattr(self, "ceiling_visualizer"):
-                map_scale = getattr(self.cfg, "map_scale", 1.0)
+                bounds = getattr(self, "_room_bounds_local", None)
+                if bounds is not None:
+                    min_x, max_x, min_y, max_y, _ = bounds
+                    ceil_size = (max(max_x - min_x, 1.0), max(max_y - min_y, 1.0), 0.02)
+                else:
+                    map_scale = getattr(self.cfg, "map_scale", 1.0)
+                    ceil_size = (48.0 * map_scale, 48.0 * map_scale, 0.02)
                 ceiling_marker_cfg = VisualizationMarkersCfg(
                     prim_path="/Visuals/Ceiling",
                     markers={
                         "cuboid": sim_utils.CuboidCfg(
-                            size=(48.0 * map_scale, 48.0 * map_scale, 0.02),  # Scaled thin glass sheet
+                            size=ceil_size,
                             visual_material=sim_utils.PreviewSurfaceCfg(
                                 diffuse_color=(0.0, 0.8, 1.0),  # Cyan color
                                 opacity=0.15,
@@ -1645,11 +2383,8 @@ class AEPPODroneEnv(DirectRLEnv):
             if hasattr(self, "drone_tracker_visualizer"):
                 self.drone_tracker_visualizer.visualize(robot.data.root_pos_w[:, :3])
             if hasattr(self, "ceiling_visualizer"):
-                map_scale = getattr(self.cfg, "map_scale", 1.0)
-                z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
-                x_origin = self._terrain.env_origins[0, 0].item()
-                y_origin = self._terrain.env_origins[0, 1].item()
-                ceil_pos = torch.tensor([[x_origin, y_origin, z_ceil]], device=self.device)
+                x_min, x_max, y_min, y_max, z_ceil = self._get_room_debug_xy_bounds_world()
+                ceil_pos = torch.tensor([[(x_min + x_max) * 0.5, (y_min + y_max) * 0.5, z_ceil]], device=self.device)
                 self.ceiling_visualizer.visualize(ceil_pos)
             if hasattr(self, "pillar_zone_visualizer_list") and len(self._pillars) > 0:
                 for i, (pillar, viz) in enumerate(zip(self._pillars, self.pillar_zone_visualizer_list)):
@@ -1701,47 +2436,29 @@ class AEPPODroneEnv(DirectRLEnv):
                     thicknesses.append(2.0)
                     colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green for all active rays
 
-                # --- Draw ceiling grid at Z = 2.5 * map_scale ---
-                map_scale = getattr(self.cfg, "map_scale", 1.0)
-                z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
+                # --- Draw walkable floor footprint (R-shaped), not rectangular AABB ---
+                z_ceil = self._get_room_ceiling_z_local() + self._terrain.env_origins[0, 2].item()
                 x_origin = self._terrain.env_origins[0, 0].item()
                 y_origin = self._terrain.env_origins[0, 1].item()
-                x_min, x_max = x_origin - 24.0 * map_scale, x_origin + 24.0 * map_scale
-                y_min, y_max = y_origin - 24.0 * map_scale, y_origin + 24.0 * map_scale
-
-                ceil_color = (0.0, 0.8, 1.0, 0.4)  # cyan boundary
+                ceil_color = (0.0, 0.8, 1.0, 0.7)
                 ceil_thick = 3.0
 
-                boundary_pts = [
-                    ((x_min, y_min, z_ceil), (x_max, y_min, z_ceil)),
-                    ((x_max, y_min, z_ceil), (x_max, y_max, z_ceil)),
-                    ((x_max, y_max, z_ceil), (x_min, y_max, z_ceil)),
-                    ((x_min, y_max, z_ceil), (x_min, y_min, z_ceil)),
-                ]
-                for p1, p2 in boundary_pts:
-                    start_points.append(p1)
-                    end_points.append(p2)
+                for p1, p2 in self._get_walkable_boundary_segments_local(self._get_room_ceiling_z_local()):
+                    wp1 = (p1[0] + x_origin, p1[1] + y_origin, z_ceil)
+                    wp2 = (p2[0] + x_origin, p2[1] + y_origin, z_ceil)
+                    start_points.append(wp1)
+                    end_points.append(wp2)
                     colors.append(ceil_color)
                     thicknesses.append(ceil_thick)
 
-                # Draw grid lines inside ceiling
-                grid_color = (0.0, 0.5, 0.8, 0.2)
-                grid_thick = 1.0
-                for x_val in range(-20, 25, 10):
-                    x_w = x_origin + x_val * map_scale
-                    start_points.append((x_w, y_min, z_ceil))
-                    end_points.append((x_w, y_max, z_ceil))
-                    colors.append(grid_color)
-                    thicknesses.append(grid_thick)
-                for y_val in range(-20, 25, 10):
-                    y_w = y_origin + y_val * map_scale
-                    start_points.append((x_min, y_w, z_ceil))
-                    end_points.append((x_max, y_w, z_ceil))
-                    colors.append(grid_color)
-                    thicknesses.append(grid_thick)
-
-                self._draw.draw_lines(start_points, end_points, colors, thicknesses)
+                if start_points:
+                    self._draw.draw_lines(start_points, end_points, colors, thicknesses)
         except (ReferenceError, AttributeError):
+            return
+        except Exception as exc:
+            if not getattr(self, "_debug_vis_error_logged", False):
+                self._debug_vis_error_logged = True
+                print(f"[DEBUG VIS] Callback error (ignored): {exc}")
             return
 
 

@@ -30,7 +30,14 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
         num_envs=1, env_spacing=6.0, replicate_physics=False
     )
 
-    # ---------- Map ----------
+    # ---------- Map (final_flat.usd) ----------
+    # Use meter-scale map as authored; do not reuse legacy FPS-arena obstacle boxes.
+    map_scale: float = 1.0
+    # Hard wall envelope for Brain planner — full final_flat.usd world AABB (env-local meters).
+    map_bounds: tuple = (-8.55, 4.05, -23.05, 2.05)  # min_x, max_x, min_y, max_y
+    # Optional interior no-go boxes: (min_x, max_x, min_y, max_y) each
+    map_obstacles: tuple = ()
+
     room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "final_flat.usd")
 
     # final_flat.usd is authored in meters (Z-up). Do NOT apply the legacy 0.01-scale
@@ -65,17 +72,42 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
 
     # ---------- Perception ----------
     use_mock_perception: bool = False  # False = real YOLO detection; True = mock (no detection)
+    yolo_person_conf_threshold: float = 0.95  # Only trigger rescue on high-confidence person (class 0)
+    yolo_min_bbox_area_frac: float = 0.008    # Ignore tiny false-positive boxes (<0.8% of image)
+
+    # ---------- Walkable floor (R-shaped map) ----------
+    walkable_grid_resolution: float = 0.4   # Meters per occupancy cell when parsing floor meshes from USD
+    walkable_min_cells: int = 80            # Reject grid if smaller — fall back to room AABB
+    walkable_min_area_m2: float = 20.0      # Reject grid if footprint area is too small
 
     # ---------- Brain Module Parameters ----------
     brain_step_size: float = 10.0       # Lawnmower corridor spacing in meters
     brain_safety_margin: float = 0.7    # Wall clearance for waypoint generation in meters
-    brain_yolo_interval: int = 5        # Run YOLO every N steps (during non-SCAN states)
+    brain_yolo_interval: int = 1        # Run YOLO every N steps (1 = every step, needed during SCAN spin)
+
+    # In play mode, reset the drone after a crash so it can continue the mission.
+    brain_reset_on_crash: bool = True
+    brain_disable_episode_timeout: bool = True  # Brain play runs until rescue or manual exit
+    brain_preserve_mission_on_crash: bool = False  # Sequential mission: crash → restart at spawn1
+
+    # ---------- Sequential SLAM mission (scan each room, then next spawn) ----------
+    brain_use_sequential_spawns: bool = True
+    brain_auto_room_spawns: bool = True  # Measure room_1..N centers from final_flat.usd at load time
+    brain_spawn_sequence: tuple = (
+        (0.0, 0.0, 1.0),        # room_1 center (fallback if auto-parse fails)
+        (0.0, -5.03, 1.0),      # room_2
+        (0.0, -12.01, 1.0),     # room_3
+        (-6.50, -20.50, 1.0),   # room_4
+        (-6.50, -21.70, 1.0),   # finish (south end of room_4)
+    )
+    brain_spawn_arrival_radius: float = 1.0   # meters to count as "arrived" at next spawn/finish
+    brain_coverage_mark_radius: float = 2.0   # meters to mark occupancy cells as visited after scan
 
     # ---------- Curriculum: Fixed at Level 5 (fully trained policy) ----------
     initial_curriculum_level: int = 5
 
     # ---------- Episode ----------
-    episode_length_s: float = 120.0     # Long episodes for full search & rescue missions
+    episode_length_s: float = 3600.0    # Long run for full search missions (timeout disabled in play)
     debug_vis: bool = True
     show_ae_images: bool = False
 
