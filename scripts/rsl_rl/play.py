@@ -247,62 +247,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             else:
                 policy_nn.reset(dones)
                 
-<<<<<<< Updated upstream
-        # Update debug viewer if enabled
-        if args_cli.viewer and timestep % 2 == 0:
-            if hasattr(env.unwrapped, "_tiled_camera"):
-                raw_depth = env.unwrapped._tiled_camera.data.output["depth"][0, :, :, 0].clone()
-
-                # User defined min (w) and max (b) limits for depth mapping
-                w = 0.1
-                b = 5.0
-                
-                # Map inf/nan depending on user b value (maximum expected distance)
-                raw_depth[raw_depth == float("inf")] = b
-                raw_depth[torch.isnan(raw_depth)] = b
-                
-                # Clamp within user-defined range [w, b]
-                raw_depth = raw_depth.clamp(w, b)
-                
-                # Normalize to 0-255 uint8 format
-                depth_range = max(b - w, 1e-6)
-                normalized_img = (((raw_depth - w) / depth_range) * 255.0).byte().cpu().numpy()
-                
-                # Upscale for the debug viewer
-                display_img = cv2.resize(normalized_img, (500, 500), interpolation=cv2.INTER_NEAREST)
-                
-                cv2.imshow("Drone Env 0 Camera", display_img)
-
-                # --- AE Reconstruction Viewer ---
-                if hasattr(env.unwrapped, "ae") and hasattr(env.unwrapped, "_last_depth_processed"):
-                    import numpy as np
-                    depth_proc = env.unwrapped._last_depth_processed
-                    if depth_proc is not None and depth_proc.shape[0] > 0:
-                        with torch.no_grad():
-                            z = env.unwrapped.ae.encode(depth_proc[:1])
-                            recon = env.unwrapped.ae.decode(z)
-                        
-                        input_img = depth_proc[0, 0].cpu().numpy()
-                        recon_img = recon[0, 0].cpu().numpy()
-                        
-                        input_vis = np.uint8(np.clip(input_img * 255.0, 0, 255))
-                        recon_vis = np.uint8(np.clip(recon_img * 255.0, 0, 255))
-                        combined = np.hstack([input_vis, recon_vis])
-                        
-                        scale = 4
-                        combined = cv2.resize(combined, (combined.shape[1] * scale, combined.shape[0] * scale),
-                                              interpolation=cv2.INTER_NEAREST)
-                        combined = cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR)
-                        cv2.putText(combined, "AE Input (left) | Reconstruction (right)",
-                                    (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-                        cv2.imshow("AE Input vs Reconstruction", combined)
-
-                cv2.waitKey(1)
-=======
         # The AE Input/Output window is automatically handled by the environment 
         # when show_ae_images=True (which is set above). 
         # We don't need redundant viewer windows here.
->>>>>>> Stashed changes
 
         timestep += 1
         
