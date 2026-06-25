@@ -9,6 +9,8 @@ and its detached latent is fed to PPO.
 """
 from __future__ import annotations
 
+import weakref
+
 import gymnasium as gym
 import torch
 import torch.nn.functional as F
@@ -40,6 +42,13 @@ from .ae_ppo_drone_env_cfg import AEPPODroneEnvCfg
 from first_drone.models.ae import AE
 from isaaclab.sensors import MultiMeshRayCaster, MultiMeshRayCasterCfg
 from isaaclab.sensors.ray_caster.patterns.patterns_cfg import LidarPatternCfg
+
+
+def _safe_debug_vis_callback_proxy(event, obj) -> None:
+    try:
+        obj._debug_vis_callback(event)
+    except ReferenceError:
+        return
 
 
 class AEPPODroneEnv(DirectRLEnv):
@@ -189,35 +198,71 @@ class AEPPODroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self):
         """Create drone, room (empty), dynamic pillars, terrain, camera, and lighting."""
+        import os
+
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
 
         map_scale = getattr(self.cfg, "map_scale", 1.0)
-        # Scale local Y (which becomes parent Z height) by 0.5 * map_scale to compress obstacle heights, and local X/Z by map_scale.
-        room_cfg = sim_utils.UsdFileCfg(
-            usd_path=self.cfg.room_usd_path,
-            scale=(0.01 * map_scale, 0.01 * map_scale * 0.5, 0.01 * map_scale),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-        )
-        room_cfg.func(
-            "/World/envs/env_0/Room",
-            room_cfg,
-            translation=(25.0 * map_scale, 25.0 * map_scale, -0.9937 * map_scale * 0.5 + 0.01),
-            orientation=(0.7071, 0.7071, 0.0, 0.0),
-        )
+        room_usd_path = os.path.abspath(self.cfg.room_usd_path)
+        if not os.path.isfile(room_usd_path):
+            raise FileNotFoundError(f"Room USD not found: {room_usd_path}")
+        print(f"\n[MAP] Loading room USD: {room_usd_path}\n")
+        if getattr(self.cfg, "use_direct_room_spawn", False):
+            room_scale = getattr(self.cfg, "room_spawn_scale", (1.0, 1.0, 1.0))
+            room_translation = getattr(self.cfg, "room_spawn_translation", (0.0, 0.0, 0.0))
+            room_orientation = getattr(self.cfg, "room_spawn_orientation", (1.0, 0.0, 0.0, 0.0))
+            print(
+                f"[MAP] Direct room spawn — scale={room_scale}, "
+                f"translation={room_translation}, orientation={room_orientation}\n"
+            )
+            room_cfg = sim_utils.UsdFileCfg(
+                usd_path=room_usd_path,
+                scale=room_scale,
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+            )
+            room_cfg.func(
+                "/World/envs/env_0/Room",
+                room_cfg,
+                translation=room_translation,
+                orientation=room_orientation,
+            )
+        else:
+            room_cfg = sim_utils.UsdFileCfg(
+                usd_path=room_usd_path,
+                scale=(0.01 * map_scale, 0.01 * map_scale, 0.01 * map_scale),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+            )
+            room_cfg.func(
+                "/World/envs/env_0/Room",
+                room_cfg,
+                translation=(-25.0 * map_scale, 25.0 * map_scale, -0.9937 * map_scale + 0.01),
+                orientation=(0.7071, 0.7071, 0.0, 0.0),
+            )
 
         # Apply CollisionAPI and PhysxCollisionAPI to all meshes inside the room model so they act as physics colliders
         from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema
         room_prim = self.sim.stage.GetPrimAtPath("/World/envs/env_0/Room")
         if room_prim.IsValid():
+            mesh_count = 0
             for prim in Usd.PrimRange(room_prim):
                 if prim.IsA(UsdGeom.Mesh):
+                    mesh_count += 1
                     if not prim.HasAPI(UsdPhysics.CollisionAPI):
                         UsdPhysics.CollisionAPI.Apply(prim)
                     if not prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
                         PhysxSchema.PhysxCollisionAPI.Apply(prim)
                     if not prim.HasAPI(PhysxSchema.PhysxTriangleMeshCollisionAPI):
                         PhysxSchema.PhysxTriangleMeshCollisionAPI.Apply(prim)
+            bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"])
+            bbox = bbox_cache.ComputeWorldBound(room_prim)
+            bbox_range = bbox.GetRange()
+            print(
+                f"[MAP] Room prim valid — meshes={mesh_count}, "
+                f"world bounds min={bbox_range.GetMin()}, max={bbox_range.GetMax()}\n"
+            )
+        else:
+            print("[MAP] WARNING: Room prim /World/envs/env_0/Room is invalid after spawn!\n")
 
         # --- Dynamic obstacles (diverse shapes, defined here to avoid @configclass serialization) ---
         obstacle_spawns = [
@@ -494,7 +539,10 @@ class AEPPODroneEnv(DirectRLEnv):
         
         # Manually trigger debug visualization callback on each programmatic step
         if self.cfg.debug_vis:
-            self._debug_vis_callback(None)
+            try:
+                self._debug_vis_callback(None)
+            except ReferenceError:
+                pass
             
         return obs, rewards, terminated, truncated, info
 
@@ -1442,6 +1490,23 @@ class AEPPODroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # Debug vis
     # ------------------------------------------------------------------
+    def set_debug_vis(self, debug_vis: bool) -> None:
+        import omni.kit.app
+
+        if debug_vis:
+            if not hasattr(self, "_debug_vis_handle") or self._debug_vis_handle is None:
+                app_interface = omni.kit.app.get_app()
+                self._debug_vis_handle = app_interface.get_post_update_event_stream().create_subscription_to_pop(
+                    lambda event, obj=weakref.proxy(self): _safe_debug_vis_callback_proxy(event, obj),
+                    order=10,
+                )
+            self._set_debug_vis_impl(True)
+        else:
+            if hasattr(self, "_debug_vis_handle") and self._debug_vis_handle is not None:
+                self._debug_vis_handle.unsubscribe()
+                self._debug_vis_handle = None
+            self._set_debug_vis_impl(False)
+
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if not hasattr(self, "goal_pos_visualizer"):
@@ -1566,111 +1631,117 @@ class AEPPODroneEnv(DirectRLEnv):
                 self._draw.clear_lines()
 
     def _debug_vis_callback(self, event):
-        # Prevent the visual goal sphere from spawning on top of the drone and blocking the camera
-        goal_pos = self._desired_pos_w.clone()
-        drone_pos = self._robot.data.root_pos_w[:, :3]
-        dist_to_drone = torch.norm(goal_pos - drone_pos, dim=-1)
-        too_close = dist_to_drone < 0.65
-        goal_pos[too_close, 2] -= 10.0  # Temporarily hide underground
-        self.goal_pos_visualizer.visualize(goal_pos)
-        if hasattr(self, "drone_tracker_visualizer"):
-            self.drone_tracker_visualizer.visualize(self._robot.data.root_pos_w[:, :3])
-        if hasattr(self, "ceiling_visualizer"):
-            map_scale = getattr(self.cfg, "map_scale", 1.0)
-            z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
-            x_origin = self._terrain.env_origins[0, 0].item()
-            y_origin = self._terrain.env_origins[0, 1].item()
-            ceil_pos = torch.tensor([[x_origin, y_origin, z_ceil]], device=self.device)
-            self.ceiling_visualizer.visualize(ceil_pos)
-        if hasattr(self, "pillar_zone_visualizer_list") and len(self._pillars) > 0:
-            for i, (pillar, viz) in enumerate(zip(self._pillars, self.pillar_zone_visualizer_list)):
-                pos = pillar.data.root_pos_w[0, :3].unsqueeze(0)  # (1, 3)
-                quat = pillar.data.root_quat_w[0, :4].unsqueeze(0)  # (1, 4)
-                viz.visualize(pos, quat)
+        try:
+            robot = getattr(self, "_robot", None)
+            if robot is None or not hasattr(robot, "data"):
+                return
+            # Prevent the visual goal sphere from spawning on top of the drone and blocking the camera
+            goal_pos = self._desired_pos_w.clone()
+            drone_pos = robot.data.root_pos_w[:, :3]
+            dist_to_drone = torch.norm(goal_pos - drone_pos, dim=-1)
+            too_close = dist_to_drone < 0.65
+            goal_pos[too_close, 2] -= 10.0  # Temporarily hide underground
+            self.goal_pos_visualizer.visualize(goal_pos)
+            if hasattr(self, "drone_tracker_visualizer"):
+                self.drone_tracker_visualizer.visualize(robot.data.root_pos_w[:, :3])
+            if hasattr(self, "ceiling_visualizer"):
+                map_scale = getattr(self.cfg, "map_scale", 1.0)
+                z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
+                x_origin = self._terrain.env_origins[0, 0].item()
+                y_origin = self._terrain.env_origins[0, 1].item()
+                ceil_pos = torch.tensor([[x_origin, y_origin, z_ceil]], device=self.device)
+                self.ceiling_visualizer.visualize(ceil_pos)
+            if hasattr(self, "pillar_zone_visualizer_list") and len(self._pillars) > 0:
+                for i, (pillar, viz) in enumerate(zip(self._pillars, self.pillar_zone_visualizer_list)):
+                    pos = pillar.data.root_pos_w[0, :3].unsqueeze(0)  # (1, 3)
+                    quat = pillar.data.root_quat_w[0, :4].unsqueeze(0)  # (1, 4)
+                    viz.visualize(pos, quat)
 
-        # Draw 2D LiDAR ray lines in world frame for Env 0
-        if hasattr(self, "_draw") and self._draw is not None and getattr(self, "_last_lidar_scan", None) is not None:
-            self._draw.clear_lines()
-            # Get drone position and orientation in world coordinates
-            drone_pos = self._robot.data.root_pos_w[0, :3]  # (3,)
-            drone_quat = self._robot.data.root_quat_w[0, :4]  # (4,)
-            p_start = (drone_pos[0].item(), drone_pos[1].item(), drone_pos[2].item())
+            # Draw 2D LiDAR ray lines in world frame for Env 0
+            if hasattr(self, "_draw") and self._draw is not None and getattr(self, "_last_lidar_scan", None) is not None:
+                self._draw.clear_lines()
+                # Get drone position and orientation in world coordinates
+                drone_pos = robot.data.root_pos_w[0, :3]  # (3,)
+                drone_quat = robot.data.root_quat_w[0, :4]  # (4,)
+                p_start = (drone_pos[0].item(), drone_pos[1].item(), drone_pos[2].item())
 
-            num_rays = 24
-            ray_angles_b = torch.linspace(-torch.pi, torch.pi, num_rays + 1, device=self.device)[:-1]
+                num_rays = 24
+                ray_angles_b = torch.linspace(-torch.pi, torch.pi, num_rays + 1, device=self.device)[:-1]
 
-            # 1. Define ray directions in the drone's body frame
-            cos_b = torch.cos(ray_angles_b)
-            sin_b = torch.sin(ray_angles_b)
-            zeros_b = torch.zeros_like(ray_angles_b)
-            ray_dirs_b = torch.stack([cos_b, sin_b, zeros_b], dim=-1)  # (24, 3)
+                # 1. Define ray directions in the drone's body frame
+                cos_b = torch.cos(ray_angles_b)
+                sin_b = torch.sin(ray_angles_b)
+                zeros_b = torch.zeros_like(ray_angles_b)
+                ray_dirs_b = torch.stack([cos_b, sin_b, zeros_b], dim=-1)  # (24, 3)
 
-            # 2. Rotate ray directions to the world frame using the drone's quaternion
-            quat_w = drone_quat.unsqueeze(0).repeat(num_rays, 1)  # (24, 4)
-            ray_dirs_w = quat_rotate(quat_w, ray_dirs_b)  # (24, 3)
+                # 2. Rotate ray directions to the world frame using the drone's quaternion
+                quat_w = drone_quat.unsqueeze(0).repeat(num_rays, 1)  # (24, 4)
+                ray_dirs_w = quat_rotate(quat_w, ray_dirs_b)  # (24, 3)
 
-            start_points = []
-            end_points = []
-            colors = []
-            thicknesses = []
+                start_points = []
+                end_points = []
+                colors = []
+                thicknesses = []
 
-            for i in range(num_rays):
-                # Only draw rays that hit an actual obstacle within 9.0m (to exclude non-hits)
-                raw_dist = self._last_lidar_scan[0, i].item()
-                if raw_dist >= 9.0:
-                    continue
-                
-                dir_w = ray_dirs_w[i]
-                # Compute ray end point in world coordinates using rotated directions and real distance
-                p_end = (
-                    p_start[0] + raw_dist * dir_w[0].item(),
-                    p_start[1] + raw_dist * dir_w[1].item(),
-                    p_start[2] + raw_dist * dir_w[2].item(),
-                )
-                start_points.append(p_start)
-                end_points.append(p_end)
-                thicknesses.append(2.0)
-                colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green for all active rays
+                for i in range(num_rays):
+                    # Only draw rays that hit an actual obstacle within 9.0m (to exclude non-hits)
+                    raw_dist = self._last_lidar_scan[0, i].item()
+                    if raw_dist >= 9.0:
+                        continue
 
-            # --- Draw ceiling grid at Z = 2.5 * map_scale ---
-            map_scale = getattr(self.cfg, "map_scale", 1.0)
-            z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
-            x_origin = self._terrain.env_origins[0, 0].item()
-            y_origin = self._terrain.env_origins[0, 1].item()
-            x_min, x_max = x_origin - 24.0 * map_scale, x_origin + 24.0 * map_scale
-            y_min, y_max = y_origin - 24.0 * map_scale, y_origin + 24.0 * map_scale
+                    dir_w = ray_dirs_w[i]
+                    # Compute ray end point in world coordinates using rotated directions and real distance
+                    p_end = (
+                        p_start[0] + raw_dist * dir_w[0].item(),
+                        p_start[1] + raw_dist * dir_w[1].item(),
+                        p_start[2] + raw_dist * dir_w[2].item(),
+                    )
+                    start_points.append(p_start)
+                    end_points.append(p_end)
+                    thicknesses.append(2.0)
+                    colors.append((0.0, 1.0, 0.0, 0.8))  # Translucent green for all active rays
 
-            ceil_color = (0.0, 0.8, 1.0, 0.4)  # cyan boundary
-            ceil_thick = 3.0
+                # --- Draw ceiling grid at Z = 2.5 * map_scale ---
+                map_scale = getattr(self.cfg, "map_scale", 1.0)
+                z_ceil = 2.5 * map_scale + self._terrain.env_origins[0, 2].item()
+                x_origin = self._terrain.env_origins[0, 0].item()
+                y_origin = self._terrain.env_origins[0, 1].item()
+                x_min, x_max = x_origin - 24.0 * map_scale, x_origin + 24.0 * map_scale
+                y_min, y_max = y_origin - 24.0 * map_scale, y_origin + 24.0 * map_scale
 
-            boundary_pts = [
-                ((x_min, y_min, z_ceil), (x_max, y_min, z_ceil)),
-                ((x_max, y_min, z_ceil), (x_max, y_max, z_ceil)),
-                ((x_max, y_max, z_ceil), (x_min, y_max, z_ceil)),
-                ((x_min, y_max, z_ceil), (x_min, y_min, z_ceil)),
-            ]
-            for p1, p2 in boundary_pts:
-                start_points.append(p1)
-                end_points.append(p2)
-                colors.append(ceil_color)
-                thicknesses.append(ceil_thick)
+                ceil_color = (0.0, 0.8, 1.0, 0.4)  # cyan boundary
+                ceil_thick = 3.0
 
-            # Draw grid lines inside ceiling
-            grid_color = (0.0, 0.5, 0.8, 0.2)
-            grid_thick = 1.0
-            for x_val in range(-20, 25, 10):
-                x_w = x_origin + x_val * map_scale
-                start_points.append((x_w, y_min, z_ceil))
-                end_points.append((x_w, y_max, z_ceil))
-                colors.append(grid_color)
-                thicknesses.append(grid_thick)
-            for y_val in range(-20, 25, 10):
-                y_w = y_origin + y_val * map_scale
-                start_points.append((x_min, y_w, z_ceil))
-                end_points.append((x_max, y_w, z_ceil))
-                colors.append(grid_color)
-                thicknesses.append(grid_thick)
+                boundary_pts = [
+                    ((x_min, y_min, z_ceil), (x_max, y_min, z_ceil)),
+                    ((x_max, y_min, z_ceil), (x_max, y_max, z_ceil)),
+                    ((x_max, y_max, z_ceil), (x_min, y_max, z_ceil)),
+                    ((x_min, y_max, z_ceil), (x_min, y_min, z_ceil)),
+                ]
+                for p1, p2 in boundary_pts:
+                    start_points.append(p1)
+                    end_points.append(p2)
+                    colors.append(ceil_color)
+                    thicknesses.append(ceil_thick)
 
-            self._draw.draw_lines(start_points, end_points, colors, thicknesses)
+                # Draw grid lines inside ceiling
+                grid_color = (0.0, 0.5, 0.8, 0.2)
+                grid_thick = 1.0
+                for x_val in range(-20, 25, 10):
+                    x_w = x_origin + x_val * map_scale
+                    start_points.append((x_w, y_min, z_ceil))
+                    end_points.append((x_w, y_max, z_ceil))
+                    colors.append(grid_color)
+                    thicknesses.append(grid_thick)
+                for y_val in range(-20, 25, 10):
+                    y_w = y_origin + y_val * map_scale
+                    start_points.append((x_min, y_w, z_ceil))
+                    end_points.append((x_max, y_w, z_ceil))
+                    colors.append(grid_color)
+                    thicknesses.append(grid_thick)
+
+                self._draw.draw_lines(start_points, end_points, colors, thicknesses)
+        except (ReferenceError, AttributeError):
+            return
 
 
