@@ -25,7 +25,7 @@ from isaaclab.utils import configclass
 class AEPPODroneEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 30.0
+    episode_length_s = 20.0
     debug_vis = True
 
     # simulation
@@ -58,7 +58,7 @@ class AEPPODroneEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=512, env_spacing=6.0, replicate_physics=True
+        num_envs=64, env_spacing=10.0, replicate_physics=True
     )
 
     # robot

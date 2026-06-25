@@ -8,7 +8,8 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "navigation_drone_direct"
     logger = "wandb"
-    wandb_project = "first_drone"
+    wandb_project = "Multilevel_Train"
+
 
     # Actor network
     actor = RslRlMLPModelCfg(

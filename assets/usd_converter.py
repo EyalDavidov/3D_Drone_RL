@@ -1,7 +1,8 @@
+import os
 from pxr import Usd, UsdGeom
 
 # טעינת קובץ ה-USD שלך
-stage = Usd.Stage.Open(r"D:\isaac\3D_Drone_RL\assets\room_with_poles.usd")
+stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "room_with_poles.usd"))
 
 # מעבר על כל האובייקטים (Prims) בסצנה
 print("--- מחפש עמודים במפה ---")

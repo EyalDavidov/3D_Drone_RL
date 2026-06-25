@@ -6,7 +6,7 @@ are collected.  No RL model is used — the drone follows a scripted
 circular trajectory via direct wrench control.
 
 Usage:
-    isaaclab.bat -p scripts/collect_depth_data.py --enable_cameras
+    c:\\Isaac\\IsaacLab\\isaaclab.bat -p scripts/collect_depth_data.py --enable_cameras
 """
 
 # ── Launch Isaac Sim first ──────────────────────────────────────────
@@ -58,8 +58,9 @@ from first_drone.robots.cf2x import DRONE_CONFIG
 #  Configuration
 # ═══════════════════════════════════════════════════════════════════
 
-ROOM_USD_PATH = r"D:\isaac\3D_Drone_RL\assets\Empty_Room.usd"
-POLE_USD_PATH = r"D:\isaac\3D_Drone_RL\assets\1_Pole.usd"
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ROOM_USD_PATH = os.path.join(_REPO_ROOT, "assets", "Empty_Room.usd")
+POLE_USD_PATH = os.path.join(_REPO_ROOT, "assets", "1_Pole.usd")
 MAX_POLES = 10             # max poles spawned; each reset picks 3-10 active
 DEPTH_MAX = 5.0            # metres – same as training env (5m gives better contrast in indoor rooms)
 DT = 1.0 / 100.0           # physics dt

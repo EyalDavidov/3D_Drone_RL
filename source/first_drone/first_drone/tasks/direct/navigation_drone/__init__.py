@@ -7,6 +7,8 @@ from .vae_sac_drone_env import SACDroneEnv
 from .vae_sac_drone_env_cfg import SACDroneEnvCfg
 from .ae_ppo_drone_env import AEPPODroneEnv
 from .ae_ppo_drone_env_cfg import AEPPODroneEnvCfg
+from .multilevel_drone_env import MultiLevelDroneEnv
+from .multilevel_drone_env_cfg import MultiLevelDroneEnvCfg
 
 ##
 # Register Gym environments.
@@ -22,7 +24,6 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:NavigationPPOCfg",
     },
 )
-
 gym.register(
     id="VAE-SAC-Drone-Direct-v0",
     entry_point=f"{__name__}.vae_sac_drone_env:SACDroneEnv",
@@ -43,3 +44,14 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:NavigationPPOCfg",
     },
 )
+
+gym.register(
+    id="MultiLevel-Drone-Direct-v0",
+    entry_point=f"{__name__}.multilevel_drone_env:MultiLevelDroneEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.multilevel_drone_env_cfg:MultiLevelDroneEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:NavigationPPOCfg",
+    },
+)
+

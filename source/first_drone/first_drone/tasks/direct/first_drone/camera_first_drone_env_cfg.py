@@ -1,4 +1,8 @@
 import os
+
+# Get repository root
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../"))
+
 from first_drone.robots.cf2x import DRONE_CONFIG
 
 # Get the repository root directory

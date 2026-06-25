@@ -834,7 +834,6 @@ class AEPPODroneEnv(DirectRLEnv):
         heading_error = wrap_to_pi(target_yaw - current_yaw)
         heading_alignment = torch.cos(heading_error)
 
-
         # 5. Angular velocity penalty (roll + pitch stability)
         ang_vel_sq = torch.sum(self._robot.data.root_ang_vel_b ** 2, dim=1)
 

@@ -13,12 +13,17 @@ import sys
 from isaaclab.app import AppLauncher
 
 # local imports
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), "rsl_rl"))
 import cli_args  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--num_images", type=int, default=10000, help="Number of depth images to collect.")
+parser.add_argument("--output_dir", type=str, default="data/depth_collection_rl", help="Output directory for depth images.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -51,16 +56,6 @@ sys.argv = [sys.argv[0]] + hydra_args
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
-
-# Enable the debug_draw extension programmatically so lasers can be rendered
-try:
-    import omni.kit.app
-    ext_manager = omni.kit.app.get_app().get_extension_manager()
-    if not ext_manager.is_extension_enabled("omni.isaac.debug_draw"):
-        print("\n[INFO] Programmatically enabling 'omni.isaac.debug_draw' extension...\n")
-        ext_manager.set_extension_enabled_immediate("omni.isaac.debug_draw", True)
-except Exception as e:
-    print(f"\n[WARNING] Could not enable 'omni.isaac.debug_draw' programmatically: {e}\n")
 
 """Check for installed RSL-RL version."""
 
@@ -122,11 +117,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
-    if args_cli.seed is not None:
-        env_cfg.seed = args_cli.seed
-    else:
-        import random
-        env_cfg.seed = random.randint(0, 100000)
+    env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
     # specify directory for logging experiments (locked to the project root folder)
@@ -231,6 +222,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs = env.get_observations()
     timestep = 0
+    num_collected = 0
+    import numpy as np
+    os.makedirs(args_cli.output_dir, exist_ok=True)
+    print(f"[INFO] Collecting up to {args_cli.num_images} depth images into {args_cli.output_dir}...")
+    
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -247,62 +243,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             else:
                 policy_nn.reset(dones)
                 
-<<<<<<< Updated upstream
-        # Update debug viewer if enabled
-        if args_cli.viewer and timestep % 2 == 0:
-            if hasattr(env.unwrapped, "_tiled_camera"):
-                raw_depth = env.unwrapped._tiled_camera.data.output["depth"][0, :, :, 0].clone()
-
-                # User defined min (w) and max (b) limits for depth mapping
-                w = 0.1
-                b = 5.0
+        # --- COLLECT DEPTH DATA ---
+        if num_collected < args_cli.num_images:
+            depth_batch = env.unwrapped._last_depth_processed
+            if depth_batch is not None:
+                depth_np = depth_batch[:, 0].cpu().numpy().astype(np.float32) # (B, H, W)
+                for i in range(depth_np.shape[0]):
+                    if num_collected >= args_cli.num_images:
+                        break
+                    filename = os.path.join(args_cli.output_dir, f"rl_depth_{num_collected:06d}.npy")
+                    np.save(filename, depth_np[i])
+                    num_collected += 1
                 
-                # Map inf/nan depending on user b value (maximum expected distance)
-                raw_depth[raw_depth == float("inf")] = b
-                raw_depth[torch.isnan(raw_depth)] = b
-                
-                # Clamp within user-defined range [w, b]
-                raw_depth = raw_depth.clamp(w, b)
-                
-                # Normalize to 0-255 uint8 format
-                depth_range = max(b - w, 1e-6)
-                normalized_img = (((raw_depth - w) / depth_range) * 255.0).byte().cpu().numpy()
-                
-                # Upscale for the debug viewer
-                display_img = cv2.resize(normalized_img, (500, 500), interpolation=cv2.INTER_NEAREST)
-                
-                cv2.imshow("Drone Env 0 Camera", display_img)
-
-                # --- AE Reconstruction Viewer ---
-                if hasattr(env.unwrapped, "ae") and hasattr(env.unwrapped, "_last_depth_processed"):
-                    import numpy as np
-                    depth_proc = env.unwrapped._last_depth_processed
-                    if depth_proc is not None and depth_proc.shape[0] > 0:
-                        with torch.no_grad():
-                            z = env.unwrapped.ae.encode(depth_proc[:1])
-                            recon = env.unwrapped.ae.decode(z)
-                        
-                        input_img = depth_proc[0, 0].cpu().numpy()
-                        recon_img = recon[0, 0].cpu().numpy()
-                        
-                        input_vis = np.uint8(np.clip(input_img * 255.0, 0, 255))
-                        recon_vis = np.uint8(np.clip(recon_img * 255.0, 0, 255))
-                        combined = np.hstack([input_vis, recon_vis])
-                        
-                        scale = 4
-                        combined = cv2.resize(combined, (combined.shape[1] * scale, combined.shape[0] * scale),
-                                              interpolation=cv2.INTER_NEAREST)
-                        combined = cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR)
-                        cv2.putText(combined, "AE Input (left) | Reconstruction (right)",
-                                    (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-                        cv2.imshow("AE Input vs Reconstruction", combined)
-
-                cv2.waitKey(1)
-=======
+                if num_collected % 1000 < depth_np.shape[0]:
+                    print(f"[INFO] Collected {num_collected}/{args_cli.num_images} images")
+                    
+                if num_collected >= args_cli.num_images:
+                    print(f"\n[DONE] Finished collecting {args_cli.num_images} images.")
+                    break
+        
         # The AE Input/Output window is automatically handled by the environment 
         # when show_ae_images=True (which is set above). 
         # We don't need redundant viewer windows here.
->>>>>>> Stashed changes
 
         timestep += 1
         

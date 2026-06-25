@@ -1,11 +1,10 @@
 import os
-
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-# Compute repository root relative to this file: robots/ -> first_drone/ -> first_drone/ -> source/ -> 3D_Drone_RL/
+# Get repository root
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 DRONE_CONFIG = ArticulationCfg(
