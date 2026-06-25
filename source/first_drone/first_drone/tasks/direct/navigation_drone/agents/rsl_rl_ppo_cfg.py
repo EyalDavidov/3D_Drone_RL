@@ -13,18 +13,18 @@ class NavigationPPOCfg(RslRlOnPolicyRunnerCfg):
 
     # Actor network
     actor = RslRlMLPModelCfg(
-        hidden_dims=[256, 128, 64],
+        hidden_dims=[128, 64, 32],
         activation="elu",
         obs_normalization=False,
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
-            init_std=0.8,
-            std_type="log",
+            init_std=1.0,
+            std_type="scalar",
         ),
     )
 
     # Critic network
     critic = RslRlMLPModelCfg(
-        hidden_dims=[256, 128, 64],
+        hidden_dims=[128, 64, 32],
         activation="elu",
         obs_normalization=False,
     )
