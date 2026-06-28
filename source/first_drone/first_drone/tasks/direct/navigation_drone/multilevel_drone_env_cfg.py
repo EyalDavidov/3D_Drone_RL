@@ -105,13 +105,13 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
 
     # ---------- Spaces ----------
     action_space = 4
-    observation_space = 45
+    observation_space = 77
     state_space = 0
 
     # ---------- AE (Autoencoder) ----------
-    ae_latent_dim: int = 32
+    ae_latent_dim: int = 64
     depth_max: float = 5.0
-    ae_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "ae_finetuned_64", "ae_final.pt")
+    ae_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "ae_1_7_latent_64", "ae_final.pt")
 
     # ---------- Flight controller ----------
     llc_checkpoint_path: str = os.path.join(
@@ -165,7 +165,7 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     w_distance: float = 3.0
     w_goal: float = 400.0 #FROM 300
     w_time: float = -0.05
-    w_heading: float = 0.05 #FROM 0.15
+    w_heading: float = 0.1 #FROM 0.15
     collision_penalty: float = -250.0
     w_ang_vel: float = -0.01
     w_yaw_rate: float = -0.1

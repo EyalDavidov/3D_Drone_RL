@@ -93,3 +93,11 @@ data/
 
 # Temporary scratch folder
 scratch/
+
+# לא להתעלם מתיקיית הלוג הספציפית הזו
+!logs/ae_1_7_latent_64/
+# ואז להחריג את הקובץ בתוכה
+!logs/ae_1_7_latent_64/ae_final.pt
+# המודל הכי סבבה לבינתיים 29/06
+!logs/ppo/navigation_drone_direct/good_model_latent_64_static_rooms_3_4/
+!logs/ppo/navigation_drone_direct/good_model_latent_64_static_rooms_3_4/model_700.pt
