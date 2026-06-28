@@ -171,7 +171,8 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     w_yaw_rate: float = -0.1
     w_action: float = -0.005
     w_action_rate: float = -0.05 #FROM -0.02
-    w_sideslip: float = -0.3 #FROM -0.2
+    w_sideslip: float = -0.5 #FROM -0.2
+    w_forward: float = 1.0   # Reward for forward velocity (local X)
     goal_radius: float = 0.20
 
     # ---------- Contact sensor (collision detection) ----------

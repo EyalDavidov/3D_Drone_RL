@@ -384,11 +384,11 @@ class MultiLevelDroneEnv(DirectRLEnv):
         lateral_vel = self._robot.data.root_lin_vel_b[:, 1]
         sideslip_sq = lateral_vel ** 2
 
+        # 9. Forward velocity reward (encourages moving forward along local X)
+        forward_vel = torch.clamp(self._robot.data.root_lin_vel_b[:, 0], min=0.0)
 
         # Collision — termination without reaching goal
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
-
-
 
         # Action rate penalty
         action_rate_sq = torch.sum((self._actions - self._previous_actions) ** 2, dim=1)
@@ -404,6 +404,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
             "action": self.cfg.w_action * action_sq,
             "action_rate": self.cfg.w_action_rate * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
+            "forward": self.cfg.w_forward * forward_vel,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
