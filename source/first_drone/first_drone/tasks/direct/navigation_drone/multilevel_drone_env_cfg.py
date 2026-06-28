@@ -71,7 +71,7 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room — multi-level arena
-    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "final_flat.usd")
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "final_roof_flat.usd")
 
     # camera — 128×72 depth
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -84,16 +84,34 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
         ),
         offset=TiledCameraCfg.OffsetCfg(pos=(0.01, 0.0, 0.015), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
     )
+ 
+    # view camera — for viewport viewing
+    from isaaclab.sensors import CameraCfg
+    view_camera: CameraCfg = CameraCfg(
+        prim_path="/World/envs/env_0/Drone/body/Camera_View",
+        update_period=0.0,  # We only need it for the viewport, not for RL tensors
+        height=720,
+        width=1280,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=15.5, 
+            focus_distance=400.0, 
+            horizontal_aperture=33.0, 
+            clipping_range=(0.1, 100000.0)
+        ),
+        # Quaternion (W, X, Y, Z) exactly as requested
+        offset=CameraCfg.OffsetCfg(pos=(-0.2, 0.0, 0.1), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
+    )
 
     # ---------- Spaces ----------
     action_space = 4
     observation_space = 45
     state_space = 0
 
-    # ---------- Autoencoder (AE) ----------
+    # ---------- AE (Autoencoder) ----------
     ae_latent_dim: int = 32
     depth_max: float = 5.0
-    ae_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "ae", "base", "ae_final.pt")
+    ae_checkpoint_path: str = os.path.join(_REPO_ROOT, "logs", "ae_finetuned_64", "ae_final.pt")
 
     # ---------- Flight controller ----------
     llc_checkpoint_path: str = os.path.join(
@@ -128,9 +146,9 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
         (0.0, -16.5,  1.0),   # Level 3 target = Level 4 spawn
         (-5.0, -20.5, 1.0),   # Level 4 target = finish
     )
-    level_durations: tuple[float, float, float, float] = (10.0, 10.0, 25.0, 25.0)
+    level_durations: tuple[float, float, float, float] = (7.0, 10.0, 12.0, 12.0)
     num_levels: int = 4
-    force_level: int | None = None  # None = random, 0-3 = lock to specific level
+    force_level: int | None = None
 
     # ---------- Random Poles ----------
     num_poles: int = 21
@@ -144,20 +162,21 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     # REWARDS & TERMINATION
     # =========================================================================
     w_progress: float = 10.0
-    w_goal: float = 300.0
+    w_distance: float = 3.0
+    w_goal: float = 400.0 #FROM 300
     w_time: float = -0.05
-    w_heading: float = 0.15
+    w_heading: float = 0.05 #FROM 0.15
     collision_penalty: float = -250.0
     w_ang_vel: float = -0.01
     w_yaw_rate: float = -0.1
     w_action: float = -0.005
-    w_action_rate: float = -0.02
-    w_sideslip: float = -0.2
-    goal_radius: float = 0.25
+    w_action_rate: float = -0.05 #FROM -0.02
+    w_sideslip: float = -0.3 #FROM -0.2
+    goal_radius: float = 0.20
 
     # ---------- Contact sensor (collision detection) ----------
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Drone/body",
         history_length=1
     )
-    contact_force_threshold: float = 0.1  # N — force above this = collision
+    contact_force_threshold: float = 0.01  # N — force above this = collision

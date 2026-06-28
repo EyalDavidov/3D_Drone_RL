@@ -116,21 +116,20 @@ def main():
 
     runner = OnPolicyRunner(env, agent_dict, log_dir=log_dir, device=agent_cfg.device)
 
-    # ---- Configure WandB step-based x-axis for Env0 panel ----
-    if not args_cli.no_wandb:
-        try:
-            import wandb
-            if wandb.run is not None:
-                # Define custom x-axis for Env0 metrics (step-based instead of iteration-based)
-                wandb.define_metric("Metrics/total_steps")
-                wandb.define_metric("Env0_Reward/*", step_metric="Metrics/total_steps")
-                wandb.define_metric("Env0_Termination/*", step_metric="Metrics/total_steps")
-                wandb.define_metric("Env0_Metrics/*", step_metric="Metrics/total_steps")
-                wandb.define_metric("Metrics/collision_rate")
-                wandb.define_metric("Metrics/goal_rate")
-                print("[INFO] WandB: Env0 metrics will use total_steps as x-axis")
-        except Exception as e:
-            print(f"[WARNING] Could not configure WandB custom metrics: {e}")
+    # ---- Save git diff to log_dir (before training, so it's available for WandB) ----
+    diff_path = os.path.join(log_dir, 'run_changes.diff')
+    try:
+        import subprocess
+        diff_output = subprocess.check_output(
+            ['git', 'diff', 'HEAD'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8')
+        with open(diff_path, 'w') as f:
+            f.write(diff_output)
+        print(f"[INFO] Saved git diff to: {diff_path} ({len(diff_output)} bytes)")
+    except Exception as e:
+        print(f"[WARNING] Could not save git diff: {e}")
 
     # ---- Load checkpoint ----
     if args_cli.resume:
@@ -138,6 +137,36 @@ def main():
         runner.load(args_cli.resume)
 
     # ---- Run training ----
+    # Wrap runner.learn in a thread-safe callback to upload diff after WandB init
+    _original_learn = runner.learn
+
+    def _learn_with_diff(*args, **kwargs):
+        """Start training, then upload diff to WandB once the run exists."""
+        import threading
+
+        def _upload_diff_when_ready():
+            """Wait for WandB run to initialize, then upload the diff."""
+            import time
+            try:
+                import wandb
+            except ImportError:
+                return
+            for _ in range(60):  # wait up to 60 seconds
+                if wandb.run is not None:
+                    break
+                time.sleep(1)
+            if wandb.run is not None:
+                wandb.define_metric("Metrics/collision_rate")
+                wandb.define_metric("Metrics/goal_rate")
+                if os.path.exists(diff_path):
+                    wandb.save(diff_path, base_path=log_dir)
+                    print("[INFO] WandB: Uploaded run_changes.diff")
+
+        t = threading.Thread(target=_upload_diff_when_ready, daemon=True)
+        t.start()
+        return _original_learn(*args, **kwargs)
+
+    runner.learn = _learn_with_diff
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
     # ---- Cleanup ----

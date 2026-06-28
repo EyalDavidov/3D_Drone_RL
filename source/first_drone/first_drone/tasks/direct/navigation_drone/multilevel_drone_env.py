@@ -155,6 +155,10 @@ class MultiLevelDroneEnv(DirectRLEnv):
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
         self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+        
+        # Instantiate view camera
+        from isaaclab.sensors import Camera
+        self._view_camera = Camera(self.cfg.view_camera)
 
         # Contact sensor for collision detection with room geometry
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
@@ -165,6 +169,31 @@ class MultiLevelDroneEnv(DirectRLEnv):
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
         self.scene.sensors["tiled_camera"] = self._tiled_camera
+
+        # --- Viewport & Camera Configuration for env_0 ---
+        try:
+            import omni.usd
+            import omni.kit.viewport.utility
+            from pxr import UsdGeom
+            
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                cam_path = "/World/envs/env_0/Drone/body/Camera_View"
+                cam_prim = stage.GetPrimAtPath(cam_path)
+                if cam_prim.IsValid():
+                    cam = UsdGeom.Camera(cam_prim)
+                    cam.GetVerticalApertureAttr().Set(15.2908)
+                    cam.GetHorizontalApertureAttr().Set(20.955)
+                    cam.GetFocalLengthAttr().Set(10.5)
+                    cam.GetFocusDistanceAttr().Set(400.0)
+                    
+                    # Set as active viewport
+                    viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
+                    if viewport_window is not None:
+                        viewport_window.set_active_camera(cam_path)
+                        print(f"[INFO] Successfully set active viewport camera to {cam_path}")
+        except Exception as e:
+            print(f"[WARNING] Could not set Viewport active camera (might be running headless): {e}")
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -177,7 +206,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
         raw = self._tiled_camera.data.output["depth"].clone()
         raw[raw == float("inf")] = self.cfg.depth_max
         raw[raw != raw] = self.cfg.depth_max  # handle NaN
-        raw = raw.clamp(0.0, self.cfg.depth_max) / self.cfg.depth_max
+        raw = (raw.clamp(0.0, self.cfg.depth_max) / self.cfg.depth_max) ** 1.7
         depth = raw.permute(0, 3, 1, 2)  # (B, 1, H, W)
         self._last_depth_processed = depth
         return depth
@@ -325,6 +354,9 @@ class MultiLevelDroneEnv(DirectRLEnv):
         progress = self._prev_dist_to_goal - curr_dist
         self._prev_dist_to_goal = curr_dist.clone()
 
+        # Distance reward (1 - tanh)
+        distance_reward = 1.0 - torch.tanh(curr_dist)
+
         # 2. Goal reached
         reached_goal = (curr_dist < self.cfg.goal_radius).float()
 
@@ -363,6 +395,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
 
         rewards = {
             "progress": self.cfg.w_progress * progress,
+            "distance": self.cfg.w_distance * distance_reward,
             "goal": self.cfg.w_goal * reached_goal,
             "time": self.cfg.w_time * time_penalty,
             "heading": self.cfg.w_heading * heading_alignment,
@@ -402,6 +435,11 @@ class MultiLevelDroneEnv(DirectRLEnv):
         contact_forces = self._contact_sensor.data.net_forces_w
         # Check if force magnitude on any body exceeds threshold
         hit_room = contact_forces.norm(dim=-1).max(dim=-1).values > self.cfg.contact_force_threshold
+
+        # Height bounds collision: < 0.1m or > 1.9m relative to the environment's ground level
+        relative_z = self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+        out_of_bounds = (relative_z < 0.1) | (relative_z > 1.9)
+        hit_room = hit_room | out_of_bounds
 
         terminated = reached_goal | hit_room
         return terminated, time_out
@@ -561,7 +599,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
         if debug_vis:
             if not hasattr(self, "goal_pos_visualizer"):
                 marker_cfg = CUBOID_MARKER_CFG.copy()
-                size = self.cfg.goal_radius * 2
+                size = self.cfg.goal_radius * 1.5
                 marker_cfg.markers["cuboid"].size = (size, size, size)
                 marker_cfg.prim_path = "/Visuals/Command/goal_position"
                 self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)

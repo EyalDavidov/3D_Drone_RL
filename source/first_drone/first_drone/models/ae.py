@@ -44,6 +44,7 @@ class AE(nn.Module):
 
         # Deterministic bottleneck mapping to latent code z
         self.fc_z = nn.Linear(self._encoder_out_dim, latent_dim)
+        self.ln_z = nn.LayerNorm(latent_dim)
 
         # ----- Decoder -----
         # Latent (B, 32) → FC → reshape → 4 transposed conv layers → (B, 1, 72, 128)
@@ -60,6 +61,12 @@ class AE(nn.Module):
             nn.Sigmoid(),  # Output normalized to [0, 1] to match normalized depth input
         )
 
+    def load_state_dict(self, state_dict: dict, strict: bool = True, assign: bool = False):
+        # Dynamically add ln_z if it exists in the checkpoint (for compatibility)
+        if "ln_z.weight" in state_dict and self.ln_z is None:
+            self.ln_z = nn.LayerNorm(self.latent_dim).to(next(self.parameters()).device)
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encode input to deterministic latent code z.
 
@@ -70,7 +77,10 @@ class AE(nn.Module):
             z: Latent code, shape (B, latent_dim).
         """
         h = self.encoder(x)
-        return self.fc_z(h)
+        z = self.fc_z(h)
+        if self.ln_z is not None:
+            z = self.ln_z(z)
+        return z
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Decode latent code back to depth image.

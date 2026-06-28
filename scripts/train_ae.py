@@ -46,9 +46,9 @@ class DepthDataset(Dataset):
     """Dataset for loading pre-collected depth images (.npy)."""
 
     def __init__(self, data_dir: str):
-        self.file_paths = sorted(glob.glob(os.path.join(data_dir, "*.npy")))
+        self.file_paths = sorted(glob.glob(os.path.join(data_dir, "**", "*.npy"), recursive=True))
         if not self.file_paths:
-            raise FileNotFoundError(f"No .npy files found in {data_dir}")
+            raise FileNotFoundError(f"No .npy files found in {data_dir} (recursive)")
         print(f"[INFO] Found {len(self.file_paths)} depth images in {data_dir}")
 
     def __len__(self):
