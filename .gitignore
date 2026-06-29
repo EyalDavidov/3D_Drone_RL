@@ -103,5 +103,5 @@ scratch/
 !logs/ppo/navigation_drone_direct/good_model_latent_64_static_rooms_3_4/
 !logs/ppo/navigation_drone_direct/good_model_latent_64_static_rooms_3_4/model_700.pt
 
-!logs\ppo\navigation_drone_direct\better_no_sideslip_but_is_rolling\
-!logs\ppo\navigation_drone_direct\better_no_sideslip_but_is_rolling\model_1450.pt
+!logs/ppo/navigation_drone_direct/better_no_sideslip_but_is_rolling/
+!logs/ppo/navigation_drone_direct/better_no_sideslip_but_is_rolling/model_1450.pt
