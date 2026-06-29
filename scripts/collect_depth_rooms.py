@@ -60,7 +60,7 @@ from first_drone.robots.cf2x import DRONE_CONFIG
 # ═══════════════════════════════════════════════════════════════════
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-ROOM_USD_PATH = os.path.join(PROJECT_ROOT, "assets", "final_roof_flat.usd")
+ROOM_USD_PATH = os.path.join(PROJECT_ROOT, "assets", "rooms", "final_roof_flat.usd")
 DEPTH_MAX = 5.0
 DT = 1.0 / 100.0
 DECIMATION = 2

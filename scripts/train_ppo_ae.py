@@ -11,6 +11,9 @@ import sys
 import os
 from datetime import datetime
 
+# Capture the exact command line arguments used to launch the script
+RAW_COMMAND = " ".join(sys.argv)
+
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
@@ -158,6 +161,11 @@ def main():
             if wandb.run is not None:
                 wandb.define_metric("Metrics/collision_rate")
                 wandb.define_metric("Metrics/goal_rate")
+                
+                # Log the launch command to WandB config
+                wandb.config.update({"run_command": RAW_COMMAND})
+                print(f"[INFO] WandB: Logged launch command: {RAW_COMMAND}")
+                
                 if os.path.exists(diff_path):
                     wandb.save(diff_path, base_path=log_dir)
                     print("[INFO] WandB: Uploaded run_changes.diff")

@@ -71,7 +71,7 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     )
 
     # room — multi-level arena
-    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "final_roof_flat.usd")
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "rooms", "final_no_obstacles.usd")
 
     # camera — 128×72 depth
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -148,15 +148,61 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     )
     level_durations: tuple[float, float, float, float] = (7.0, 10.0, 12.0, 12.0)
     num_levels: int = 4
-    force_level: int | None = None
+    force_level: int = 3 #| None = None
+    continuous_mode: bool = False
 
     # ---------- Random Poles ----------
     num_poles: int = 21
     pole_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
-        usd_path=os.path.join(_REPO_ROOT, "assets", "1_Pole.usd"),
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "1_Pole.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         collision_props=sim_utils.CollisionPropertiesCfg(),
     )
+
+    # ---------- Room 3 Obstacles ----------
+    num_room3_walls: int = 4
+    num_room3_cones: int = 3
+    num_room3_big_gates: int = 1
+    num_room3_small_gates: int = 2
+    num_room3_poles_triangles: int = 2
+
+    wall_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "wall.usd"),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+    )
+    cone_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "cone.usd"),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+    )
+    big_gate_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "big_gate.usd"),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+    )
+    small_gate_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "small_gate.usd"),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+    )
+    poles_triangle_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "poles_triangle.usd"),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+    )
+    corr1_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "corr1.usd"),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+    )
+    corr2_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "corr2.usd"),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+    )
+    num_room4_corr1: int = 5
+    num_room4_corr2: int = 5
 
     # =========================================================================
     # REWARDS & TERMINATION
@@ -173,7 +219,7 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     w_action_rate: float = -0.1 
     w_sideslip: float = -0.6 
     w_forward: float = 0.5   
-    w_roll: float = -0.5    
+    w_roll: float = -2.0    
     goal_radius: float = 0.20
 
     # ---------- Contact sensor (collision detection) ----------

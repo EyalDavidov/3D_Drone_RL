@@ -150,6 +150,83 @@ class MultiLevelDroneEnv(DirectRLEnv):
             self.scene.rigid_objects[f"pole_{i}"] = pole
             self._poles.append(pole)
 
+        # --- Room 3 Obstacles (spawned as kinematic rigid objects) ---
+        self._room3_obstacles = []
+        obstacle_types = [
+            ("wall", self.cfg.wall_spawn, self.cfg.num_room3_walls),
+            ("cone", self.cfg.cone_spawn, self.cfg.num_room3_cones),
+            ("big_gate", self.cfg.big_gate_spawn, self.cfg.num_room3_big_gates),
+            ("small_gate", self.cfg.small_gate_spawn, self.cfg.num_room3_small_gates),
+            ("poles_triangle", self.cfg.poles_triangle_spawn, self.cfg.num_room3_poles_triangles),
+        ]
+        
+        for name, spawn_cfg, count in obstacle_types:
+            for i in range(count):
+                obj_cfg = RigidObjectCfg(
+                    prim_path=f"/World/envs/env_.*/Room3_{name}_{i}",
+                    spawn=spawn_cfg,
+                    init_state=RigidObjectCfg.InitialStateCfg(
+                        pos=(0.0, 0.0, -100.0)
+                    ),
+                )
+                obj = RigidObject(obj_cfg)
+                self.scene.rigid_objects[f"room3_{name}_{i}"] = obj
+                self._room3_obstacles.append(obj)
+
+        # --- Room 4 Obstacles (spawned as kinematic rigid objects) ---
+        self._corr1_obstacles = []
+        for i in range(self.cfg.num_room4_corr1):
+            cfg = RigidObjectCfg(
+                prim_path=f"/World/envs/env_.*/Room4_corr1_{i}",
+                spawn=self.cfg.corr1_spawn,
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -100.0)),
+            )
+            obj = RigidObject(cfg)
+            self.scene.rigid_objects[f"room4_corr1_{i}"] = obj
+            self._corr1_obstacles.append(obj)
+
+        self._corr2_obstacles = []
+        for i in range(self.cfg.num_room4_corr2):
+            cfg = RigidObjectCfg(
+                prim_path=f"/World/envs/env_.*/Room4_corr2_{i}",
+                spawn=self.cfg.corr2_spawn,
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -100.0)),
+            )
+            obj = RigidObject(cfg)
+            self.scene.rigid_objects[f"room4_corr2_{i}"] = obj
+            self._corr2_obstacles.append(obj)
+
+        # --- Color Room 3 Obstacles (Before cloning to other envs) ---
+        try:
+            import omni.usd
+            from pxr import Usd, UsdGeom, Gf
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                colors_dict = {
+                    "wall": (0.15, 0.35, 0.95),          # Beautiful Blue
+                    "cone": (0.95, 0.80, 0.05),          # Bright Yellow
+                    "big_gate": (0.60, 0.10, 0.90),      # Royal Purple
+                    "small_gate": (0.05, 0.80, 0.85),    # Vibrant Cyan
+                    "poles_triangle": (0.10, 0.80, 0.25),# Emerald Green
+                }
+                
+                def _set_prim_color(prim_path, color_rgb):
+                    prim = stage.GetPrimAtPath(prim_path)
+                    if not prim.IsValid():
+                        return
+                    color_vec = Gf.Vec3f(*color_rgb)
+                    for p in Usd.PrimRange(prim):
+                        if p.IsA(UsdGeom.Gprim):
+                            gprim = UsdGeom.Gprim(p)
+                            gprim.CreateDisplayColorAttr().Set([color_vec])
+                            
+                for name, _, count in obstacle_types:
+                    for i in range(count):
+                        _set_prim_color(f"/World/envs/env_0/Room3_{name}_{i}", colors_dict[name])
+                print("[INFO] Successfully colored Room 3 obstacles in source environment.")
+        except Exception as e:
+            print(f"[WARNING] Could not color Room 3 obstacles: {e}")
+
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -428,17 +505,12 @@ class MultiLevelDroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Terminate on collision, goal reached, or per-level timeout."""
-        # Per-level timeout: compare episode_length_buf against per-env max steps
-        time_out = self.episode_length_buf >= self._level_max_steps - 1
-
         # Goal reached
         distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
         reached_goal = distance_to_goal < self.cfg.goal_radius
 
         # Collision detection via contact sensor
-        # net_forces_w shape: (num_envs, num_sensor_bodies, 3)
         contact_forces = self._contact_sensor.data.net_forces_w
-        # Check if force magnitude on any body exceeds threshold
         hit_room = contact_forces.norm(dim=-1).max(dim=-1).values > self.cfg.contact_force_threshold
 
         # Height bounds collision: < 0.1m or > 1.9m relative to the environment's ground level
@@ -446,7 +518,46 @@ class MultiLevelDroneEnv(DirectRLEnv):
         out_of_bounds = (relative_z < 0.1) | (relative_z > 1.9)
         hit_room = hit_room | out_of_bounds
 
-        terminated = reached_goal | hit_room
+        # If continuous_mode is enabled, handle in-flight level transitions
+        if getattr(self.cfg, "continuous_mode", False):
+            # We transition envs that reached their goal and are not at the final level (level 3)
+            transition_mask = reached_goal & (self._current_level < 3)
+            
+            if torch.any(transition_mask):
+                env_origins = self._terrain.env_origins
+                # Transition those envs to the next level
+                self._current_level[transition_mask] += 1
+                
+                # Update targets for transitioned envs
+                new_targets = self._level_targets_t[self._current_level[transition_mask]]
+                self._desired_pos_w[transition_mask] = new_targets + env_origins[transition_mask]
+                
+                # Reset previous distance for progress tracking
+                self._prev_dist_to_goal[transition_mask] = torch.linalg.norm(
+                    self._desired_pos_w[transition_mask] - self._robot.data.root_pos_w[transition_mask], dim=1
+                )
+                
+                # Reset step counter for this level to avoid timeout
+                self.episode_length_buf[transition_mask] = 0
+                
+                # Update max steps for the new level
+                self._level_max_steps[transition_mask] = self._level_max_steps_lookup[self._current_level[transition_mask]]
+                
+                print(f"[INFO] Drone(s) transitioned in-flight to Level {(self._current_level[transition_mask] + 1).cpu().tolist()}")
+                
+                # Randomize and place obstacles for the new level in-flight
+                transition_ids = torch.nonzero(transition_mask, as_tuple=False).flatten()
+                self._randomize_obstacles(transition_ids)
+                
+            # In continuous mode, we only terminate on reaching the goal if it's the final level (level 3)
+            final_goal_reached = reached_goal & (self._current_level == 3)
+            terminated = final_goal_reached | hit_room
+        else:
+            terminated = reached_goal | hit_room
+
+        # Per-level timeout: compare episode_length_buf against per-env max steps
+        time_out = self.episode_length_buf >= self._level_max_steps - 1
+
         return terminated, time_out
 
     # ------------------------------------------------------------------
@@ -476,6 +587,18 @@ class MultiLevelDroneEnv(DirectRLEnv):
 
         reached_goal_mask = dist_per_env < self.cfg.goal_radius
         crash_mask = self.reset_terminated[env_ids] & ~reached_goal_mask
+        
+        # Store outcomes for evaluation/tracking scripts
+        if not hasattr(self, "last_completed_outcomes"):
+            self.last_completed_outcomes = {}
+        for idx, env_id in enumerate(env_ids.tolist()):
+            if reached_goal_mask[idx]:
+                self.last_completed_outcomes[env_id] = "success"
+            elif self.reset_time_outs[env_id]:
+                self.last_completed_outcomes[env_id] = "timeout"
+            else:
+                self.last_completed_outcomes[env_id] = "collision"
+
         total_resets = max(len(env_ids), 1)
         self.extras["log"]["Metrics/collision_rate"] = torch.count_nonzero(crash_mask).item() / total_resets
         self.extras["log"]["Metrics/goal_rate"] = torch.count_nonzero(reached_goal_mask).item() / total_resets
@@ -495,7 +618,9 @@ class MultiLevelDroneEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
 
         # --- Assign a level to each resetting env ---
-        if hasattr(self.cfg, "force_level") and self.cfg.force_level is not None:
+        if getattr(self.cfg, "continuous_mode", False):
+            levels = torch.zeros((env_count,), dtype=torch.long, device=self.device)
+        elif hasattr(self.cfg, "force_level") and self.cfg.force_level is not None:
             levels = torch.full((env_count,), self.cfg.force_level, dtype=torch.long, device=self.device)
         else:
             levels = torch.randint(0, self.cfg.num_levels, (env_count,), device=self.device)
@@ -554,10 +679,16 @@ class MultiLevelDroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids] - default_root_state[:, :3], dim=1
         )
 
-        # Randomize Poles Positions
-        num_resets = env_count
+        # Randomize all obstacles for the resetting environments
+        self._randomize_obstacles(env_ids)
+
+    def _randomize_obstacles(self, env_ids: torch.Tensor):
+        """Randomize positions and states of all obstacles (Poles, Room 3, Room 4) for given env_ids."""
+        num_resets = env_ids.shape[0]
+        levels = self._current_level[env_ids]
         env_origins = self._terrain.env_origins[env_ids]
-        
+
+        # ── Randomize Poles Positions ────────────────────────────────
         for i, pole in enumerate(self._poles):
             state = pole.data.default_root_state[env_ids].clone()
             
@@ -596,6 +727,149 @@ class MultiLevelDroneEnv(DirectRLEnv):
             state[:, 7:] = 0.0
             pole.write_root_pose_to_sim(state[:, :7], env_ids)
             pole.write_root_velocity_to_sim(state[:, 7:], env_ids)
+
+        # ── Randomize Room 3 Obstacles ────────────────────────────────
+        # 12 grid cells (4 rows of Y, 3 columns of X) - Compressed to center (X in [-1.5, 1.5], Y in [-14.0, -11.0])
+        grid_x = torch.tensor([-1.5, 0.0, 1.5], device=self.device)
+        grid_y = torch.tensor([-11.0, -12.0, -13.0, -14.0], device=self.device)
+        gy, gx = torch.meshgrid(grid_y, grid_x, indexing='ij')
+        grid_positions = torch.stack([gx.flatten(), gy.flatten()], dim=-1)  # (12, 2)
+        
+        is_level3 = (levels == 2)
+        num_level3_resets = torch.count_nonzero(is_level3).item()
+        
+        if num_level3_resets > 0:
+            # Generate a random permutation of the 12 grid cells for each Level 3 env
+            perms = torch.stack([torch.randperm(12, device=self.device) for _ in range(num_level3_resets)])  # (num_level3_resets, 12)
+            # Random yaw rotations for each obstacle
+            import math
+            rand_yaws = torch.zeros(num_level3_resets, 12, device=self.device).uniform_(0, 2 * math.pi)
+            
+        for j, obstacle in enumerate(self._room3_obstacles):
+            state = obstacle.data.default_root_state[env_ids].clone()
+            
+            # Default: hide it under the ground
+            obs_x = torch.zeros(num_resets, device=self.device)
+            obs_y = torch.zeros(num_resets, device=self.device)
+            obs_z = torch.full((num_resets,), -100.0, device=self.device)
+            obs_qw = torch.ones(num_resets, device=self.device)
+            obs_qz = torch.zeros(num_resets, device=self.device)
+            
+            if num_level3_resets > 0:
+                # Get the assigned cell index for this obstacle in each Level 3 env
+                assigned_cell_indices = perms[:, j]  # (num_level3_resets,)
+                assigned_positions = grid_positions[assigned_cell_indices]  # (num_level3_resets, 2)
+                
+                # Add small random noise (±0.3m in X and Y)
+                noise_x = torch.zeros(num_level3_resets, device=self.device).uniform_(-0.3, 0.3)
+                noise_y = torch.zeros(num_level3_resets, device=self.device).uniform_(-0.3, 0.3)
+                
+                obs_x[is_level3] = assigned_positions[:, 0] + noise_x
+                obs_y[is_level3] = assigned_positions[:, 1] + noise_y
+                obs_z[is_level3] = 0.0  # Lowered by 1m (was 1.0)
+                
+                # Apply random yaw
+                yaw = rand_yaws[:, j]
+                obs_qw[is_level3] = torch.cos(yaw / 2.0)
+                obs_qz[is_level3] = torch.sin(yaw / 2.0)
+                
+            state[:, 0] = obs_x + env_origins[:, 0]
+            state[:, 1] = obs_y + env_origins[:, 1]
+            state[:, 2] = obs_z + env_origins[:, 2]
+            state[:, 3] = obs_qw
+            state[:, 4] = 0.0
+            state[:, 5] = 0.0
+            state[:, 6] = obs_qz
+            state[:, 7:] = 0.0
+            
+            obstacle.write_root_pose_to_sim(state[:, :7], env_ids)
+            obstacle.write_root_velocity_to_sim(state[:, 7:], env_ids)
+
+        # ── Randomize Room 4 Obstacles ────────────────────────────────
+        is_level4 = (levels == 3)
+        num_level4_resets = torch.count_nonzero(is_level4).item()
+
+        if num_level4_resets > 0:
+            # Generate random permutations of the 5 positions for each env
+            perms_c1 = torch.stack([torch.randperm(5, device=self.device) for _ in range(num_level4_resets)])
+            perms_c2 = torch.stack([torch.randperm(5, device=self.device) for _ in range(num_level4_resets)])
+            
+            # Shuffled heights for each env to ensure even distribution of heights (preventing all high/all low)
+            perms_h1 = torch.stack([torch.randperm(5, device=self.device) for _ in range(num_level4_resets)])
+            perms_h2 = torch.stack([torch.randperm(5, device=self.device) for _ in range(num_level4_resets)])
+            
+            # 5 distinct base positions along the corridor length to prevent overlap
+            y_positions_c1 = torch.linspace(-17.2, -19.45, 5, device=self.device)
+            x_positions_c2 = torch.linspace(-3.8, -0.65, 5, device=self.device)
+            
+            # 5 distinct height bins spanning [0.4, 1.6]
+            z_positions = torch.linspace(0.4, 1.6, 5, device=self.device)
+
+        # 1. Room 4.1 Corridor Obstacles (corr1)
+        for j, obstacle in enumerate(self._corr1_obstacles):
+            state = obstacle.data.default_root_state[env_ids].clone()
+            
+            obs_x = torch.zeros(num_resets, device=self.device)
+            obs_y = torch.zeros(num_resets, device=self.device)
+            obs_z = torch.full((num_resets,), -100.0, device=self.device)
+            
+            if num_level4_resets > 0:
+                # All 5 obstacles are active
+                # Assign position
+                assigned_y = y_positions_c1[perms_c1[:, j]]
+                # Add small noise (±0.05m) to Y
+                noise_y = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
+                
+                # Assign height from its shuffled bin
+                assigned_z = z_positions[perms_h1[:, j]]
+                # Add small noise (±0.05m) to Z to prevent perfect alignment
+                noise_z = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
+                
+                obs_x[is_level4] = 0.0
+                obs_y[is_level4] = assigned_y + noise_y
+                obs_z[is_level4] = (assigned_z + noise_z).clamp(0.4, 1.6)
+
+            state[:, 0] = obs_x + env_origins[:, 0]
+            state[:, 1] = obs_y + env_origins[:, 1]
+            state[:, 2] = obs_z + env_origins[:, 2]
+            state[:, 3] = 1.0
+            state[:, 4:7] = 0.0
+            state[:, 7:] = 0.0
+            obstacle.write_root_pose_to_sim(state[:, :7], env_ids)
+            obstacle.write_root_velocity_to_sim(state[:, 7:], env_ids)
+
+        # 2. Room 4.2 Corridor Obstacles (corr2)
+        for j, obstacle in enumerate(self._corr2_obstacles):
+            state = obstacle.data.default_root_state[env_ids].clone()
+            
+            obs_x = torch.zeros(num_resets, device=self.device)
+            obs_y = torch.zeros(num_resets, device=self.device)
+            obs_z = torch.full((num_resets,), -100.0, device=self.device)
+            
+            if num_level4_resets > 0:
+                # All 5 obstacles are active
+                # Assign position
+                assigned_x = x_positions_c2[perms_c2[:, j]]
+                # Add small noise (±0.05m) to X
+                noise_x = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
+                
+                # Assign height from its shuffled bin
+                assigned_z = z_positions[perms_h2[:, j]]
+                # Add small noise (±0.05m) to Z
+                noise_z = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
+                
+                obs_x[is_level4] = assigned_x + noise_x
+                obs_y[is_level4] = -20.5
+                obs_z[is_level4] = (assigned_z + noise_z).clamp(0.4, 1.6)
+
+            state[:, 0] = obs_x + env_origins[:, 0]
+            state[:, 1] = obs_y + env_origins[:, 1]
+            state[:, 2] = obs_z + env_origins[:, 2]
+            state[:, 3] = 1.0
+            state[:, 4:7] = 0.0
+            state[:, 7:] = 0.0
+            obstacle.write_root_pose_to_sim(state[:, :7], env_ids)
+            obstacle.write_root_velocity_to_sim(state[:, 7:], env_ids)
 
     # ------------------------------------------------------------------
     # Debug vis
