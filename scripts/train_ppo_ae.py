@@ -122,7 +122,7 @@ def main():
         import subprocess
         diff_output = subprocess.check_output(
             ['git', 'diff', 'HEAD'],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            cwd=project_root,
             stderr=subprocess.DEVNULL
         ).decode('utf-8')
         with open(diff_path, 'w') as f:

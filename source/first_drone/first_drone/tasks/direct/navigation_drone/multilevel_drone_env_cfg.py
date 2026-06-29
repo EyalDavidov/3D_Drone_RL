@@ -100,7 +100,7 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
             clipping_range=(0.1, 100000.0)
         ),
         # Quaternion (W, X, Y, Z) exactly as requested
-        offset=CameraCfg.OffsetCfg(pos=(-0.2, 0.0, 0.1), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
+        offset=CameraCfg.OffsetCfg(pos=(-0.15, 0.0, 0.05), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"),
     )
 
     # ---------- Spaces ----------
@@ -163,16 +163,17 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     # =========================================================================
     w_progress: float = 10.0
     w_distance: float = 3.0
-    w_goal: float = 400.0 #FROM 300
+    w_goal: float = 400.0 
     w_time: float = -0.05
-    w_heading: float = 0.1 #FROM 0.15
-    collision_penalty: float = -250.0
+    w_heading: float = 0.2 
+    collision_penalty: float = -300.0
     w_ang_vel: float = -0.01
-    w_yaw_rate: float = -0.1
+    w_yaw_rate: float = 0.0
     w_action: float = -0.005
-    w_action_rate: float = -0.05 #FROM -0.02
-    w_sideslip: float = -0.5 #FROM -0.2
-    w_forward: float = 1.0   # Reward for forward velocity (local X)
+    w_action_rate: float = -0.1 
+    w_sideslip: float = -0.6 
+    w_forward: float = 0.5   
+    w_roll: float = -0.5    
     goal_radius: float = 0.20
 
     # ---------- Contact sensor (collision detection) ----------

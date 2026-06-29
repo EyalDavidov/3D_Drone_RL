@@ -367,7 +367,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
         dx = self._desired_pos_w[:, 0] - self._robot.data.root_pos_w[:, 0]
         dy = self._desired_pos_w[:, 1] - self._robot.data.root_pos_w[:, 1]
         target_yaw = torch.atan2(dy, dx)
-        _, _, current_yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
+        current_roll, current_pitch, current_yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
         heading_error = wrap_to_pi(target_yaw - current_yaw)
         heading_alignment = torch.cos(heading_error)
 
@@ -387,6 +387,9 @@ class MultiLevelDroneEnv(DirectRLEnv):
         # 9. Forward velocity reward (encourages moving forward along local X)
         forward_vel = torch.clamp(self._robot.data.root_lin_vel_b[:, 0], min=0.0)
 
+        # 10. Roll angle penalty (prevents unnecessary roll tilting)
+        roll_sq = current_roll ** 2
+
         # Collision — termination without reaching goal
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
 
@@ -405,6 +408,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
             "action_rate": self.cfg.w_action_rate * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
             "forward": self.cfg.w_forward * forward_vel,
+            "roll": self.cfg.w_roll * roll_sq,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
