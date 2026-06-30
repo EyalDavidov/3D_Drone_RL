@@ -347,19 +347,19 @@ class MultiLevelDroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
 
     def _get_observations(self) -> dict:
-        """Build 45-dim flat observation vector.
+        """Build 77-dim flat observation vector.
 
         Pipeline:
           1. Preprocess depth → (B, 1, 72, 128) normalized
-          2. AE encode (detached) → z_img (B, 32)
+          2. AE encode (detached) → z_img (B, 64)
           3. Compute state features → (B, 13)
-          4. Concatenate → (B, 45) flat policy observation
+          4. Concatenate → (B, 77) flat policy observation
         """
         # Step 1: preprocess depth
         depth = self._preprocess_depth()
 
         # Step 2: AE encode (no gradients for RL)
-        z_img = self.ae.encode_detached(depth)  # (B, 32)
+        z_img = self.ae.encode_detached(depth)  # (B, 64)
 
         if getattr(self.cfg, "show_ae_images", False):
             self._show_ae_images(depth)
@@ -375,7 +375,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
         # Step 4: concatenate all
         obs = torch.cat(
             [
-                z_img,                                # (B, 32) — AE latent
+                z_img,                                # (B, 64) — AE latent
                 desired_pos_b,                        # (B, 3)  — target in body frame
                 target_dist,                          # (B, 1)  — scalar distance
                 self._robot.data.root_lin_vel_b,      # (B, 3)  — linear velocity
@@ -383,7 +383,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
                 self._robot.data.projected_gravity_b, # (B, 3)  — orientation summary
             ],
             dim=-1,
-        )  # Total: 32 + 3 + 1 + 3 + 3 + 3 = 45
+        )  # Total: 64 + 3 + 1 + 3 + 3 + 3 = 77
 
         return {"policy": obs}
 
@@ -464,8 +464,10 @@ class MultiLevelDroneEnv(DirectRLEnv):
         # 9. Forward velocity reward (encourages moving forward along local X)
         forward_vel = torch.clamp(self._robot.data.root_lin_vel_b[:, 0], min=0.0)
 
-        # 10. Roll angle penalty (prevents unnecessary roll tilting)
-        roll_sq = current_roll ** 2
+        # 10. Tilt angle penalty (dead-zone beyond ~18 degrees, i.e. cos(18) = 0.95)
+        projected_gravity_b = self._robot.data.projected_gravity_b
+        tilt_deviation = (0.95 - projected_gravity_b[:, 2].abs()).clamp(min=0.0)
+        tilt_penalty = tilt_deviation ** 2
 
         # Collision — termination without reaching goal
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
@@ -485,7 +487,7 @@ class MultiLevelDroneEnv(DirectRLEnv):
             "action_rate": self.cfg.w_action_rate * action_rate_sq,
             "sideslip": self.cfg.w_sideslip * sideslip_sq,
             "forward": self.cfg.w_forward * forward_vel,
-            "roll": self.cfg.w_roll * roll_sq,
+            "tilt": self.cfg.w_tilt * tilt_penalty,
             "collision": self.cfg.collision_penalty * died_from_crash,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
