@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RL Drone Dashboard — Play Mode</title>
+    <meta name="description" content="Real-time monitoring dashboard for RL drone navigation play mode">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- ===== HEADER ===== -->
+    <header id="dashboard-header">
+        <div class="header-left">
+            <div class="logo">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/>
+                    <path d="M2 12l10 5 10-5"/>
+                </svg>
+                <h1>Drone Dashboard</h1>
+            </div>
+            <div class="header-badge" id="sim-status">
+                <span class="status-dot"></span>
+                <span class="status-text">CONNECTING…</span>
+            </div>
+        </div>
+        <div class="header-center">
+            <div class="level-indicator">
+                <span class="label">LEVEL</span>
+                <div class="level-pills" id="level-pills">
+                    <span class="pill" data-level="1">1</span>
+                    <span class="pill" data-level="2">2</span>
+                    <span class="pill" data-level="3">3</span>
+                    <span class="pill" data-level="4">4</span>
+                </div>
+            </div>
+            <div class="time-display">
+                <span class="label">EPISODE TIME</span>
+                <span class="value mono" id="episode-time">0.00s</span>
+                <span class="separator">/</span>
+                <span class="value mono" id="episode-duration">0.00s</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="tick-counter">
+                <span class="label">TICK</span>
+                <span class="value mono" id="tick-counter">0</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ===== MAIN GRID ===== -->
+    <main id="dashboard-main">
+        <!-- LEFT COLUMN: Camera Feeds -->
+        <section class="column column-left" id="cameras-column">
+            <div class="panel camera-panel" id="panel-rgb">
+                <div class="panel-header">
+                    <span class="panel-icon">📷</span>
+                    <span class="panel-title">RGB Camera</span>
+                    <span class="panel-badge live">LIVE</span>
+                </div>
+                <div class="panel-body">
+                    <canvas id="canvas-rgb" width="320" height="180"></canvas>
+                </div>
+            </div>
+            <div class="panel camera-panel" id="panel-depth">
+                <div class="panel-header">
+                    <span class="panel-icon">🌊</span>
+                    <span class="panel-title">Depth Input</span>
+                    <span class="panel-badge dim">128×72</span>
+                </div>
+                <div class="panel-body">
+                    <canvas id="canvas-depth" width="256" height="144"></canvas>
+                </div>
+            </div>
+            <div class="panel camera-panel" id="panel-ae">
+                <div class="panel-header">
+                    <span class="panel-icon">🧠</span>
+                    <span class="panel-title">AE Reconstruction</span>
+                    <span class="panel-badge dim">z=64</span>
+                </div>
+                <div class="panel-body">
+                    <canvas id="canvas-ae" width="256" height="144"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- CENTER COLUMN: 3D Viewport -->
+        <section class="column column-center" id="viewport-column">
+            <div class="panel viewport-panel" id="panel-3d">
+                <div class="panel-header">
+                    <span class="panel-icon">🗺️</span>
+                    <span class="panel-title">3D Navigation Map</span>
+                    <span class="panel-badge dim">Three.js</span>
+                </div>
+                <div class="panel-body viewport-body">
+                    <canvas id="canvas-3d"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT COLUMN: HUD, Charts, Metrics -->
+        <section class="column column-right" id="data-column">
+            <!-- Attitude HUD -->
+            <div class="panel" id="panel-hud">
+                <div class="panel-header">
+                    <span class="panel-icon">🧭</span>
+                    <span class="panel-title">Attitude</span>
+                </div>
+                <div class="panel-body hud-body">
+                    <canvas id="canvas-hud" width="220" height="220"></canvas>
+                </div>
+            </div>
+
+            <!-- PPO Actions Chart -->
+            <div class="panel" id="panel-ppo">
+                <div class="panel-header">
+                    <span class="panel-icon">🎯</span>
+                    <span class="panel-title">PPO Navigation</span>
+                    <span class="panel-badge dim">High-Level</span>
+                </div>
+                <div class="panel-body chart-body">
+                    <canvas id="chart-ppo"></canvas>
+                </div>
+            </div>
+
+            <!-- LLC Outputs Chart -->
+            <div class="panel" id="panel-llc">
+                <div class="panel-header">
+                    <span class="panel-icon">⚡</span>
+                    <span class="panel-title">LLC Motor Commands</span>
+                    <span class="panel-badge dim">Low-Level</span>
+                </div>
+                <div class="panel-body chart-body">
+                    <canvas id="chart-llc"></canvas>
+                </div>
+            </div>
+
+            <!-- Metrics Panel -->
+            <div class="panel" id="panel-metrics">
+                <div class="panel-header">
+                    <span class="panel-icon">📊</span>
+                    <span class="panel-title">Flight Metrics</span>
+                </div>
+                <div class="panel-body metrics-body">
+                    <div class="metrics-grid" id="metrics-grid">
+                        <div class="metric-card">
+                            <span class="metric-label">Velocity X</span>
+                            <span class="metric-value mono" id="metric-vx">0.00</span>
+                            <span class="metric-unit">m/s</span>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Velocity Y</span>
+                            <span class="metric-value mono" id="metric-vy">0.00</span>
+                            <span class="metric-unit">m/s</span>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Velocity Z</span>
+                            <span class="metric-value mono" id="metric-vz">0.00</span>
+                            <span class="metric-unit">m/s</span>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Altitude</span>
+                            <span class="metric-value mono" id="metric-alt">0.00</span>
+                            <span class="metric-unit">m</span>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Dist to Goal</span>
+                            <span class="metric-value mono" id="metric-dist">0.00</span>
+                            <span class="metric-unit">m</span>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Thrust</span>
+                            <span class="metric-value mono" id="metric-thrust">0.00</span>
+                            <span class="metric-unit">N</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ===== SCRIPTS ===== -->
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <!-- Dashboard modules -->
+    <script src="js/cameras.js"></script>
+    <script src="js/metrics.js"></script>
+    <script src="js/hud.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/three_scene.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
