@@ -464,10 +464,9 @@ class MultiLevelDroneEnv(DirectRLEnv):
         # 9. Forward velocity reward (encourages moving forward along local X)
         forward_vel = torch.clamp(self._robot.data.root_lin_vel_b[:, 0], min=0.0)
 
-        # 10. Tilt angle penalty (dead-zone beyond ~18 degrees, i.e. cos(18) = 0.95)
+        # 10. Tilt penalty (encourage drone to stay level and avoid aggressive camera/body tilting)
         projected_gravity_b = self._robot.data.projected_gravity_b
-        tilt_deviation = (0.95 - projected_gravity_b[:, 2].abs()).clamp(min=0.0)
-        tilt_penalty = tilt_deviation ** 2
+        tilt_penalty = 1.0 - projected_gravity_b[:, 2].abs()
 
         # Collision — termination without reaching goal
         died_from_crash = (self.reset_terminated.float() - reached_goal).clamp(min=0.0)
@@ -625,7 +624,8 @@ class MultiLevelDroneEnv(DirectRLEnv):
         elif hasattr(self.cfg, "force_level") and self.cfg.force_level is not None:
             levels = torch.full((env_count,), self.cfg.force_level, dtype=torch.long, device=self.device)
         else:
-            levels = torch.randint(0, self.cfg.num_levels, (env_count,), device=self.device)
+            weights = torch.tensor([0.20, 0.20, 0.25, 0.35], device=self.device)
+            levels = torch.multinomial(weights, env_count, replacement=True)
             
         self._current_level[env_ids] = levels
 
