@@ -11,11 +11,11 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
-    <!-- ===== HEADER ===== -->
+    <!-- ===== TOP BAR ===== -->
     <header id="dashboard-header">
         <div class="header-left">
             <div class="logo">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 2L2 7l10 5 10-5-10-5z"/>
                     <path d="M2 17l10 5 10-5"/>
                     <path d="M2 12l10 5 10-5"/>
@@ -27,155 +27,172 @@
                 <span class="status-text">CONNECTING…</span>
             </div>
         </div>
-        <div class="header-center">
-            <div class="level-indicator">
+
+        <!-- TABS (Chrome-style) -->
+        <nav class="tab-bar" id="tab-bar">
+            <button class="tab active" data-tab="cameras">
+                <span class="tab-icon">📷</span> Cameras
+            </button>
+            <button class="tab" data-tab="navigation">
+                <span class="tab-icon">🗺️</span> Navigation
+            </button>
+        </nav>
+
+        <div class="header-right">
+            <!-- Level Selector (clickable) -->
+            <div class="level-selector">
                 <span class="label">LEVEL</span>
                 <div class="level-pills" id="level-pills">
-                    <span class="pill" data-level="1">1</span>
-                    <span class="pill" data-level="2">2</span>
-                    <span class="pill" data-level="3">3</span>
-                    <span class="pill" data-level="4">4</span>
+                    <button class="pill" data-level="1" title="Force Level 1">1</button>
+                    <button class="pill" data-level="2" title="Force Level 2">2</button>
+                    <button class="pill" data-level="3" title="Force Level 3">3</button>
+                    <button class="pill" data-level="4" title="Force Level 4">4</button>
                 </div>
+                <button class="auto-btn active" id="auto-btn" title="Auto-cycle levels">AUTO</button>
             </div>
-            <div class="time-display">
-                <span class="label">EPISODE TIME</span>
+            <div class="header-stat">
+                <span class="label">TIME</span>
                 <span class="value mono" id="episode-time">0.00s</span>
-                <span class="separator">/</span>
+                <span class="sep">/</span>
                 <span class="value mono" id="episode-duration">0.00s</span>
             </div>
-        </div>
-        <div class="header-right">
-            <div class="tick-counter">
+            <div class="header-stat">
                 <span class="label">TICK</span>
                 <span class="value mono" id="tick-counter">0</span>
             </div>
         </div>
     </header>
 
-    <!-- ===== MAIN GRID ===== -->
+    <!-- ===== TAB CONTENT ===== -->
     <main id="dashboard-main">
-        <!-- LEFT COLUMN: Camera Feeds -->
-        <section class="column column-left" id="cameras-column">
-            <div class="panel camera-panel" id="panel-rgb">
-                <div class="panel-header">
-                    <span class="panel-icon">📷</span>
-                    <span class="panel-title">RGB Camera</span>
-                    <span class="panel-badge live">LIVE</span>
+
+        <!-- ======== TAB 1: CAMERAS ======== -->
+        <section class="tab-content active" id="tab-cameras">
+            <!-- Row 1: First Person + Third Person Angle 1 -->
+            <div class="cam-row cam-row-2">
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🎥</span>
+                        <span class="panel-title">First Person RGB Camera</span>
+                        <span class="panel-badge live">LIVE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-fp" width="640" height="360"></canvas></div>
                 </div>
-                <div class="panel-body">
-                    <canvas id="canvas-rgb" width="320" height="180"></canvas>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">📷</span>
+                        <span class="panel-title">Third Person — Angle 1</span>
+                        <span class="panel-badge dim">CHASE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-t1" width="640" height="360"></canvas></div>
                 </div>
             </div>
-            <div class="panel camera-panel" id="panel-depth">
-                <div class="panel-header">
-                    <span class="panel-icon">🌊</span>
-                    <span class="panel-title">Depth Input</span>
-                    <span class="panel-badge dim">128×72</span>
+            <!-- Row 2: Third Person Angle 2 + Angle 3 -->
+            <div class="cam-row cam-row-2">
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">📷</span>
+                        <span class="panel-title">Third Person — Angle 2</span>
+                        <span class="panel-badge dim">SIDE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-t2" width="640" height="360"></canvas></div>
                 </div>
-                <div class="panel-body">
-                    <canvas id="canvas-depth" width="256" height="144"></canvas>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">📷</span>
+                        <span class="panel-title">Third Person — Angle 3</span>
+                        <span class="panel-badge dim">TOP</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-t3" width="640" height="360"></canvas></div>
                 </div>
             </div>
-            <div class="panel camera-panel" id="panel-ae">
-                <div class="panel-header">
-                    <span class="panel-icon">🧠</span>
-                    <span class="panel-title">AE Reconstruction</span>
-                    <span class="panel-badge dim">z=64</span>
+            <!-- Row 3: Depth + Saliency + AE -->
+            <div class="cam-row cam-row-3">
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🌊</span>
+                        <span class="panel-title">Depth Input</span>
+                        <span class="panel-badge dim">128×72</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-depth" width="512" height="288"></canvas></div>
                 </div>
-                <div class="panel-body">
-                    <canvas id="canvas-ae" width="256" height="144"></canvas>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🔥</span>
+                        <span class="panel-title">Depth Saliency</span>
+                        <span class="panel-badge dim">HEATMAP</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-saliency" width="512" height="288"></canvas></div>
+                </div>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🧠</span>
+                        <span class="panel-title">AE Reconstruction</span>
+                        <span class="panel-badge dim">z=64</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-ae" width="512" height="288"></canvas></div>
                 </div>
             </div>
         </section>
 
-        <!-- CENTER COLUMN: 3D Viewport -->
-        <section class="column column-center" id="viewport-column">
-            <div class="panel viewport-panel" id="panel-3d">
-                <div class="panel-header">
-                    <span class="panel-icon">🗺️</span>
-                    <span class="panel-title">3D Navigation Map</span>
-                    <span class="panel-badge dim">Three.js</span>
+        <!-- ======== TAB 2: NAVIGATION ======== -->
+        <section class="tab-content" id="tab-navigation">
+            <!-- Top row: LLC | Camera | PPO -->
+            <div class="nav-top-row">
+                <div class="panel nav-chart-col" id="panel-llc">
+                    <div class="panel-header">
+                        <span class="panel-icon">⚡</span>
+                        <span class="panel-title">LLC Motor Commands</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body chart-body">
+                        <canvas id="chart-llc"></canvas>
+                    </div>
                 </div>
-                <div class="panel-body viewport-body">
-                    <canvas id="canvas-3d"></canvas>
+                <div class="panel nav-camera-col">
+                    <div class="panel-header">
+                        <span class="panel-icon">📷</span>
+                        <span class="panel-title">Third Person — Angle 1</span>
+                        <span class="panel-badge live">LIVE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-nav-main" width="960" height="540"></canvas></div>
                 </div>
-            </div>
-        </section>
-
-        <!-- RIGHT COLUMN: HUD, Charts, Metrics -->
-        <section class="column column-right" id="data-column">
-            <!-- Attitude HUD -->
-            <div class="panel" id="panel-hud">
-                <div class="panel-header">
-                    <span class="panel-icon">🧭</span>
-                    <span class="panel-title">Attitude</span>
-                </div>
-                <div class="panel-body hud-body">
-                    <canvas id="canvas-hud" width="220" height="220"></canvas>
-                </div>
-            </div>
-
-            <!-- PPO Actions Chart -->
-            <div class="panel" id="panel-ppo">
-                <div class="panel-header">
-                    <span class="panel-icon">🎯</span>
-                    <span class="panel-title">PPO Navigation</span>
-                    <span class="panel-badge dim">High-Level</span>
-                </div>
-                <div class="panel-body chart-body">
-                    <canvas id="chart-ppo"></canvas>
+                <div class="panel nav-chart-col" id="panel-ppo">
+                    <div class="panel-header">
+                        <span class="panel-icon">🎯</span>
+                        <span class="panel-title">PPO Navigation</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body chart-body">
+                        <canvas id="chart-ppo"></canvas>
+                    </div>
                 </div>
             </div>
-
-            <!-- LLC Outputs Chart -->
-            <div class="panel" id="panel-llc">
-                <div class="panel-header">
-                    <span class="panel-icon">⚡</span>
-                    <span class="panel-title">LLC Motor Commands</span>
-                    <span class="panel-badge dim">Low-Level</span>
-                </div>
-                <div class="panel-body chart-body">
-                    <canvas id="chart-llc"></canvas>
-                </div>
-            </div>
-
-            <!-- Metrics Panel -->
-            <div class="panel" id="panel-metrics">
-                <div class="panel-header">
-                    <span class="panel-icon">📊</span>
-                    <span class="panel-title">Flight Metrics</span>
-                </div>
-                <div class="panel-body metrics-body">
-                    <div class="metrics-grid" id="metrics-grid">
-                        <div class="metric-card">
-                            <span class="metric-label">Velocity X</span>
-                            <span class="metric-value mono" id="metric-vx">0.00</span>
-                            <span class="metric-unit">m/s</span>
-                        </div>
-                        <div class="metric-card">
-                            <span class="metric-label">Velocity Y</span>
-                            <span class="metric-value mono" id="metric-vy">0.00</span>
-                            <span class="metric-unit">m/s</span>
-                        </div>
-                        <div class="metric-card">
-                            <span class="metric-label">Velocity Z</span>
-                            <span class="metric-value mono" id="metric-vz">0.00</span>
-                            <span class="metric-unit">m/s</span>
-                        </div>
-                        <div class="metric-card">
-                            <span class="metric-label">Altitude</span>
-                            <span class="metric-value mono" id="metric-alt">0.00</span>
-                            <span class="metric-unit">m</span>
-                        </div>
-                        <div class="metric-card">
-                            <span class="metric-label">Dist to Goal</span>
-                            <span class="metric-value mono" id="metric-dist">0.00</span>
-                            <span class="metric-unit">m</span>
-                        </div>
-                        <div class="metric-card">
-                            <span class="metric-label">Thrust</span>
-                            <span class="metric-value mono" id="metric-thrust">0.00</span>
-                            <span class="metric-unit">N</span>
+            <!-- Bottom: 3D Map -->
+            <div class="nav-bottom-row">
+                <div class="panel nav-map-panel">
+                    <div class="panel-header">
+                        <span class="panel-icon">🗺️</span>
+                        <span class="panel-title">3D Navigation Map</span>
+                        <span class="panel-badge dim">Three.js</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body viewport-body" id="viewport-container">
+                        <canvas id="canvas-3d"></canvas>
+                        <!-- Metrics overlay -->
+                        <div class="map-overlay" id="map-metrics">
+                            <div class="ov-item"><span class="ov-label">VEL</span><span class="ov-val mono" id="metric-speed">0.00</span><span class="ov-unit">m/s</span></div>
+                            <div class="ov-item"><span class="ov-label">ALT</span><span class="ov-val mono" id="metric-alt">0.00</span><span class="ov-unit">m</span></div>
+                            <div class="ov-item"><span class="ov-label">DIST</span><span class="ov-val mono" id="metric-dist">0.00</span><span class="ov-unit">m</span></div>
+                            <div class="ov-item"><span class="ov-label">THR</span><span class="ov-val mono" id="metric-thrust">0.00</span><span class="ov-unit">N</span></div>
                         </div>
                     </div>
                 </div>
@@ -183,13 +200,10 @@
         </section>
     </main>
 
-    <!-- ===== SCRIPTS ===== -->
-    <!-- Three.js -->
+    <!-- Scripts -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    <!-- Dashboard modules -->
     <script src="js/cameras.js"></script>
     <script src="js/metrics.js"></script>
     <script src="js/hud.js"></script>

@@ -1,72 +1,72 @@
 /**
  * cameras.js — Camera feed renderer
- * Renders Base64 PNG images to canvas elements for RGB, Depth, and AE feeds.
+ * Renders Base64 PNG images to canvas elements for all 7 camera feeds.
  */
 
 class CameraFeeds {
     constructor() {
-        this.canvases = {
-            rgb: document.getElementById('canvas-rgb'),
-            depth: document.getElementById('canvas-depth'),
-            ae: document.getElementById('canvas-ae'),
+        // Map of feed key → canvas ID
+        this._feedMap = {
+            rgb_first_person: 'cam-fp',
+            rgb_third_1: 'cam-t1',
+            rgb_third_2: 'cam-t2',
+            rgb_third_3: 'cam-t3',
+            depth: 'cam-depth',
+            depth_saliency: 'cam-saliency',
+            ae_recon: 'cam-ae',
         };
 
-        this.contexts = {};
-        for (const [key, canvas] of Object.entries(this.canvases)) {
-            this.contexts[key] = canvas.getContext('2d');
+        // Also render third_1 in the Navigation tab's main camera
+        this._navMainCanvas = document.getElementById('cam-nav-main');
+        this._navMainCtx = this._navMainCanvas ? this._navMainCanvas.getContext('2d') : null;
+
+        this._canvases = {};
+        this._contexts = {};
+        this._images = {};
+
+        for (const [key, canvasId] of Object.entries(this._feedMap)) {
+            const canvas = document.getElementById(canvasId);
+            if (canvas) {
+                this._canvases[key] = canvas;
+                this._contexts[key] = canvas.getContext('2d');
+                const img = new Image();
+                img.onload = () => this._draw(key);
+                this._images[key] = img;
+            }
         }
 
-        // Reusable Image objects to avoid GC
-        this._images = {
-            rgb: new Image(),
-            depth: new Image(),
-            ae: new Image(),
+        // Separate image for nav-main (reuses rgb_third_1 data)
+        this._navMainImg = new Image();
+        this._navMainImg.onload = () => {
+            if (this._navMainCtx && this._navMainCanvas) {
+                this._navMainCtx.clearRect(0, 0, this._navMainCanvas.width, this._navMainCanvas.height);
+                this._navMainCtx.drawImage(this._navMainImg, 0, 0, this._navMainCanvas.width, this._navMainCanvas.height);
+            }
         };
-
-        // Bind draw callbacks
-        for (const key of Object.keys(this._images)) {
-            this._images[key].onload = () => this._drawImage(key);
-        }
     }
 
-    /**
-     * Update camera feeds with new image data.
-     * @param {Object} images - { rgb, depth, ae_recon } base64 PNG strings
-     */
     update(images) {
         if (!images) return;
 
-        if (images.rgb) {
-            this._images.rgb.src = 'data:image/png;base64,' + images.rgb;
+        for (const [key, canvasId] of Object.entries(this._feedMap)) {
+            if (images[key] && this._images[key]) {
+                this._images[key].src = 'data:image/png;base64,' + images[key];
+            }
         }
-        if (images.depth) {
-            this._images.depth.src = 'data:image/png;base64,' + images.depth;
-        }
-        if (images.ae_recon) {
-            this._images.ae.src = 'data:image/png;base64,' + images.ae_recon;
+
+        // Also push third_1 to the navigation tab's main camera
+        if (images.rgb_third_1 && this._navMainImg) {
+            this._navMainImg.src = 'data:image/png;base64,' + images.rgb_third_1;
         }
     }
 
-    /**
-     * Draw a loaded image to its canvas, scaling to fill.
-     */
-    _drawImage(key) {
-        const ctx = this.contexts[key];
-        const canvas = this.canvases[key];
+    _draw(key) {
+        const ctx = this._contexts[key];
+        const canvas = this._canvases[key];
         const img = this._images[key];
+        if (!ctx || !canvas || !img) return;
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Apply a slight color tint for depth/ae
-        if (key === 'depth') {
-            ctx.filter = 'sepia(0.1) saturate(1.5) hue-rotate(180deg)';
-        } else if (key === 'ae') {
-            ctx.filter = 'sepia(0.1) saturate(1.3) hue-rotate(260deg)';
-        } else {
-            ctx.filter = 'none';
-        }
-
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        ctx.filter = 'none';
     }
 }
