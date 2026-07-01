@@ -138,17 +138,17 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
         (0.0,   1.5,  1.0),   # Level 1 spawn
         (0.0,  -2.5,  1.0),   # Level 2 spawn
         (0.0,  -8.5,  1.0),   # Level 3 spawn
-        (0.0, -16.5,  1.0),   # Level 4 spawn
+        (0.0, -16.0,  1.0),   # Level 4 spawn
     )
     level_targets: tuple = (
         (0.0,  -2.5,  1.0),   # Level 1 target = Level 2 spawn
         (0.0,  -8.5,  1.0),   # Level 2 target = Level 3 spawn
-        (0.0, -16.5,  1.0),   # Level 3 target = Level 4 spawn
+        (0.0, -16.0,  1.0),   # Level 3 target = Level 4 spawn
         (-5.0, -20.5, 1.0),   # Level 4 target = finish
     )
-    level_durations: tuple[float, float, float, float] = (7.0, 10.0, 12.0, 12.0)
+    level_durations: tuple[float, float, float, float] = (7.0, 10.0, 15.0, 15.0)
     num_levels: int = 4
-    force_level: int = 3 #| None = None
+    force_level: int | None = None
     continuous_mode: bool = False
 
     # ---------- Random Poles ----------
@@ -156,7 +156,6 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     pole_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "1_Pole.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
 
     # ---------- Room 3 Obstacles ----------
@@ -169,37 +168,30 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     wall_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "wall.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
     cone_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "cone.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
     big_gate_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "big_gate.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
     small_gate_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "small_gate.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
     poles_triangle_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "poles_triangle.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
     corr1_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "corr1.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
     corr2_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "corr2.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
     )
     num_room4_corr1: int = 5
     num_room4_corr2: int = 5
@@ -207,19 +199,20 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
     # =========================================================================
     # REWARDS & TERMINATION
     # =========================================================================
-    w_progress: float = 10.0
-    w_distance: float = 3.0
-    w_goal: float = 400.0 
-    w_time: float = -0.05
-    w_heading: float = 0.2 
-    collision_penalty: float = -300.0
-    w_ang_vel: float = -0.01
-    w_yaw_rate: float = 0.0
     w_action: float = -0.005
-    w_action_rate: float = -0.1 
-    w_sideslip: float = -0.6 
-    w_forward: float = 0.5   
-    w_roll: float = -2.0    
+    w_action_rate: float = -0.1
+    w_ang_vel: float = -0.05
+    w_distance: float = 3.0
+    w_forward: float = 0.0   
+    w_goal: float = 400.0 
+    w_heading: float = 0.1 
+    w_progress: float = 10.0
+    w_sideslip: float = -3.0
+    w_tilt: float = -0.5    
+    w_time: float = -0.05
+    w_yaw_rate: float = 0.0
+
+    collision_penalty: float = -300.0
     goal_radius: float = 0.20
 
     # ---------- Contact sensor (collision detection) ----------
@@ -227,4 +220,4 @@ class MultiLevelDroneEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Drone/body",
         history_length=1
     )
-    contact_force_threshold: float = 0.01  # N — force above this = collision
+    contact_force_threshold: float = 0.0001  # N — force above this = collision
