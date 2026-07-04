@@ -113,7 +113,7 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # ----- Curriculum State -----
         import sys
-        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        is_play_script = self._is_play_script()
         default_level = 5 if is_play_script else 1
         self.curriculum_level = default_level if is_play_script else getattr(self.cfg, "initial_curriculum_level", default_level)
         self.running_goal_rate = 0.0
@@ -152,6 +152,29 @@ class AEPPODroneEnv(DirectRLEnv):
         # Track curriculum level for each individual environment to prevent lagging-episode statistics corruption
         self.env_curriculum_level = torch.ones(self.num_envs, dtype=torch.long, device=self.device) * self.curriculum_level
 
+        # Env 0 100-step logging buffers
+        self._env0_step_counter = 0
+        self._env0_accumulated_rewards = {}
+        self._env0_died_count = 0.0
+        self._env0_timeout_count = 0.0
+        self._env0_episode_count_window = 0
+        self._env0_episode_lengths = []
+        self._env0_final_distances = []
+
+        self._env0_log_values = {}
+        for key in [
+            "progress", "goal", "time", "heading", "vel_align", "ang_vel",
+            "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
+            "proximity", "speed_proximity", "stuck", "collision", "tilt", "z_deviation"
+        ]:
+            self._env0_log_values["Env0_Reward/" + key] = 0.0
+            self._env0_accumulated_rewards[key] = 0.0
+        self._env0_log_values["Env0_Termination/died"] = 0.0
+        self._env0_log_values["Env0_Termination/time_out"] = 0.0
+        self._env0_log_values["Env0_Metrics/final_distance_to_goal"] = 0.0
+        self._env0_log_values["Env0_Metrics/episode_length"] = 0.0
+        self._env0_log_values["Env0_Metrics/collision_rate"] = 0.0
+
     def _get_episode_length_for_level(self, level: int) -> float:
         if level >= 5:
             return 20.0  # Capped target distance 12.0m needs max 20 seconds to complete
@@ -166,33 +189,17 @@ class AEPPODroneEnv(DirectRLEnv):
         self.cfg.episode_length_s = length_s
         print(f"\n[CURRICULUM] Episode length dynamically updated to {length_s}s (max_episode_length steps = {self.max_episode_length})\n")
 
+    def _is_brain_play_mode(self) -> bool:
+        """True during Brain play (cfg flag is set before super().__init__ completes)."""
+        return bool(getattr(self, "is_brain_play", False) or getattr(self.cfg, "is_brain_play", False))
 
-
-
-
-
-        # ----- Env 0 100-step logging buffers -----
-        self._env0_step_counter = 0
-        self._env0_accumulated_rewards = {}
-        self._env0_died_count = 0.0
-        self._env0_timeout_count = 0.0
-        self._env0_episode_count_window = 0
-        self._env0_episode_lengths = []
-        self._env0_final_distances = []
-        
-        self._env0_log_values = {}
-        for key in [
-            "progress", "goal", "time", "heading", "vel_align", "ang_vel",
-            "yaw_rate", "forward_speed", "action", "action_rate", "sideslip",
-            "proximity", "speed_proximity", "stuck", "collision", "tilt", "z_deviation"
-        ]:
-            self._env0_log_values["Env0_Reward/" + key] = 0.0
-            self._env0_accumulated_rewards[key] = 0.0
-        self._env0_log_values["Env0_Termination/died"] = 0.0
-        self._env0_log_values["Env0_Termination/time_out"] = 0.0
-        self._env0_log_values["Env0_Metrics/final_distance_to_goal"] = 0.0
-        self._env0_log_values["Env0_Metrics/episode_length"] = 0.0
-        self._env0_log_values["Env0_Metrics/collision_rate"] = 0.0
+    def _is_play_script(self) -> bool:
+        import sys
+        return any(
+            name in arg
+            for arg in sys.argv
+            for name in ("play.py", "play_saliency.py", "brain_nav_play.py", "brain_play.py")
+        )
 
     # ------------------------------------------------------------------
     # Scene setup
@@ -1196,6 +1203,10 @@ class AEPPODroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _compute_lidar_scan(self) -> torch.Tensor:
         """Compute 2D LiDAR range scan in the body frame using physical MultiMeshRayCaster."""
+        if getattr(self, "_lidar", None) is None:
+            self._last_lidar_scan = torch.full((self.num_envs, 24), 10.0, device=self.device)
+            return self._last_lidar_scan
+
         hit_positions = self._lidar.data.ray_hits_w  # (num_envs, 24, 3)
         sensor_pos = self._lidar.data.pos_w.unsqueeze(1)  # (num_envs, 1, 3)
         
@@ -1280,7 +1291,7 @@ class AEPPODroneEnv(DirectRLEnv):
         # Debug print (once) to verify masking is active
         if not getattr(self, "_masking_verified", False):
             import sys
-            is_play = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+            is_play = self._is_play_script()
             if is_play:
                 raw = self._last_lidar_scan[0]
                 masked = lidar_scan[0]  # Still in meters (not yet normalized)
@@ -1308,7 +1319,7 @@ class AEPPODroneEnv(DirectRLEnv):
         )  # Total: 32 + 3 + 1 + 3 + 3 + 3 + 4 + 24 = 73
 
         import sys
-        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        is_play_script = self._is_play_script()
         if (is_play_script and self.cfg.debug_vis) or getattr(self.cfg, "show_ae_images", False):
             self._update_dashboard(depth)
 
@@ -1777,7 +1788,7 @@ class AEPPODroneEnv(DirectRLEnv):
         """Terminate on floor/ceiling/wall collision or timeout."""
         self._last_lidar_scan = None  # Reset cached scan to force fresh sensor acquisition for this step
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        if getattr(self, "is_brain_play", False) and getattr(
+        if self._is_brain_play_mode() and getattr(
             self.cfg, "brain_disable_episode_timeout", True
         ):
             time_out = torch.zeros_like(time_out)
@@ -1792,7 +1803,7 @@ class AEPPODroneEnv(DirectRLEnv):
         else:
             hit_ceiling = pos_local[:, 2] > 2.5 * map_scale
         hit_floor_or_ceiling = hit_floor | hit_ceiling
-        if room_bounds is not None and not getattr(self, "is_brain_play", False):
+        if room_bounds is not None and not self._is_brain_play_mode():
             min_x, max_x, min_y, max_y, _ = room_bounds
             wall_margin = 0.15
             hit_wall = (
@@ -1803,7 +1814,7 @@ class AEPPODroneEnv(DirectRLEnv):
                 # Walkable void check is for training only — in brain play rely on physics contacts.
                 hit_void = ~self._is_on_walkable_floor(pos_local[:, 0], pos_local[:, 1], margin=0.25)
                 hit_wall = hit_wall | hit_void
-        elif room_bounds is not None and getattr(self, "is_brain_play", False):
+        elif room_bounds is not None and self._is_brain_play_mode():
             # R-shaped maps: outer AABB wall check false-positives inside valid rooms (e.g. y=1.5 in room_1).
             hit_wall = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         else:
@@ -1818,7 +1829,7 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # 1. Check contact sensor for physical collision with meshes
         contact_force = torch.linalg.norm(self._contact_sensor.data.net_forces_w[:, 0, :], dim=-1)
-        contact_threshold = 3.0 if getattr(self, "is_brain_play", False) else 0.1
+        contact_threshold = 3.0 if self._is_brain_play_mode() else 0.1
         hit_obstacle = contact_force > contact_threshold
 
         # Debug: print contact forces for env 0 when a collision is detected (only in play mode)
@@ -1841,7 +1852,7 @@ class AEPPODroneEnv(DirectRLEnv):
         hit_physical_obstacle = min_lidar_dist < current_radius
 
         # 3. Check analytical boxes (failsafe for LiDAR blind spots / clipping)
-        if getattr(self, "is_brain_play", False):
+        if self._is_brain_play_mode():
             # Brain play: trust physics contacts/LiDAR only — walkable grid must not trigger crashes.
             hit_box_obstacle = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         else:
@@ -1861,7 +1872,7 @@ class AEPPODroneEnv(DirectRLEnv):
 
         # Capture crash reason for Env 0
         if self.num_envs > 0:
-            if getattr(self, "is_brain_play", False):
+            if self._is_brain_play_mode():
                 if hit_floor[0].item():
                     self._env0_crash_reason = "Floor Bounds Collision"
                 elif hit_ceiling[0].item():
@@ -1927,7 +1938,7 @@ class AEPPODroneEnv(DirectRLEnv):
             | hit_obstacle
             | hit_dynamic_pillar
         )
-        if getattr(self, "is_brain_play", False):
+        if self._is_brain_play_mode():
             # In play mode, only reset on crash (died), do not reset when reaching intermediate waypoints.
             # brain_reset_on_crash=False keeps the sim running after a wall hit (no auto-reset).
             self._last_died = died
@@ -1963,7 +1974,7 @@ class AEPPODroneEnv(DirectRLEnv):
         final_dist = dist_per_env.mean()
         # Collect episode rewards for play script logging before resetting them
         import sys
-        is_play_script = any("play.py" in arg or "play_saliency.py" in arg for arg in sys.argv)
+        is_play_script = self._is_play_script()
         play_episode_sums = {}
         if is_play_script:
             for key in self._episode_sums.keys():
@@ -1979,7 +1990,7 @@ class AEPPODroneEnv(DirectRLEnv):
         
         # Collision & goal rates (across all envs in this reset batch)
         reached_goal_mask = dist_per_env < self.cfg.goal_radius
-        if getattr(self, "is_brain_play", False):
+        if self._is_brain_play_mode():
             # SCAN locks the goal on the drone — distance is ~0 and must not read as SUCCESS.
             last_died = getattr(self, "_last_died", None)
             if last_died is not None:
@@ -2032,7 +2043,7 @@ class AEPPODroneEnv(DirectRLEnv):
             for i, env_id in enumerate(env_ids):
                 env_id_val = env_id.item()
                 step_count = int(self.episode_length_buf[env_id].item())
-                if getattr(self, "is_brain_play", False):
+                if self._is_brain_play_mode():
                     status = "FAILED (Crashed!)" if crash_mask[i] else "RESET (Brain play)"
                 elif reached_goal_mask[i]:
                     status = "SUCCESS (Reached Goal!)"
@@ -2184,40 +2195,44 @@ class AEPPODroneEnv(DirectRLEnv):
             self._desired_pos_w[env_ids] - default_root_state[:, :3], dim=1
         )
 
-        # Randomize Pillar Positions and Orientations
-        num_resets = env_count
-        env_origins = self._terrain.env_origins[env_ids]
+        # Randomize legacy ae_ppo pillar obstacles (Brain play uses _randomize_obstacles instead).
+        if self.cfg.num_pillars > 0 and not self._is_brain_play_mode():
+            num_resets = env_count
+            env_origins = self._terrain.env_origins[env_ids]
 
-        # Shuffle the zone assignments for each env to randomize the spawn order
-        zones_tensor = torch.tensor(self.cfg.pillar_x_zones, device=self.device)  # shape (6, 2)
-        perms = torch.stack([torch.randperm(6, device=self.device) for _ in range(num_resets)], dim=0)  # shape (num_resets, 6)
+            # Shuffle the zone assignments for each env to randomize the spawn order
+            zones_tensor = torch.tensor(self.cfg.pillar_x_zones, device=self.device)  # shape (6, 2)
+            num_zones = zones_tensor.shape[0]
+            perms = torch.stack(
+                [torch.randperm(num_zones, device=self.device) for _ in range(num_resets)], dim=0
+            )
 
-        for i, pillar in enumerate(self._pillars):
-            # Select randomized zone boundaries for this obstacle across all reset envs
-            zone_idx = perms[:, i]
-            chosen_zones = zones_tensor[zone_idx]
-            x_lo = chosen_zones[:, 0]
-            x_hi = chosen_zones[:, 1]
+            for i, pillar in enumerate(self._pillars[: self.cfg.num_pillars]):
+                # Select randomized zone boundaries for this obstacle across all reset envs
+                zone_idx = perms[:, i]
+                chosen_zones = zones_tensor[zone_idx]
+                x_lo = chosen_zones[:, 0]
+                x_hi = chosen_zones[:, 1]
 
-            y_lo, y_hi = self.cfg.pillar_y_range
+                y_lo, y_hi = self.cfg.pillar_y_range
 
-            pillar_x = x_lo + torch.rand(num_resets, device=self.device) * (x_hi - x_lo)
-            pillar_y = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi)
+                pillar_x = x_lo + torch.rand(num_resets, device=self.device) * (x_hi - x_lo)
+                pillar_y = torch.zeros(num_resets, device=self.device).uniform_(y_lo, y_hi)
 
-            state = pillar.data.default_root_state[env_ids].clone()
-            state[:, 0] = pillar_x + env_origins[:, 0]
-            state[:, 1] = pillar_y + env_origins[:, 1]
-            state[:, 2] = self.cfg.pillar_z + env_origins[:, 2]
+                state = pillar.data.default_root_state[env_ids].clone()
+                state[:, 0] = pillar_x + env_origins[:, 0]
+                state[:, 1] = pillar_y + env_origins[:, 1]
+                state[:, 2] = self.cfg.pillar_z + env_origins[:, 2]
 
-            # Randomize yaw (rotation around Z axis)
-            pillar_yaw = torch.zeros(num_resets, device=self.device).uniform_(0.0, 2 * 3.141592653589793)
-            zeros = torch.zeros_like(pillar_yaw)
-            pillar_quat = quat_from_euler_xyz(zeros, zeros, pillar_yaw)
-            state[:, 3:7] = pillar_quat
+                # Randomize yaw (rotation around Z axis)
+                pillar_yaw = torch.zeros(num_resets, device=self.device).uniform_(0.0, 2 * 3.141592653589793)
+                zeros = torch.zeros_like(pillar_yaw)
+                pillar_quat = quat_from_euler_xyz(zeros, zeros, pillar_yaw)
+                state[:, 3:7] = pillar_quat
 
-            state[:, 7:] = 0.0
-            pillar.write_root_pose_to_sim(state[:, :7], env_ids)
-            pillar.write_root_velocity_to_sim(state[:, 7:], env_ids)
+                state[:, 7:] = 0.0
+                pillar.write_root_pose_to_sim(state[:, :7], env_ids)
+                pillar.write_root_velocity_to_sim(state[:, 7:], env_ids)
 
     # ------------------------------------------------------------------
     # Debug vis

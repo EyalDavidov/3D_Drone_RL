@@ -29,8 +29,8 @@ parser = argparse.ArgumentParser(description="Run the self-contained Brain Navig
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments (default: 1).")
 parser.add_argument("--task", type=str, default="Brain-Nav-Drone-Direct-v0", help="Name of the task.")
 parser.add_argument(
-    "--navigator_checkpoint", type=str, required=True,
-    help="Path to the trained PPO navigator checkpoint (.pt file or directory containing exported/policy.pt)."
+    "--navigator_checkpoint", type=str, default=None,
+    help="Path to model_1450.pt (or run directory). Auto-finds bestmodel/ if omitted.",
 )
 parser.add_argument("--use_mock", action="store_true", default=False, help="Use mock perception instead of real YOLO.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
@@ -38,8 +38,12 @@ parser.add_argument("--real-time", action="store_true", default=True, help="Run 
 parser.add_argument("--step_size", type=float, default=10.0, help="Lawnmower path corridor step size (meters).")
 parser.add_argument("--safety_margin", type=float, default=0.7, help="Safety margin from obstacles/walls (meters).")
 parser.add_argument(
-    "--yolo_conf", type=float, default=0.95,
-    help="Minimum YOLO confidence (0-1) to accept a person detection (default: 0.95).",
+    "--ae_checkpoint", type=str, default=None,
+    help="Path to 64-dim AE checkpoint (ae_1_7_latent_64/ae_final.pt from Multilevel_Train).",
+)
+parser.add_argument(
+    "--yolo_conf", type=float, default=0.50,
+    help="Minimum YOLO confidence (0-1) to accept a person detection (default: 0.50).",
 )
 
 # append AppLauncher cli args
@@ -68,6 +72,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
 import first_drone.tasks  # noqa: F401
+from first_drone.tasks.direct.navigation_drone.brain_nav_drone_env import resolve_navigator_checkpoint
 
 import random
 try:
@@ -89,27 +94,32 @@ def main():
         env_cfg.seed = random.randint(0, 100000)
 
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
-    env_cfg.navigator_checkpoint_path = args_cli.navigator_checkpoint
+    env_cfg.navigator_checkpoint_path = resolve_navigator_checkpoint(
+        args_cli.navigator_checkpoint or env_cfg.navigator_checkpoint_path
+    )
+    print(f"[INFO] Navigator checkpoint: {env_cfg.navigator_checkpoint_path}")
     env_cfg.use_mock_perception = args_cli.use_mock
     env_cfg.brain_step_size = args_cli.step_size
     env_cfg.brain_safety_margin = args_cli.safety_margin
     env_cfg.yolo_person_conf_threshold = args_cli.yolo_conf
-    env_cfg.debug_vis = True
+    if args_cli.ae_checkpoint is not None:
+        env_cfg.ae_checkpoint_path = args_cli.ae_checkpoint
+    env_cfg.debug_vis = False
     env_cfg.show_ae_images = False
 
     # 2. Create the self-contained environment
     print(f"[INFO] Creating environment: {args_cli.task}")
     env = gym.make(args_cli.task, cfg=env_cfg)
 
-    # --- Switch the viewport camera to the drone's perspective ---
+    # Viewport uses chase camera from env _setup_scene; fallback if needed
     try:
         import omni.kit.viewport.utility
         viewport_api = omni.kit.viewport.utility.get_active_viewport()
         if viewport_api is not None:
-            viewport_api.camera_path = "/World/envs/env_0/Drone/body/Camera"
-            print(f"[INFO] Viewport camera switched to drone camera: {viewport_api.camera_path}")
+            viewport_api.camera_path = "/World/envs/env_0/Drone/body/Camera_View"
+            print(f"[INFO] Viewport camera: {viewport_api.camera_path} (behind-drone chase view)")
     except Exception as e:
-        print(f"[WARN] Failed to set viewport camera to drone view: {e}")
+        print(f"[WARN] Failed to set viewport chase camera: {e}")
 
     # 3. Reset and run
     print(f"[INFO] Running Brain Navigation. Press Ctrl+C or 'q' in YOLO window to exit.")
@@ -133,10 +143,11 @@ def main():
 
             if getattr(env.unwrapped, "_mission_complete", False):
                 exit_reason = "mission_complete"
-                if getattr(env.unwrapped._brain, "found_person", False):
-                    print("[INFO] Person rescued — stopping play loop.")
+                brain = env.unwrapped._brain
+                if getattr(brain, "found_person", False):
+                    print("[INFO] Final-room person reached — mission complete.")
                 else:
-                    print("[INFO] Finish point reached — stopping play loop.")
+                    print("[INFO] Full patrol complete (finish point reached).")
                 break
 
             # Maintain real-time speed if requested
@@ -159,8 +170,9 @@ def main():
             env.unwrapped.set_debug_vis(False)
         except Exception:
             pass
-        if cv2 is not None:
-            cv2.destroyAllWindows()
+        # Do NOT destroy windows on close so OpenCV remains visible
+        # if cv2 is not None:
+        #     cv2.destroyAllWindows()
         env.close()
         simulation_app.close()
 

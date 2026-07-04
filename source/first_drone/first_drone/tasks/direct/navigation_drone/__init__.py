@@ -52,6 +52,6 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.brain_nav_drone_env_cfg:BrainNavDroneEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:NavigationPPOCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__}.brain_nav_drone_env_cfg:BrainPPOCfg",
     },
 )

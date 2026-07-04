@@ -27,9 +27,14 @@ class BrainModule:
         self.last_drone_yaw = None
         self.found_person = False
         self.scan_lock_pos = None
+        self._pending_scan_snap_pos = None
+        self.person_noted_anywhere = False
+        self._pending_rescue_pos = None
+        self._arrival_dwell_steps = 0
         self.segment_idx = 0
         self.nav_target = None
         self.mission_finished = False
+        self._scan_announced_segment = -1
         
         # Extract boundaries and obstacles dynamically from USD stage
         self.min_x, self.max_x, self.min_y, self.max_y, self.obstacles = self._extract_map_data()
@@ -94,13 +99,66 @@ class BrainModule:
         self.current_wp_idx = 0
         self.found_person = False
         self.target_person_pos = None
+        self._pending_rescue_pos = None
         self.scan_yaw_accumulated = 0.0
         self.scan_lock_pos = None
+        self._pending_scan_snap_pos = None
+        self._arrival_dwell_steps = 0
         self.last_drone_yaw = None
         self.nav_target = None
         self.mission_finished = False
+        self._scan_announced_segment = -1
+        self.person_noted_anywhere = False
+        self._pending_rescue_pos = None
         if self._uses_sequential:
             self._init_coverage_grid()
+
+    def _checkpoint_index_for_target(self, target, seq) -> int | None:
+        """Return spawn-sequence index nearest to a navigation target."""
+        if target is None:
+            return None
+        best_i, best_d = None, float("inf")
+        for i, pt in enumerate(seq):
+            d = math.hypot(float(pt[0]) - float(target[0]), float(pt[1]) - float(target[1]))
+            if d < best_d:
+                best_d, best_i = d, i
+        return best_i if best_d < 1.5 else None
+
+    def _arrival_radius_for_target(self, tgt_idx: int | None, seq: list) -> float:
+        """Per-waypoint arrival radius — rooms/final need to be reached, not approximated."""
+        cfg = self.env.unwrapped.cfg
+        skip_scan = set(getattr(cfg, "brain_skip_scan_segment_indices", ()))
+        if tgt_idx is None:
+            return float(getattr(cfg, "brain_scan_arrival_radius", 1.0))
+        if tgt_idx in skip_scan:
+            return float(getattr(cfg, "brain_corridor_arrival_radius", 0.55))
+        if tgt_idx == len(seq) - 1:
+            return float(getattr(cfg, "brain_final_room_arrival_radius", 1.2))
+        return float(getattr(cfg, "brain_scan_arrival_radius", 1.0))
+
+    def _can_count_arrival(self, d_pos, tgt_idx: int, seq: list, arrive_r: float) -> bool:
+        """Reject fake arrivals when the previous checkpoint is only centimetres away."""
+        if tgt_idx is None or tgt_idx <= 0:
+            return True
+        prev = seq[tgt_idx - 1]
+        curr = seq[tgt_idx]
+        sep = math.hypot(float(curr[0]) - float(prev[0]), float(curr[1]) - float(prev[1]))
+        if sep >= 1.5:
+            return True
+        dist_from_prev = math.hypot(d_pos[0] - float(prev[0]), d_pos[1] - float(prev[1]))
+        dist_to_tgt = math.hypot(d_pos[0] - float(curr[0]), d_pos[1] - float(curr[1]))
+        if dist_to_tgt >= arrive_r:
+            return False
+        # For tightly spaced pairs (room4→corr1), require meaningful travel from previous point.
+        return dist_from_prev >= max(0.55, sep * 0.75)
+
+    def get_segment_label(self, segment_idx: int | None = None) -> str:
+        """Human-readable label for the current mission segment (room 4, corr1, etc.)."""
+        idx = self.segment_idx if segment_idx is None else int(segment_idx)
+        labels = getattr(self.env.unwrapped, "_brain_spawn_labels", None)
+        if labels and 0 <= idx < len(labels):
+            return labels[idx]
+        return f"segment {idx + 1}"
 
     def _init_coverage_grid(self) -> None:
         """Occupancy grid for visited-zone tracking during sequential SLAM."""
@@ -413,6 +471,48 @@ class BrainModule:
 
         return None
 
+    def _resolve_rescue_target(self, p_pos: np.ndarray) -> tuple[np.ndarray | None, str | None]:
+        """Validate a YOLO person position and return a safe approach point."""
+        if not np.all(np.isfinite(p_pos)):
+            return None, "non-finite position"
+
+        reject_reason = None
+        if hasattr(self.env.unwrapped, "_is_on_navigable_floor") and (
+            getattr(self.env.unwrapped, "_floor_tris_xy", None)
+            or (
+                getattr(self.env.unwrapped, "_walkable_grid", None) is not None
+                and not getattr(self.env.unwrapped, "_walkable_grid_unreliable", False)
+            )
+        ):
+            on_floor = self.env.unwrapped._is_on_navigable_floor(
+                torch.tensor([p_pos[0]], device=self.device),
+                torch.tensor([p_pos[1]], device=self.device),
+                margin=self.waypoint_clearance,
+            ).item()
+            if not on_floor:
+                reject_reason = (
+                    f"detected position X:{p_pos[0]:.2f} Y:{p_pos[1]:.2f} is outside walkable floor"
+                )
+
+        safe_target = None
+        if reject_reason is None:
+            safe_target = self._nearest_safe_point(float(p_pos[0]), float(p_pos[1]))
+            if safe_target is None:
+                reject_reason = (
+                    f"no safe approach point near X:{p_pos[0]:.2f} Y:{p_pos[1]:.2f}"
+                )
+
+        if safe_target is None:
+            return None, reject_reason
+
+        safe_target = np.array(safe_target, dtype=float)
+        if np.linalg.norm(safe_target[:2] - p_pos[:2]) > 0.05:
+            print(
+                f"[Brain] Target is too close to an obstacle. "
+                f"Using safe approach point X:{safe_target[0]:.2f} Y:{safe_target[1]:.2f}."
+            )
+        return safe_target, None
+
     def _limit_goal_distance(self, goal_pos, drone_pos):
         """Keep each high-level target within the trained curriculum distance range."""
         goal_pos = np.array(goal_pos, dtype=float)
@@ -500,13 +600,96 @@ class BrainModule:
             snap["visited"] = self._visited.copy()
         return snap
 
+    def force_skip_to_next_checkpoint(self) -> bool:
+        """Escape corridor crash loop — advance nav target without a 360 scan."""
+        if not self._uses_sequential or self.state != "GOTO_WAYPOINT":
+            return False
+        seq = self._get_spawn_sequence()
+        if not seq or self.nav_target is None:
+            return False
+        tgt_idx = self._checkpoint_index_for_target(self.nav_target, seq)
+        at_idx = tgt_idx if tgt_idx is not None else self.segment_idx
+        next_idx = min(at_idx + 1, len(seq) - 1)
+        if next_idx <= at_idx:
+            return False
+        self.segment_idx = at_idx
+        self.nav_target = np.array(seq[next_idx], dtype=float)
+        self.state = "GOTO_WAYPOINT"
+        self.scan_yaw_accumulated = 0.0
+        self.scan_lock_pos = None
+        self._scan_announced_segment = -1
+        print(
+            f"[Brain] Crash-loop escape — skipping to {self.get_segment_label(next_idx)} "
+            f"({self.nav_target[0]:.1f}, {self.nav_target[1]:.1f})."
+        )
+        return True
+
+    def resync_nav_target_from_sequence(self) -> None:
+        """Fix stale/wrong nav targets after crash loops (e.g. USD corridor coords)."""
+        if not self._uses_sequential or self.state != "GOTO_WAYPOINT":
+            return
+        seq = self._get_spawn_sequence()
+        if not seq:
+            return
+        next_idx = min(self.segment_idx + 1, len(seq) - 1)
+        self.nav_target = np.array(seq[next_idx], dtype=float)
+
+    def prepare_crash_respawn(self) -> None:
+        """After a crash reset: spawn at room entrance and resume GOTO — never inherit mid-360° SCAN."""
+        if not self._uses_sequential:
+            return
+        self.found_person = False
+        self.target_person_pos = None
+        self._pending_rescue_pos = None
+        self.scan_yaw_accumulated = 0.0
+        self.scan_lock_pos = None
+        self._pending_scan_snap_pos = None
+        self._arrival_dwell_steps = 0
+        self._scan_announced_segment = -1
+        self.last_drone_yaw = None
+        self.mission_finished = False
+
+        seq = self._get_spawn_sequence()
+        if not seq:
+            return
+
+        # Keep the active nav target after a crash (do not rewind to segment+1).
+        if self.nav_target is None:
+            next_idx = min(self.segment_idx + 1, len(seq) - 1)
+            self.nav_target = np.array(seq[next_idx], dtype=float)
+        self.state = "GOTO_WAYPOINT"
+        tgt = self.nav_target
+        print(
+            f"[Brain] Crash recovery — continue GOTO toward ({tgt[0]:.1f}, {tgt[1]:.1f}) "
+            f"(segment {self.segment_idx + 1}, no 360 until target reached)."
+        )
+
     def restore_mission_snapshot(self, snapshot) -> None:
         """Restore SLAM progress after respawning inside the map."""
-        if self._uses_sequential_mission():
+        if snapshot is None:
             self.reset_mission_from_start()
             return
 
-        if snapshot is None or snapshot.get("found_person", False):
+        if self._uses_sequential_mission():
+            self.segment_idx = int(snapshot.get("segment_idx", 0))
+            self.nav_target = snapshot.get("nav_target")
+            if self.nav_target is not None:
+                self.nav_target = np.array(self.nav_target, dtype=float)
+            self.mission_finished = bool(snapshot.get("mission_finished", False))
+            self.current_wp_idx = int(snapshot.get("current_wp_idx", 0))
+            self.found_person = False
+            self.target_person_pos = None
+            self.scan_yaw_accumulated = 0.0
+            self.scan_lock_pos = None
+            self.last_drone_yaw = None
+            self._scan_announced_segment = -1
+            self._arrival_dwell_steps = 0
+            if hasattr(self, "_visited") and "visited" in snapshot:
+                self._visited = snapshot["visited"].copy()
+            # State/GOTO finalized in prepare_crash_respawn() after spawn placement.
+            return
+
+        if snapshot.get("found_person", False):
             self.state = "SCAN"
             self.current_wp_idx = 0
             self.found_person = False
@@ -528,6 +711,38 @@ class BrainModule:
         if self.current_wp_idx >= len(self.waypoints):
             self.current_wp_idx = 0
             self.state = "SCAN"
+
+    def try_complete_goto_arrival(self, drone_local_xy) -> bool:
+        """Optional debug-only stuck skip; disabled by default (brain_allow_stuck_arrival_skip=False)."""
+        if not getattr(self.env.unwrapped.cfg, "brain_allow_stuck_arrival_skip", False):
+            return False
+        if self.state != "GOTO_WAYPOINT" or self.nav_target is None or not self._uses_sequential:
+            return False
+        cfg = self.env.unwrapped.cfg
+        arrive_r = float(getattr(cfg, "brain_spawn_arrival_radius", 2.5))
+        d_pos = np.array(drone_local_xy, dtype=float)
+        dist = np.linalg.norm(self.nav_target[:2] - d_pos[:2])
+        if dist > arrive_r * 1.5:
+            return False
+
+        seq = self._get_spawn_sequence()
+        next_idx = self.segment_idx + 1
+        self._mark_visited_at(d_pos[0], d_pos[1])
+        if next_idx == len(seq) - 1:
+            self.state = "COMPLETE"
+            self.mission_finished = True
+            print("[Brain] Near-target arrival — reached finish point. Mission complete.")
+        else:
+            self.segment_idx = next_idx
+            self.state = "SCAN"
+            self.scan_yaw_accumulated = 0.0
+            self.scan_lock_pos = None
+            self.nav_target = None
+            print(
+                f"[Brain] Near-target arrival at ({d_pos[0]:.1f}, {d_pos[1]:.1f}) "
+                f"→ starting SCAN at spawn{self.segment_idx + 1}..."
+            )
+        return True
 
     def get_brain_goal_local(self, drone_local_xy=None):
         """Return the current high-level goal in env-local coordinates (x, y, z)."""
@@ -611,56 +826,47 @@ class BrainModule:
         # State Machine Transitions & Actions
         # -------------------------------------------------------------
         
-        # If person found by YOLO, transition to APPROACH state
+        # If person found by YOLO, transition to APPROACH (only when rescue is armed — final room+)
         if person_found[0].item() and not self.found_person:
-            p_pos = person_world_xyz[0].cpu().numpy() - env_origin
-            # Safety check: ensure coordinates are valid/finite and on the walkable floor
-            if np.all(np.isfinite(p_pos)):
-                reject_reason = None
-                if hasattr(self.env.unwrapped, "_is_on_navigable_floor") and (
-                    getattr(self.env.unwrapped, "_floor_tris_xy", None)
-                    or (
-                        getattr(self.env.unwrapped, "_walkable_grid", None) is not None
-                        and not getattr(self.env.unwrapped, "_walkable_grid_unreliable", False)
+            safe_target, reject_reason = self._resolve_rescue_target(
+                person_world_xyz[0].cpu().numpy() - env_origin
+            )
+            if reject_reason is not None:
+                print(f"[Brain] Ignoring detection — {reject_reason}.")
+            elif safe_target is not None:
+                p_pos = person_world_xyz[0].cpu().numpy() - env_origin
+                if self.state == "SCAN":
+                    self._pending_rescue_pos = safe_target
+                    self.person_noted_anywhere = True
+                    print(
+                        f"\n[Brain] Person detected during 360 SCAN at "
+                        f"X:{p_pos[0]:.2f} Y:{p_pos[1]:.2f} — finishing rotation, then approach."
                     )
-                ):
-                    on_floor = self.env.unwrapped._is_on_navigable_floor(
-                        torch.tensor([p_pos[0]], device=self.device),
-                        torch.tensor([p_pos[1]], device=self.device),
-                        margin=self.waypoint_clearance,
-                    ).item()
-                    if not on_floor:
-                        reject_reason = (
-                            f"detected position X:{p_pos[0]:.2f} Y:{p_pos[1]:.2f} is outside walkable floor"
-                        )
-
-                safe_target = None
-                if reject_reason is None:
-                    safe_target = self._nearest_safe_point(float(p_pos[0]), float(p_pos[1]))
-                    if safe_target is None:
-                        reject_reason = (
-                            f"no safe approach point near X:{p_pos[0]:.2f} Y:{p_pos[1]:.2f}"
-                        )
-
-                if reject_reason is not None:
-                    print(f"[Brain] Ignoring detection — {reject_reason}.")
-                elif safe_target is not None:
-                    safe_target = np.array(safe_target)
-                    if np.linalg.norm(safe_target[:2] - p_pos[:2]) > 0.05:
-                        print(
-                            f"[Brain] Target is too close to an obstacle. "
-                            f"Using safe approach point X:{safe_target[0]:.2f} Y:{safe_target[1]:.2f}."
-                        )
-
+                else:
                     self.found_person = True
                     self.target_person_pos = safe_target
                     self.state = "APPROACH_TARGET"
-                    print(f"\n[Brain] !!! YOLOV11 DETECTED HUMAN AT: X:{p_pos[0]:.2f} Y:{p_pos[1]:.2f} Z:{p_pos[2]:.2f} !!!")
-                    print(f"[Brain] Changing state to APPROACH_TARGET.")
+                    print(
+                        f"\n[Brain] !!! YOLOV11 DETECTED HUMAN AT: "
+                        f"X:{p_pos[0]:.2f} Y:{p_pos[1]:.2f} Z:{p_pos[2]:.2f} !!!"
+                    )
+                    print("[Brain] Changing state to APPROACH_TARGET.")
 
         if self.state == "SCAN":
             if self.scan_lock_pos is None:
-                self.scan_lock_pos = np.array([d_pos[0], d_pos[1], 1.0])
+                if self._uses_sequential and self._scan_announced_segment != self.segment_idx:
+                    self._scan_announced_segment = self.segment_idx
+                    label = self.get_segment_label()
+                    print(
+                        f"\n[Brain] *** 360 SCAN at {label.upper()} "
+                        f"(segment {self.segment_idx + 1}) "
+                        f"position X:{d_pos[0]:.2f} Y:{d_pos[1]:.2f} Z:{d_pos[2]:.2f} — rotating for YOLO ***\n"
+                    )
+                # Spin in place where the drone actually arrived (not the checkpoint coord).
+                self.scan_lock_pos = np.array(
+                    [float(d_pos[0]), float(d_pos[1]), float(d_pos[2])], dtype=float
+                )
+                self._pending_scan_snap_pos = None
             
             yaw_diff = wrap_to_pi_scalar(drone_yaw - self.last_drone_yaw)
             self.scan_yaw_accumulated += abs(yaw_diff)
@@ -676,17 +882,28 @@ class BrainModule:
                     seq = self._get_spawn_sequence()
                     next_idx = self.segment_idx + 1
                     if next_idx >= len(seq):
-                        self.state = "COMPLETE"
-                        self.mission_finished = True
-                        print("[Brain] Scan complete — no further segments. Mission complete.")
+                        if self._pending_rescue_pos is not None:
+                            self.found_person = True
+                            self.target_person_pos = self._pending_rescue_pos
+                            self._pending_rescue_pos = None
+                            self.state = "APPROACH_TARGET"
+                            tp = self.target_person_pos
+                            print(
+                                "[Brain] Final scan complete — approaching detected person at "
+                                f"X:{tp[0]:.2f} Y:{tp[1]:.2f} Z:{tp[2]:.2f}."
+                            )
+                        else:
+                            self.state = "COMPLETE"
+                            self.mission_finished = True
+                            print("[Brain] Scan complete — no further segments. Mission complete.")
                     else:
                         self.nav_target = np.array(seq[next_idx], dtype=float)
                         self.state = "GOTO_WAYPOINT"
-                        label = "finish" if next_idx == len(seq) - 1 else f"spawn{next_idx + 1}"
+                        dest_label = self.get_segment_label(next_idx)
                         visited, total = self.coverage_stats()
                         print(
-                            f"[Brain] Scan at segment {self.segment_idx + 1} complete "
-                            f"(coverage {visited}/{total} cells). Navigating to {label}..."
+                            f"[Brain] Scan at {self.get_segment_label()} complete "
+                            f"(coverage {visited}/{total} cells). Navigating to {dest_label}..."
                         )
                 else:
                     self.state = "GOTO_WAYPOINT"
@@ -694,38 +911,73 @@ class BrainModule:
                 
         elif self.state == "GOTO_WAYPOINT":
             cfg = self.env.unwrapped.cfg
-            arrive_r = float(getattr(cfg, "brain_spawn_arrival_radius", 1.0))
+            skip_scan = set(getattr(cfg, "brain_skip_scan_segment_indices", ()))
 
             if self._uses_sequential:
                 if self.nav_target is None:
-                    self.state = "SCAN"
-                    desired_pos_w = d_pos
-                    target_yaw = drone_yaw
+                    seq = self._get_spawn_sequence()
+                    next_idx = min(self.segment_idx + 1, len(seq) - 1)
+                    self.nav_target = np.array(seq[next_idx], dtype=float)
+                    self.state = "GOTO_WAYPOINT"
+                    desired_pos_w = np.array(self.nav_target, dtype=float)
+                    dx = desired_pos_w[0] - d_pos[0]
+                    dy = desired_pos_w[1] - d_pos[1]
+                    target_yaw = math.atan2(dy, dx)
                 else:
                     desired_pos_w = np.array(self.nav_target, dtype=float)
                     dx = desired_pos_w[0] - d_pos[0]
                     dy = desired_pos_w[1] - d_pos[1]
                     target_yaw = math.atan2(dy, dx)
+                    seq = self._get_spawn_sequence()
+                    tgt_idx = self._checkpoint_index_for_target(self.nav_target, seq)
+                    arrive_r = self._arrival_radius_for_target(tgt_idx, seq)
                     dist_to_target = np.linalg.norm(desired_pos_w[:2] - d_pos[:2])
+                    dwell_need = int(getattr(cfg, "brain_scan_arrival_dwell_steps", 8))
+                    can_arrive = dist_to_target < arrive_r and (
+                        tgt_idx is None
+                        or self._can_count_arrival(d_pos, tgt_idx, seq, arrive_r)
+                    )
+                    if can_arrive:
+                        self._arrival_dwell_steps += 1
+                    else:
+                        self._arrival_dwell_steps = 0
 
-                    if dist_to_target < arrive_r:
-                        seq = self._get_spawn_sequence()
-                        next_idx = self.segment_idx + 1
+                    if self._arrival_dwell_steps >= dwell_need:
+                        self._arrival_dwell_steps = 0
                         self._mark_visited_at(d_pos[0], d_pos[1])
+                        if tgt_idx is not None and tgt_idx > self.segment_idx:
+                            self.segment_idx = tgt_idx
+                        elif tgt_idx is None:
+                            self.segment_idx = min(self.segment_idx + 1, len(seq) - 1)
 
-                        if next_idx == len(seq) - 1:
-                            self.state = "COMPLETE"
-                            self.mission_finished = True
-                            print("[Brain] Reached finish point. Mission complete — exiting.")
+                        at_idx = self.segment_idx
+                        if at_idx in skip_scan:
+                            next_idx = at_idx + 1
+                            if next_idx >= len(seq):
+                                self.state = "COMPLETE"
+                                self.mission_finished = True
+                                self.nav_target = None
+                                print(
+                                    f"[Brain] Passed {self.get_segment_label(at_idx)} "
+                                    f"(narrow — no 360). Mission complete."
+                                )
+                            else:
+                                self.nav_target = np.array(seq[next_idx], dtype=float)
+                                self.state = "GOTO_WAYPOINT"
+                                print(
+                                    f"[Brain] Passed {self.get_segment_label(at_idx)} "
+                                    f"(narrow corridor — no 360). "
+                                    f"Navigating to {self.get_segment_label(next_idx)}..."
+                                )
                         else:
-                            self.segment_idx = next_idx
                             self.state = "SCAN"
                             self.scan_yaw_accumulated = 0.0
                             self.scan_lock_pos = None
                             self.nav_target = None
+                            self._scan_announced_segment = -1
                             print(
-                                f"[Brain] Arrived at spawn{self.segment_idx + 1} "
-                                f"({d_pos[0]:.1f}, {d_pos[1]:.1f}). Starting room SCAN..."
+                                f"[Brain] Reached {self.get_segment_label()} "
+                                f"(dist {dist_to_target:.2f}m). Starting 360 SCAN..."
                             )
             elif self.current_wp_idx >= len(self.waypoints):
                 self.state = "COMPLETE"
@@ -741,7 +993,8 @@ class BrainModule:
                 target_yaw = math.atan2(dy, dx)
                 
                 dist_to_wp = np.linalg.norm(desired_pos_w[:2] - d_pos[:2])
-                if dist_to_wp < arrive_r:
+                wp_arrive_r = float(getattr(cfg, "brain_scan_arrival_radius", 1.0))
+                if dist_to_wp < wp_arrive_r:
                     self.current_wp_idx += 1
                     if self.current_wp_idx >= len(self.waypoints):
                         self.state = "COMPLETE"
@@ -781,8 +1034,11 @@ class BrainModule:
             target_yaw = drone_yaw
 
         self.last_drone_yaw = drone_yaw
-        # Rescue approach: do not cap goal distance to curriculum range — fly directly to the person.
-        if self.state not in ("APPROACH_TARGET", "COMPLETE"):
+        # Rescue / sequential nav: do not cap goal distance to curriculum range.
+        skip_limit = self.state in ("APPROACH_TARGET", "COMPLETE") or (
+            self._uses_sequential and self.state == "GOTO_WAYPOINT"
+        )
+        if not skip_limit:
             desired_pos_w = self._limit_goal_distance(desired_pos_w, d_pos)
         
         # Convert back to torch Tensors matching environment shape [num_envs, ...]
