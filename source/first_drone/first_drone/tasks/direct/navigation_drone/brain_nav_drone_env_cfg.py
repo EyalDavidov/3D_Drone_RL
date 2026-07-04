@@ -51,7 +51,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
         width=512,
         data_types=["depth", "rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=12.0,
+            focal_length=18.0,
             focus_distance=6.0,
             f_stop=0.0,
             horizontal_aperture=20.955,
