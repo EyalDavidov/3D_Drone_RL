@@ -134,6 +134,39 @@ def _depth_gray_b64(depth_np, near: float = 0.05, far: float = 10.0) -> str:
         return ""
 
 
+def _norm_depth_gray_b64(depth_norm) -> str:
+    """Display env-normalized depth [0,1] (close=0) as inverted grayscale JPEG."""
+    try:
+        import cv2
+        import numpy as np
+
+        norm = np.clip(1.0 - depth_norm, 0.0, 1.0)
+        gray = (norm * 255).astype("uint8")
+        bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        bgr = cv2.resize(bgr, (512, 288), interpolation=cv2.INTER_CUBIC)
+        return _ndarray_to_jpeg_b64(bgr, quality=88)
+    except Exception:
+        return ""
+
+
+def _upscale_ae_bgr(bgr) -> "object":
+    """Upscale native 72×128 AE frames for dashboard canvas (512×288)."""
+    try:
+        import cv2
+        return cv2.resize(bgr, (512, 288), interpolation=cv2.INTER_CUBIC)
+    except Exception:
+        return bgr
+
+
+def _ensure_ae_depth_batch(depth_t):
+    """Force depth tensor to native AE shape (1, 1, 72, 128)."""
+    import torch.nn.functional as F
+
+    if depth_t.shape[-2] == 72 and depth_t.shape[-1] == 128:
+        return depth_t
+    return F.interpolate(depth_t, size=(72, 128), mode="bilinear", align_corners=False)
+
+
 # ---------------------------------------------------------------------------
 # Live telemetry source
 # ---------------------------------------------------------------------------
@@ -145,9 +178,10 @@ class LiveDroneTelemetry:
     Hz to get the latest snapshot.
     """
 
-    def __init__(self, tick_rate: float = 10.0):
+    def __init__(self, tick_rate: float = 10.0, perf_mode: bool = False):
         self.tick_rate = tick_rate
         self.force_level: int | None = None  # required by server.py interface
+        self._perf_mode = bool(perf_mode)
 
         self._lock = threading.Lock()
         self._state: dict[str, Any] = self._empty_state()
@@ -159,7 +193,14 @@ class LiveDroneTelemetry:
         self._slam3d_cache: dict = {}
         self._yolo_hud_cache: str = ""
         self._img_push_counter = 0
-        self._img_regen_interval = 4   # regenerate every 4 env steps (~15 Hz at 60 fps)
+        self._img_regen_serial = 0
+        self._slam3d_push_counter = 0
+        self._img_regen_interval = 10 if perf_mode else 4
+        self._slam3d_regen_interval = 3 if perf_mode else 1
+        self._saliency_regen_interval = 999999 if perf_mode else 1
+        self._yolo_upscale = 1 if perf_mode else 2
+        self._yolo_jpeg_quality = 78 if perf_mode else 92
+        self._skip_angle_cams = perf_mode
 
     # ------------------------------------------------------------------ #
     #  Interface expected by server.py                                     #
@@ -326,18 +367,23 @@ class LiveDroneTelemetry:
             # ---- Camera images (rate-limited) ----------------------------
             self._img_push_counter += 1
             if self._img_push_counter % self._img_regen_interval == 0 or not self._image_cache:
-                self._image_cache = self._grab_images(env)
+                self._img_regen_serial += 1
+                compute_saliency = (
+                    not self._perf_mode
+                    or self._img_regen_serial % self._saliency_regen_interval == 0
+                )
+                self._image_cache = self._grab_images(env, compute_saliency=compute_saliency)
+                yolo_img = self._grab_yolo_frame(env)
+                if yolo_img:
+                    self._image_cache["yolo_frame"] = yolo_img
 
-            # SLAM 3D grid + YOLO frame: refresh every push (zero-delay web sync).
-            # The 2D SLAM radar is now rendered natively in the browser from this
-            # same slam_3d grid, so we no longer encode a heavy SLAM PNG here.
-            self._slam3d_cache = self._get_slam_3d(env, frontiers_raw=frontiers_raw)
-            yolo_img = self._grab_yolo_frame(env)
-            if yolo_img:
-                if not self._image_cache:
-                    self._image_cache = {}
-                # Clean camera frame — native component overlays boxes itself.
-                self._image_cache["yolo_frame"] = yolo_img
+            # SLAM 3D grid for native 2D/3D browser maps (rate-limited in perf mode)
+            self._slam3d_push_counter += 1
+            if (
+                self._slam3d_push_counter % self._slam3d_regen_interval == 0
+                or not self._slam3d_cache
+            ):
+                self._slam3d_cache = self._get_slam_3d(env, frontiers_raw=frontiers_raw)
 
             # YOLO native-HUD payload (boxes + intel + rescue log + status)
             perception = getattr(env, "_perception", None)
@@ -394,7 +440,7 @@ class LiveDroneTelemetry:
     #  Image extraction                                                    #
     # ------------------------------------------------------------------ #
 
-    def _grab_images(self, env) -> dict:
+    def _grab_images(self, env, *, compute_saliency: bool = True) -> dict:
         """Extract camera frames from the tiled camera and angle cameras.
 
         Feeds:
@@ -404,7 +450,7 @@ class LiveDroneTelemetry:
           rgb_third_3       – top-down camera (3 m above)
           depth             – inverted-grey depth, small
           ae_recon          – AE reconstruction
-          depth_saliency    – AE gradient saliency heatmap
+          depth_saliency    – PPO policy saliency heatmap (play_saliency.py)
           slam_map          – SLAM map for nav-tab mini panel
         """
         import numpy as np
@@ -417,22 +463,36 @@ class LiveDroneTelemetry:
             if tiled_cam is None or tiled_cam.data.output is None:
                 return images
 
-            # --- Depth image ---
+            # --- Depth / AE / saliency (use env pipeline: depth_max=5, 72×128) ---
             depth_tensor = tiled_cam.data.output.get("depth")
-            if depth_tensor is not None:
+            depth_proc = getattr(env, "_last_depth_processed", None)
+            if depth_proc is not None and depth_proc.numel() > 0:
+                depth_batch = _ensure_ae_depth_batch(depth_proc[0:1].clone())
+                depth_norm = depth_batch[0, 0].detach().cpu().numpy()
+                images["depth"] = _norm_depth_gray_b64(depth_norm)
+                ae_recon = self._grab_ae_recon(env, depth_batch)
+                if ae_recon:
+                    images["ae_recon"] = ae_recon
+                elif self._image_cache.get("ae_recon"):
+                    images["ae_recon"] = self._image_cache["ae_recon"]
+
+                saliency = ""
+                if compute_saliency:
+                    saliency = self._grab_policy_saliency(env, depth_batch)
+                if saliency:
+                    images["depth_saliency"] = saliency
+                elif self._image_cache.get("depth_saliency"):
+                    images["depth_saliency"] = self._image_cache["depth_saliency"]
+            elif depth_tensor is not None:
+                # Fallback when obs not built yet (first frames after reset)
                 depth_np = depth_tensor[0].squeeze().detach().cpu().numpy().astype("float32")
                 depth_np = np.nan_to_num(depth_np, nan=10.0, posinf=10.0, neginf=0.0)
+                depth_max = float(getattr(getattr(env, "cfg", None), "depth_max", 5.0))
                 depth_small = cv2.resize(depth_np, (128, 72), interpolation=cv2.INTER_AREA)
-
-                images["depth"] = _depth_gray_b64(depth_small)
-
-                # AE reconstruction: proper normalised encode→decode
-                ae_recon = self._grab_ae_recon(env, depth_small)
-                images["ae_recon"] = ae_recon if ae_recon else images["depth"]
-
-                # Saliency: AE latent gradient (SmoothGrad), same as play_saliency.py
-                saliency = self._grab_ae_saliency(env, depth_small)
-                images["depth_saliency"] = saliency if saliency else _depth_jet_b64(depth_small)
+                depth_norm = np.clip(depth_small / depth_max, 0.0, 1.0)
+                images["depth"] = _norm_depth_gray_b64(depth_norm)
+                images["ae_recon"] = images["depth"]
+                images["depth_saliency"] = images["depth"]
 
             # --- Forward RGB (first-person / nav camera) ---
             rgb_tensor = tiled_cam.data.output.get("rgb")
@@ -444,28 +504,31 @@ class LiveDroneTelemetry:
                 images["rgb_first_person"] = fallback_rgb_b64
 
             # --- Angle cameras: chase (behind), left-side, top-down ---
-            _angle_cams = [
-                ("_chase_camera", "rgb_third_1"),
-                ("_left_camera",  "rgb_third_2"),
-                ("_top_camera",   "rgb_third_3"),
-            ]
-            for cam_attr, img_key in _angle_cams:
-                cam = getattr(env, cam_attr, None)
-                captured = False
-                if cam is not None:
-                    try:
-                        rgb_out = cam.data.output.get("rgb")
-                        if rgb_out is not None and rgb_out.numel() > 0:
-                            rgb_np = rgb_out[0].cpu().numpy()[:, :, :3]
-                            bgr    = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
-                            images[img_key] = _ndarray_to_jpeg_b64(bgr)
-                            captured = True
-                    except Exception:
-                        pass
-                if not captured:
-                    # Fallback to forward camera if angle cam not ready
-                    if fallback_rgb_b64:
-                        images[img_key] = fallback_rgb_b64
+            if not getattr(self, "_skip_angle_cams", False):
+                _angle_cams = [
+                    ("_chase_camera", "rgb_third_1"),
+                    ("_left_camera",  "rgb_third_2"),
+                    ("_top_camera",   "rgb_third_3"),
+                ]
+                for cam_attr, img_key in _angle_cams:
+                    cam = getattr(env, cam_attr, None)
+                    captured = False
+                    if cam is not None:
+                        try:
+                            rgb_out = cam.data.output.get("rgb")
+                            if rgb_out is not None and rgb_out.numel() > 0:
+                                rgb_np = rgb_out[0].cpu().numpy()[:, :, :3]
+                                bgr    = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
+                                images[img_key] = _ndarray_to_jpeg_b64(bgr)
+                                captured = True
+                        except Exception:
+                            pass
+                    if not captured:
+                        if fallback_rgb_b64:
+                            images[img_key] = fallback_rgb_b64
+            elif fallback_rgb_b64:
+                for key in ("rgb_third_1", "rgb_third_2", "rgb_third_3"):
+                    images[key] = fallback_rgb_b64
 
         except Exception as exc:
             print(f"[LiveTelemetry] _grab_images() error: {exc}")
@@ -753,8 +816,11 @@ class LiveDroneTelemetry:
                 return self._yolo_hud_cache
 
             h, w = frame.shape[:2]
-            hd = cv2.resize(frame, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
-            b64 = _ndarray_to_jpeg_b64(hd, quality=92)
+            scale = max(1, int(getattr(self, "_yolo_upscale", 2)))
+            if scale > 1:
+                frame = cv2.resize(frame, (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
+            quality = int(getattr(self, "_yolo_jpeg_quality", 92))
+            b64 = _ndarray_to_jpeg_b64(frame, quality=quality)
             self._yolo_hud_cache = b64
             return b64
         except Exception as exc:
@@ -763,14 +829,17 @@ class LiveDroneTelemetry:
 
     @staticmethod
     def _is_generic_camera_view(label: str | None = None, person_key: str | None = None) -> bool:
-        """True for placeholder 'camera view' rows (no room / rescue slot)."""
-        if person_key is not None:
-            pk = str(person_key).strip().lower().replace(" ", "_")
-            if pk in ("camera_view", "cameraview"):
-                return True
-        if label is None:
-            return False
-        return str(label).strip().upper().replace("_", " ") == "CAMERA VIEW"
+        """True only for the placeholder row (no room / scan / rescue slot)."""
+        lab = str(label or "").strip().upper().replace("_", " ")
+        pk = str(person_key or "").strip().lower().replace(" ", "_")
+        return lab == "CAMERA VIEW" and pk in ("camera_view", "cameraview", "")
+
+    @staticmethod
+    def _normalize_rescue_entry(label: str, key: str) -> tuple[str, str]:
+        """Map legacy placeholder rows to a meaningful rescue-log label."""
+        if LiveDroneTelemetry._is_generic_camera_view(label, key):
+            return "PERSON DETECTED", "person_detected"
+        return label, key
 
     @staticmethod
     def _build_yolo_stats(perception, brain) -> dict:
@@ -780,39 +849,44 @@ class LiveDroneTelemetry:
 
         # ---- Confidence (persistent peak vs instantaneous) ----
         current_conf = float(getattr(perception, "last_best_person_conf", 0.0))
+        state = getattr(perception, "_web_state", None) or {}
+        try:
+            current_conf = max(current_conf, float(state.get("display_conf", 0.0)))
+        except (TypeError, ValueError):
+            pass
         peak_conf = current_conf
+        try:
+            peak_conf = max(
+                peak_conf,
+                float(state.get("display_conf", 0.0)),
+                float(state.get("alert_conf", 0.0)),
+            )
+        except (TypeError, ValueError):
+            pass
         pbc = getattr(perception, "_person_best_conf", None)
         if isinstance(pbc, dict) and pbc:
-            peaks = [
-                float(v) for k, v in pbc.items()
-                if not LiveDroneTelemetry._is_generic_camera_view(person_key=k)
-            ]
-            if peaks:
-                peak_conf = max(peak_conf, max(peaks))
+            peak_conf = max(peak_conf, max(float(v) for v in pbc.values()))
 
-        state = getattr(perception, "_web_state", None) or {}
         intel = getattr(perception, "_last_intel", None)
-        if isinstance(intel, dict) and not LiveDroneTelemetry._is_generic_camera_view(
-            intel.get("label")
-        ):
+        if isinstance(intel, dict):
             try:
                 peak_conf = max(peak_conf, float(intel.get("conf", 0.0)))
             except (TypeError, ValueError):
                 pass
 
-        # ---- Rescue log snapshot (room / slot detections only) ----
+        # ---- Rescue log snapshot (same source as OpenCV sidebar: _detection_log) ----
         rescue_log = []
         for entry in (getattr(perception, "_detection_log", None) or [])[:12]:
             try:
                 label = str(entry.get("label", ""))
                 key = str(entry.get("person_key", ""))
-                if LiveDroneTelemetry._is_generic_camera_view(label, key):
-                    continue
+                label, key = LiveDroneTelemetry._normalize_rescue_entry(label, key)
                 rescue_log.append({
                     "label":   label,
                     "conf":    round(float(entry.get("conf", 0.0)), 4),
                     "gps_lat": entry.get("gps_lat"),
                     "gps_lon": entry.get("gps_lon"),
+                    "xyz":     entry.get("xyz"),
                     "key":     key,
                     "frame":   int(entry.get("frame", 0)),
                 })
@@ -821,22 +895,30 @@ class LiveDroneTelemetry:
 
         # ---- Intel panel ----
         intel_out = None
-        if isinstance(intel, dict) and not LiveDroneTelemetry._is_generic_camera_view(
-            intel.get("label")
-        ):
+        if isinstance(intel, dict):
+            ilabel, _ = LiveDroneTelemetry._normalize_rescue_entry(
+                str(intel.get("label", "")), "person_detected"
+            )
             intel_out = {
-                "label":   str(intel.get("label", "")).upper(),
+                "label":   ilabel.upper(),
                 "conf":    round(float(intel.get("conf", 0.0)), 4),
                 "gps_lat": intel.get("gps_lat"),
                 "gps_lon": intel.get("gps_lon"),
                 "dist":    intel.get("dist"),
             }
 
-        person_found = bool(getattr(brain, "found_person", False)) if brain else False
+        brain_rescued = bool(getattr(brain, "found_person", False)) if brain else False
+        yolo_seen = bool(getattr(perception, "person_ever_detected", False))
+        person_ui = (
+            brain_rescued
+            or bool(state.get("has_confirmed"))
+            or yolo_seen
+            or bool(state.get("operator_alert"))
+        )
         thresh = float(getattr(perception, "person_conf_threshold", 0.7))
 
         # ---- Canonical detection state (single source of truth for the UI) ----
-        if person_found or state.get("has_confirmed"):
+        if brain_rescued or state.get("has_confirmed"):
             status, status_label = "confirmed", "TARGET CONFIRMED"
         elif peak_conf >= thresh or state.get("operator_alert"):
             status, status_label = "detected", "HUMAN DETECTED"
@@ -850,8 +932,9 @@ class LiveDroneTelemetry:
             "best_conf":       round(peak_conf, 4),
             "current_conf":    round(current_conf, 4),
             "detection_count": int(getattr(perception, "detection_count", 0)),
-            "person_found":    person_found,
-            "person_seen":     bool(getattr(perception, "person_ever_detected", False)),
+            "person_found":    person_ui,
+            "person_seen":     yolo_seen,
+            "rescue_log_count": len(rescue_log),
             "status":          status,
             "status_label":    status_label,
             "scan_label":      state.get("scan_label"),
@@ -862,13 +945,8 @@ class LiveDroneTelemetry:
             "rescue_log":      rescue_log,
         }
 
-    def _grab_ae_recon(self, env, depth_small) -> str:
-        """Run the AE encoder+decoder on the current depth frame and return JPEG b64.
-
-        depth_small is in raw metres (0.05…10).  The AE was trained on depth
-        images normalised to [0, 1] using near=0.05, far=10.0, so we apply the
-        same normalisation here before encoding.
-        """
+    def _grab_ae_recon(self, env, depth_t) -> str:
+        """Run AE encode→decode on env-normalized depth (1,1,72,128) in [0,1]."""
         try:
             import cv2
             import numpy as np
@@ -878,95 +956,98 @@ class LiveDroneTelemetry:
             if ae is None:
                 return ""
 
-            # Normalise depth metres → [0, 1] exactly as the training pipeline does
-            near, far = 0.05, 10.0
-            depth_norm = np.clip((depth_small - near) / (far - near), 0.0, 1.0).astype("float32")
-
-            depth_t = torch.from_numpy(depth_norm).unsqueeze(0).unsqueeze(0)  # (1,1,72,128)
             device = next(ae.parameters()).device
-            depth_t = depth_t.to(device)
+            depth_t = _ensure_ae_depth_batch(depth_t.to(device))
 
             with torch.no_grad():
-                z     = ae.encode(depth_t)          # (1, latent_dim)
-                recon = ae.decode(z)                # (1, 1, 72, 128) in [0, 1]
+                z     = ae.encode(depth_t)
+                recon = ae.decode(z)
 
-            # Convert AE output [0,1] → uint8 grayscale → BGR JPEG
-            recon_np  = recon[0, 0].cpu().numpy()                     # (72, 128)
-            recon_u8  = (np.clip(recon_np, 0.0, 1.0) * 255).astype("uint8")
-            bgr       = cv2.cvtColor(recon_u8, cv2.COLOR_GRAY2BGR)
-            return _ndarray_to_jpeg_b64(bgr)
-        except Exception:
+            recon_np = recon[0, 0].cpu().numpy()
+            recon_u8 = (np.clip(recon_np, 0.0, 1.0) * 255).astype("uint8")
+            bgr      = cv2.cvtColor(recon_u8, cv2.COLOR_GRAY2BGR)
+            bgr      = _upscale_ae_bgr(bgr)
+            return _ndarray_to_jpeg_b64(bgr, quality=88)
+        except Exception as exc:
+            if not getattr(self, "_ae_recon_err_logged", False):
+                print(f"[LiveTelemetry] AE recon failed: {exc}")
+                self._ae_recon_err_logged = True
             return ""
 
-    def _grab_ae_saliency(self, env, depth_small) -> str:
-        """Compute AE latent gradient saliency map — identical to play_saliency.py method.
-
-        Saliency = |∂‖z‖₁ / ∂x| weighted by obstacle proximity (1 − depth_norm).
-        This shows which pixels most influence the AE's latent representation.
-        Uses SmoothGrad (N=8) for a cleaner, less noisy result.
-        """
+    def _grab_policy_saliency(self, env, depth_t) -> str:
+        """PPO actor saliency w.r.t. depth pixels — matches scripts/play_saliency.py."""
         try:
             import cv2
             import numpy as np
             import torch
-            import torch.nn.functional as F
 
-            ae = getattr(env, "ae", None)
-            if ae is None:
+            actor = getattr(env, "_navigator_actor", None)
+            ae    = getattr(env, "ae", None)
+            if actor is None or ae is None:
                 return ""
 
-            near, far = 0.05, 10.0
-            depth_norm = np.clip((depth_small - near) / (far - near), 0.0, 1.0).astype("float32")
             device = next(ae.parameters()).device
+            depth_t = _ensure_ae_depth_batch(depth_t.to(device))
 
-            depth_t = torch.from_numpy(depth_norm).unsqueeze(0).unsqueeze(0).to(device)  # (1,1,72,128)
+            # Non-image state features from the same 77-dim policy obs the navigator uses
+            obs_dict = env._get_observations()
+            policy_obs = obs_dict["policy"][0:1].to(device)
+            latent_dim = int(getattr(getattr(env, "cfg", None), "ae_latent_dim", 64))
+            state_features = policy_obs[:, latent_dim:].clone().detach()
 
-            # SmoothGrad: average |grad| over N noisy copies of the input
-            n_samples   = 8
-            noise_level = 0.05
+            ae_encoder = ae.encoder
+            ae_fc_z    = ae.fc_z
+            actor_mlp  = actor.mlp
+            actor_norm = actor.obs_normalizer
+            actor_det  = None
+            if actor.distribution is not None:
+                actor_det = actor.distribution.as_deterministic_output_module()
+
+            n_samples   = 15
+            noise_level = 0.10
             total_grad  = torch.zeros(72, 128, device=device)
 
             ae.eval()
+            actor.eval()
             for _ in range(n_samples):
-                noise    = torch.randn_like(depth_t) * noise_level
-                noisy    = (depth_t + noise).clamp(0.0, 1.0)
-                inp      = noisy.clone().detach().requires_grad_(True)
+                noise       = torch.randn_like(depth_t) * noise_level
+                noisy_depth = (depth_t + noise).clamp(0.0, 1.0)
+                depth_input = noisy_depth.clone().detach().requires_grad_(True)
 
-                h = ae.encoder(inp)           # CNN → flatten
-                z = ae.fc_z(h)               # linear bottleneck
-                if hasattr(ae, "ln_z") and ae.ln_z is not None:
-                    z = ae.ln_z(z)
-
-                loss = z.abs().sum()          # |∂‖z‖₁/∂x|
+                h     = ae_encoder(depth_input)
+                z_img = ae_fc_z(h)
+                obs   = torch.cat([z_img, state_features], dim=-1)
+                obs   = actor_norm(obs)
+                out   = actor_mlp(obs)
+                if actor_det is not None:
+                    out = actor_det(out)
+                loss = out.abs().sum()
                 loss.backward()
 
-                if inp.grad is not None:
-                    total_grad += inp.grad.abs().squeeze(0).squeeze(0)
+                if depth_input.grad is not None:
+                    total_grad += depth_input.grad.abs().squeeze(0).squeeze(0)
 
-            saliency = (total_grad / n_samples).detach().cpu().numpy()  # (72, 128)
+            saliency = total_grad / n_samples
+            depth_np = depth_t[0, 0].detach().cpu().numpy()
 
-            # Weight by proximity: nearby obstacles (small depth) contribute more
-            proximity = 1.0 - depth_norm        # (72, 128) in [0, 1]
-            saliency  = saliency * proximity
-
-            # Normalise to [0, 1]
-            s_min, s_max = saliency.min(), saliency.max()
+            proximity = 1.0 - depth_np
+            sal_np    = saliency.detach().cpu().numpy() * proximity
+            s_min, s_max = sal_np.min(), sal_np.max()
             if s_max - s_min > 1e-8:
-                saliency = (saliency - s_min) / (s_max - s_min)
+                sal_np = (sal_np - s_min) / (s_max - s_min)
             else:
-                saliency = np.zeros_like(saliency)
+                sal_np = np.zeros_like(sal_np)
 
-            # Jet colormap heatmap
-            sal_u8  = (saliency * 255).astype("uint8")
-            heatmap = cv2.applyColorMap(sal_u8, cv2.COLORMAP_JET)
-
-            # Blend depth (grey) + heatmap (40/60) — same weights as play_saliency.py
-            depth_u8  = (np.clip(depth_norm, 0.0, 1.0) * 255).astype("uint8")
+            depth_u8  = (np.clip(depth_np, 0.0, 1.0) * 255).astype("uint8")
             depth_bgr = cv2.cvtColor(depth_u8, cv2.COLOR_GRAY2BGR)
+            heatmap   = cv2.applyColorMap((sal_np * 255).astype("uint8"), cv2.COLORMAP_JET)
             overlay   = cv2.addWeighted(depth_bgr, 0.4, heatmap, 0.6, 0)
-
-            return _ndarray_to_jpeg_b64(overlay)
-        except Exception:
+            overlay   = _upscale_ae_bgr(overlay)
+            return _ndarray_to_jpeg_b64(overlay, quality=88)
+        except Exception as exc:
+            if not getattr(self, "_saliency_err_logged", False):
+                print(f"[LiveTelemetry] Policy saliency failed: {exc}")
+                self._saliency_err_logged = True
             return ""
 
     # ------------------------------------------------------------------ #

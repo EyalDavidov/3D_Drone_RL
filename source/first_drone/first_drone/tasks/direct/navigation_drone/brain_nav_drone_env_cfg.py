@@ -177,6 +177,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     yolo_imgsz: int = 1280         # match upscaled feed so YOLO keeps full detail
     yolo_sharpen: bool = True
     yolo_clahe: bool = False       # colorized models don't need color-distorting CLAHE contrast boost
+    yolo_show_opencv: bool = True  # False when web dashboard renders YOLO/SLAM natively
 
     # ---------- Walkable floor (R-shaped map) ----------
     walkable_grid_resolution: float = 0.4   # Meters per occupancy cell when parsing floor meshes from USD

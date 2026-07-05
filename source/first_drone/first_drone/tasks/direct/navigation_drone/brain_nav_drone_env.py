@@ -141,10 +141,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             rescue_person_slots=self._build_rescue_person_log_slots(),
             person_match_radius=float(getattr(self.cfg, "brain_person_match_radius", 5.0)),
             yolo_clahe=getattr(self.cfg, "yolo_clahe", False),
+            show_opencv=bool(getattr(self.cfg, "yolo_show_opencv", True)),
         )
         print(
             f"\n[BrainNavEnv] Perception initialized (use_mock={self.cfg.use_mock_perception}, "
-            f"person_conf>={self.cfg.yolo_person_conf_threshold:.0%})\n"
+            f"person_conf>={self.cfg.yolo_person_conf_threshold:.0%}, "
+            f"opencv={'on' if getattr(self.cfg, 'yolo_show_opencv', True) else 'off'})\n"
         )
 
         # ---------- Initialize Brain Module ----------
@@ -1498,6 +1500,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             depth = torch.nn.functional.interpolate(
                 depth, size=(ae_h, ae_w), mode="bilinear", align_corners=False
             )
+        # Parent stores full-res depth; keep AE/dashboard buffer at 72×128.
+        self._last_depth_processed = depth
         return depth
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1658,6 +1662,9 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             runner.load(checkpoint_path)
             self._navigator_policy = runner.get_inference_policy(device=self.device)
             self._navigator_policy_expects_dict = True
+            # Expose actor for dashboard policy-saliency (play_saliency.py parity)
+            self._navigator_actor = runner.alg.actor
+            self._navigator_actor.eval()
             print(f"\n[BrainNavEnv] Loaded navigator via RSL-RL Runner: {checkpoint_path}\n")
             self._verify_navigator_policy()
 

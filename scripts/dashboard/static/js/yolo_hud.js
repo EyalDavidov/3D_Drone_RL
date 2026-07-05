@@ -143,9 +143,11 @@ class YoloHud {
         if (this.el.liveVal)  this.el.liveVal.textContent = (live * 100).toFixed(1) + '%';
         if (this.el.threshVal) this.el.threshVal.textContent = (this._threshold * 100).toFixed(0) + '%';
         if (this.el.boxesVal) this.el.boxesVal.textContent = this._boxes.length;
+        const personActive = stats.person_found || stats.person_seen
+            || state === 'detected' || state === 'confirmed' || state === 'seen';
         if (this.el.personVal) {
-            this.el.personVal.textContent = stats.person_found ? 'FOUND' : 'Not found';
-            this.el.personVal.dataset.state = stats.person_found ? 'confirmed' : 'idle';
+            this.el.personVal.textContent = personActive ? 'DETECTED' : 'Not found';
+            this.el.personVal.dataset.state = personActive ? 'confirmed' : 'idle';
         }
 
         // Alert overlay
@@ -171,9 +173,9 @@ class YoloHud {
         const e = this.el;
         if (!e.intel) return;
         if (!intel) { e.intel.hidden = true; return; }
-        if (YoloHud._isCameraView(intel.label)) { e.intel.hidden = true; return; }
+        const norm = YoloHud._normalizeLogEntry({ label: intel.label, key: 'person_detected' });
         e.intel.hidden = false;
-        if (e.intelLabel) e.intelLabel.textContent = intel.label || 'TARGET';
+        if (e.intelLabel) e.intelLabel.textContent = norm.label || 'TARGET';
         if (e.intelConf)  e.intelConf.textContent = Math.round((intel.conf || 0) * 100) + '%';
         if (e.intelLat)   e.intelLat.textContent = (intel.gps_lat != null) ? Number(intel.gps_lat).toFixed(6) : '—';
         if (e.intelLon)   e.intelLon.textContent = (intel.gps_lon != null) ? Number(intel.gps_lon).toFixed(6) : '—';
@@ -181,22 +183,23 @@ class YoloHud {
     }
 
     // ---- Rescue log ----
-    static _isCameraView(label, key) {
-        if (key) {
-            const pk = String(key).trim().toLowerCase().replace(/\s+/g, '_');
-            if (pk === 'camera_view' || pk === 'cameraview') return true;
+    static _normalizeLogEntry(entry) {
+        const lab = String(entry?.label || '').trim().toUpperCase().replace(/_/g, ' ');
+        const pk = String(entry?.key || '').trim().toLowerCase().replace(/\s+/g, '_');
+        if (lab === 'CAMERA VIEW' && (pk === 'camera_view' || pk === 'cameraview' || pk === '')) {
+            return { ...entry, label: 'PERSON DETECTED', key: 'person_detected' };
         }
-        if (!label) return false;
-        return String(label).trim().toUpperCase().replace(/_/g, ' ') === 'CAMERA VIEW';
+        return entry;
     }
 
     _updateLog(log) {
         const host = this.el.log;
         if (!host) return;
-        const filtered = (log || []).filter(
-            e => !YoloHud._isCameraView(e.label, e.key)
-        );
-        if (this.el.logCount) this.el.logCount.textContent = filtered.length;
+        const filtered = (log || []).map(e => YoloHud._normalizeLogEntry(e));
+        const logCount = (typeof this._stats?.rescue_log_count === 'number')
+            ? this._stats.rescue_log_count
+            : filtered.length;
+        if (this.el.logCount) this.el.logCount.textContent = logCount;
 
         const sig = filtered.map(e => `${e.key}:${e.conf}`).join('|');
         if (sig === this._logSig) return;   // no change → skip DOM churn
@@ -219,6 +222,21 @@ class YoloHud {
             card.style.setProperty('--accent-glow', col.glow);
 
             const hasGps = entry.gps_lat != null && entry.gps_lon != null;
+            const xyz = Array.isArray(entry.xyz) ? entry.xyz : null;
+            const hasXyz = xyz && xyz.length >= 3;
+            let coordsHtml = '';
+            if (hasGps) {
+                coordsHtml = `<div class="yhud-log-gps">
+                        <span>LAT <b class="mono">${Number(entry.gps_lat).toFixed(6)}</b></span>
+                        <span>LON <b class="mono">${Number(entry.gps_lon).toFixed(6)}</b></span>
+                    </div>`;
+            } else if (hasXyz) {
+                coordsHtml = `<div class="yhud-log-gps">
+                        <span>X <b class="mono">${Number(xyz[0]).toFixed(1)}</b></span>
+                        <span>Y <b class="mono">${Number(xyz[1]).toFixed(1)}</b></span>
+                        <span>Z <b class="mono">${Number(xyz[2]).toFixed(1)}</b></span>
+                    </div>`;
+            }
             card.innerHTML = `
                 <div class="yhud-log-accent"></div>
                 <div class="yhud-log-main">
@@ -227,10 +245,7 @@ class YoloHud {
                         <span class="yhud-log-badge">${Math.round(conf * 100)}%</span>
                     </div>
                     <div class="yhud-log-bar"><div class="yhud-log-bar-fill" style="width:${this._clampPct(conf * 100)}%"></div></div>
-                    ${hasGps ? `<div class="yhud-log-gps">
-                        <span>LAT <b class="mono">${Number(entry.gps_lat).toFixed(6)}</b></span>
-                        <span>LON <b class="mono">${Number(entry.gps_lon).toFixed(6)}</b></span>
-                    </div>` : ''}
+                    ${coordsHtml}
                 </div>`;
             host.appendChild(card);
         }

@@ -28,9 +28,11 @@ class PerceptionModule:
         rescue_person_slots: list[dict] | None = None,
         person_match_radius: float = 5.0,
         yolo_clahe: bool = False,
+        show_opencv: bool = True,
     ):
         """Initialize YOLO-based person detection for the Brain module."""
         self.use_mock = use_mock
+        self.show_opencv = bool(show_opencv)
         self.yolo_clahe = bool(yolo_clahe)
         self.person_conf_threshold = float(person_conf_threshold)
         self.noted_conf_threshold = float(noted_conf_threshold)
@@ -110,13 +112,17 @@ class PerceptionModule:
             yolo_path = _REPO_ROOT / "YOLO" / "yolo11n.pt"
             if not yolo_path.exists():
                 yolo_path = Path(r"D:\isaac\3D_Drone_RL\YOLO\yolo11n.pt")
+            self._yolo_device = "cuda:0" if torch.cuda.is_available() else "cpu"
             self.yolo_model = YOLO(str(yolo_path))
+            if self._yolo_device.startswith("cuda"):
+                self.yolo_model.to(self._yolo_device)
             print(
-                f"[Perception] YOLO person-only mode: rescue>={self.person_conf_threshold:.0%}, "
-                f"noted>={self.noted_conf_threshold:.0%}, "
-                f"min_bbox_area={self.min_bbox_area_frac:.1%}, "
-                f"confirm_frames={self.noted_confirm_frames}\n"
+                f"[Perception] YOLO on {self._yolo_device} | rescue>={self.person_conf_threshold:.0%}, "
+                f"noted>={self.noted_conf_threshold:.0%}, imgsz={self.yolo_imgsz}, "
+                f"upscale={self.yolo_camera_upscale}x, confirm_frames={self.noted_confirm_frames}\n"
             )
+        else:
+            self._yolo_device = "cpu"
 
     def _bbox_passes_person_shape(self, box, img_w: int, img_h: int) -> bool:
         """Always return True to bypass geometric checks, matching feature/perception-module."""
@@ -159,7 +165,7 @@ class PerceptionModule:
         """Console banner for operator; visual alert stays in the main YOLO HUD window."""
         self._operator_alert_until = self.detection_count + 120
         self._last_alert_frame = frame_bgr.copy()
-        where = (scan_label or "camera view").upper()
+        where = (scan_label or "person detected").upper()
         banner = (
             f"\n{'=' * 62}\n"
             f"  *** PERSON DETECTED  |  {conf:.0%} confidence  |  {where} ***\n"
@@ -181,6 +187,67 @@ class PerceptionModule:
         lat = anchor_lat + (x / 111320.0)
         lon = anchor_lon + (y / (111320.0 * math.cos(math.radians(anchor_lat))))
         return lat, lon
+
+    def _deproject_bbox_center(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        img_w: int,
+        img_h: int,
+        depth_image,
+        drone_pos,
+        drone_quat,
+        *,
+        relax_depth: bool = False,
+    ) -> tuple[tuple[float, float, float], float, float, float] | None:
+        """Return (world_xyz, z_depth, local_x, local_y) from a person bbox."""
+        if drone_pos is None or drone_quat is None:
+            return None
+
+        x_center = 0.5 * (x1 + x2)
+        y_center = 0.5 * (y1 + y2)
+        px = max(0, min(int(x_center), img_w - 1))
+        py = max(0, min(int(y_center), img_h - 1))
+
+        if isinstance(depth_image, torch.Tensor):
+            depth_array = depth_image[0].detach().cpu().numpy()
+        else:
+            depth_array = depth_image[0]
+        z_depth = float(np.squeeze(depth_array[py, px]))
+        if np.isinf(z_depth) or z_depth <= 0.0:
+            z_depth = 10.0
+        if relax_depth:
+            z_depth = float(np.clip(z_depth, self.min_depth_m, self.max_depth_m))
+        elif z_depth < self.min_depth_m or z_depth > self.max_depth_m:
+            return None
+
+        fx = img_w * (self.camera_focal_length / self.camera_horizontal_aperture)
+        fy = fx
+        cx = img_w / 2.0
+        cy = img_h / 2.0
+        local_x = (x_center - cx) * z_depth / fx
+        local_y = (y_center - cy) * z_depth / fy
+
+        d_x = float(drone_pos[0, 0].item())
+        d_y = float(drone_pos[0, 1].item())
+        d_z = float(drone_pos[0, 2].item())
+        qw = float(drone_quat[0, 0].item())
+        qx = float(drone_quat[0, 1].item())
+        qy = float(drone_quat[0, 2].item())
+        qz = float(drone_quat[0, 3].item())
+
+        from scipy.spatial.transform import Rotation as R
+
+        rot = R.from_quat([qx, qy, qz, qw])
+        cam_vector = np.array([z_depth, -local_x, -local_y])
+        world_vector = rot.apply(cam_vector)
+
+        t_x = d_x + world_vector[0]
+        t_y = d_y + world_vector[1]
+        t_z = d_z + world_vector[2]
+        return (t_x, t_y, t_z), z_depth, local_x, local_y
 
     def _match_rescue_person_slot(
         self, xyz: tuple[float, float, float] | None
@@ -206,7 +273,7 @@ class PerceptionModule:
         slot = self._match_rescue_person_slot(xyz)
         if slot is not None:
             return str(slot["id"])
-        label = (scan_label or "camera_view").strip().lower().replace(" ", "_")
+        label = (scan_label or "person_detected").strip().lower().replace(" ", "_")
         return label
 
     def _append_detection_log(
@@ -231,7 +298,7 @@ class PerceptionModule:
         display_label = (
             str(slot["label"]).upper()
             if slot is not None
-            else (scan_label or "camera view").upper()
+            else (scan_label or "person detected").upper()
         )
 
         entry = {
@@ -820,6 +887,11 @@ class PerceptionModule:
         """Display the YOLO feed in a compact HUD window."""
         import cv2
 
+        if not self.show_opencv:
+            # Web dashboard renders the HUD — skip expensive OpenCV compositing.
+            self._last_display_frame = self._make_simple_view(annotated_frame)
+            return
+
         self._init_display_window()
         self._sync_sidebar_trackbar()
         display = None
@@ -916,7 +988,7 @@ class PerceptionModule:
             yolo_bgr = cv2.resize(
                 single_env_image_bgr,
                 (img_w * up, img_h * up),
-                interpolation=cv2.INTER_LANCZOS4,
+                interpolation=cv2.INTER_LINEAR,
             )
         if self.yolo_sharpen:
             blur = cv2.GaussianBlur(yolo_bgr, (0, 0), sigmaX=1.0)
@@ -936,6 +1008,8 @@ class PerceptionModule:
             conf=0.15,
             classes=[0],
             imgsz=self.yolo_imgsz,
+            device=getattr(self, "_yolo_device", "cpu"),
+            half=str(getattr(self, "_yolo_device", "cpu")).startswith("cuda"),
         )
         filtered_results = results[0]
 
@@ -970,48 +1044,12 @@ class PerceptionModule:
             if conf < accept_threshold:
                 continue
 
-            x_center = 0.5 * (x1 + x2)
-            y_center = 0.5 * (y1 + y2)
-            px = max(0, min(int(x_center), img_w - 1))
-            py = max(0, min(int(y_center), img_h - 1))
-
-            if isinstance(depth_image, torch.Tensor):
-                depth_array = depth_image[0].detach().cpu().numpy()
-            else:
-                depth_array = depth_image[0]
-            z_depth = float(np.squeeze(depth_array[py, px]))
-            if np.isinf(z_depth) or z_depth <= 0.0:
-                z_depth = 10.0
-            if z_depth < self.min_depth_m or z_depth > self.max_depth_m:
+            deproj = self._deproject_bbox_center(
+                x1, y1, x2, y2, img_w, img_h, depth_image, drone_pos, drone_quat,
+            )
+            if deproj is None:
                 continue
-
-            if drone_pos is None or drone_quat is None:
-                continue
-
-            fx = img_w * (self.camera_focal_length / self.camera_horizontal_aperture)
-            fy = fx
-            cx = img_w / 2.0
-            cy = img_h / 2.0
-            local_x = (x_center - cx) * z_depth / fx
-            local_y = (y_center - cy) * z_depth / fy
-
-            d_x = float(drone_pos[0, 0].item())
-            d_y = float(drone_pos[0, 1].item())
-            d_z = float(drone_pos[0, 2].item())
-            qw = float(drone_quat[0, 0].item())
-            qx = float(drone_quat[0, 1].item())
-            qy = float(drone_quat[0, 2].item())
-            qz = float(drone_quat[0, 3].item())
-
-            from scipy.spatial.transform import Rotation as R
-
-            rot = R.from_quat([qx, qy, qz, qw])
-            cam_vector = np.array([z_depth, -local_x, -local_y])
-            world_vector = rot.apply(cam_vector)
-
-            t_x = d_x + world_vector[0]
-            t_y = d_y + world_vector[1]
-            t_z = d_z + world_vector[2]
+            (t_x, t_y, t_z), z_depth, local_x, local_y = deproj
 
             candidate = (conf, (x1, y1, x2, y2), (t_x, t_y, t_z), z_depth, local_x, local_y)
             if best_person is None or conf > best_person[0]:
@@ -1028,7 +1066,8 @@ class PerceptionModule:
         if best_bbox is not None and candidate_conf >= self.noted_conf_threshold:
             self._noted_streak += 1
         else:
-            self._noted_streak = 0
+            # Soft decay — don't reset on one missed frame during 360° scan spin
+            self._noted_streak = max(0, self._noted_streak - 1)
 
         if self._noted_streak >= self.noted_confirm_frames and best_bbox is not None:
             has_noted = True
@@ -1047,16 +1086,12 @@ class PerceptionModule:
             person_world_xyz[0, 1] = t_y
             person_world_xyz[0, 2] = t_z
 
-            anchor_lat, anchor_lon = 32.1234, 34.1234
-            lat_offset_per_m = 1.0 / 111320.0
-            lon_offset_per_m = 1.0 / (111320.0 * math.cos(math.radians(anchor_lat)))
-            target_lat = anchor_lat + (t_x * lat_offset_per_m)
-            target_lon = anchor_lon + (t_y * lon_offset_per_m)
+            target_lat, target_lon = self._local_xyz_to_gps(t_x, t_y)
 
             slot = self._match_rescue_person_slot((t_x, t_y, t_z))
             self._last_intel = {
                 "conf": conf,
-                "label": slot["label"] if slot else (scan_label or "camera view"),
+                "label": slot["label"] if slot else (scan_label or "person detected"),
                 "gps_lat": target_lat,
                 "gps_lon": target_lon,
                 "dist": z_depth,
@@ -1069,12 +1104,35 @@ class PerceptionModule:
             )
 
         self.detection_count += 1
-        self.last_best_person_conf = display_conf
+        # Slow decay so HUD doesn't flicker to 0% between intermittent scan hits
+        if display_conf > 0.0:
+            self.last_best_person_conf = max(self.last_best_person_conf * 0.995, display_conf)
+        else:
+            self.last_best_person_conf *= 0.992
         alert_conf = candidate_conf if has_noted else display_conf
 
         log_xyz = None
         if best_person is not None:
             log_xyz = (float(best_person[2][0]), float(best_person[2][1]), float(best_person[2][2]))
+        elif best_bbox is not None:
+            _, _, bx1, by1, bx2, by2 = best_bbox
+            noted_deproj = self._deproject_bbox_center(
+                bx1, by1, bx2, by2, img_w, img_h, depth_image, drone_pos, drone_quat,
+                relax_depth=True,
+            )
+            if noted_deproj is not None:
+                log_xyz = noted_deproj[0]
+                if self._last_intel is None and (has_noted or candidate_conf >= self.noted_conf_threshold):
+                    t_x, t_y, t_z = log_xyz
+                    target_lat, target_lon = self._local_xyz_to_gps(t_x, t_y)
+                    slot = self._match_rescue_person_slot(log_xyz)
+                    self._last_intel = {
+                        "conf": candidate_conf,
+                        "label": slot["label"] if slot else (scan_label or "person detected"),
+                        "gps_lat": target_lat,
+                        "gps_lon": target_lon,
+                        "dist": noted_deproj[1],
+                    }
         person_key = self._person_log_key(scan_label, log_xyz)
         person_seen = has_noted or has_confirmed_person
         should_log = person_seen and float(alert_conf) > self._person_best_conf.get(person_key, 0.0) + 1e-6

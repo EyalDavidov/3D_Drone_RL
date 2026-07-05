@@ -48,11 +48,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--no-dashboard", action="store_true", default=False,
-    help="Disable the web dashboard (saves CPU; OpenCV SLAM map still shown).",
+    help="Disable the web dashboard.",
 )
 parser.add_argument(
     "--no-slam-window", action="store_true", default=False,
     help="Disable the OpenCV SLAM visualiser window.",
+)
+parser.add_argument(
+    "--opencv", action="store_true", default=False,
+    help="Force OpenCV SLAM + YOLO windows (off by default when dashboard is on).",
 )
 
 AppLauncher.add_app_launcher_args(parser)
@@ -315,6 +319,18 @@ def main():
     env_cfg.debug_vis   = False
     env_cfg.show_ae_images = False
 
+    _web_dashboard = _DASHBOARD_AVAILABLE and (not args_cli.no_dashboard)
+    _use_opencv = args_cli.opencv or (not _web_dashboard and not args_cli.no_slam_window)
+    env_cfg.yolo_show_opencv = _use_opencv and (not args_cli.no_slam_window)
+    if _web_dashboard:
+        # Lighter YOLO for web-only runs — 1280@3x upscale was blocking the sim loop on CPU
+        env_cfg.yolo_camera_upscale = 2
+        env_cfg.yolo_imgsz = 640
+        env_cfg.yolo_sharpen = False
+        env_cfg.yolo_noted_conf_threshold = 0.35
+        env_cfg.yolo_noted_confirm_frames = 1
+        print("[SLAM Launcher] YOLO perf: imgsz=640, upscale=2x, GPU if available")
+
     # 2. Instantiate RealSlamDroneEnv
     print("[SLAM Launcher] Initializing RealSlamDroneEnv…")
     env = RealSlamDroneEnv(cfg=env_cfg)
@@ -334,34 +350,44 @@ def main():
 
     # 3. Start live dashboard (if enabled and available)
     _telemetry = None
-    if _DASHBOARD_AVAILABLE:
+    if _web_dashboard:
         try:
-            _telemetry = LiveDroneTelemetry(tick_rate=10.0)
+            _telemetry = LiveDroneTelemetry(tick_rate=10.0, perf_mode=True)
             start_dashboard_server(
                 http_port=8000, ws_port=8001,
                 telemetry_source=_telemetry,
                 open_browser=True,
                 blocking=False,
             )
-            print("[Dashboard] Live dashboard at http://localhost:8000")
+            print("[Dashboard] Live dashboard at http://localhost:8000 (perf mode: OpenCV off)")
         except Exception as de:
             print(f"[Dashboard] Failed to start: {de}")
             _telemetry = None
+    elif _DASHBOARD_AVAILABLE and args_cli.no_dashboard:
+        print("[Dashboard] Disabled via --no-dashboard")
 
     dt            = env.step_dt
     dummy_action  = torch.zeros((args_cli.num_envs, 4), device=env.device)
-    show_slam_win = (cv2 is not None) and (not args_cli.no_slam_window)
+    show_slam_win = (cv2 is not None) and bool(env_cfg.yolo_show_opencv)
 
-    print("[SLAM Launcher] Loop running. Press Q in the SLAM window or Ctrl+C to exit.")
+    if not show_slam_win and not env_cfg.yolo_show_opencv:
+        print("[SLAM Launcher] OpenCV windows disabled (use web dashboard or pass --opencv)")
+    elif show_slam_win:
+        print("[SLAM Launcher] OpenCV SLAM window enabled (Q to quit)")
+
+    print("[SLAM Launcher] Loop running. Ctrl+C to exit.")
     start_run_time = time.time()
+    _follow_cam_counter = 0
 
     try:
         while simulation_app.is_running():
             t0 = time.time()
 
-            # Aim the dashboard follow cameras at the drone before rendering
+            # Aim dashboard follow cameras at the drone (every 2 steps in web mode)
             if hasattr(env, "update_follow_cameras"):
-                env.update_follow_cameras()
+                _follow_cam_counter += 1
+                if (not _web_dashboard) or (_follow_cam_counter % 2 == 0):
+                    env.update_follow_cameras()
 
             obs, rewards, terminated, truncated, info = env.step(dummy_action)
 
@@ -411,7 +437,7 @@ def main():
         print(f"[SLAM Launcher] Crash: {e}")
         traceback.print_exc()
     finally:
-        if show_slam_win:
+        if show_slam_win and cv2 is not None:
             cv2.destroyAllWindows()
         env.close()
         simulation_app.close()
