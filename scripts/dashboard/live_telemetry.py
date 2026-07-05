@@ -321,46 +321,20 @@ class LiveDroneTelemetry:
             if self._img_push_counter % self._img_regen_interval == 0 or not self._image_cache:
                 self._image_cache = self._grab_images(env)
 
-            # SLAM 2D/3D + YOLO HUD: refresh every push (zero-delay web sync)
+            # SLAM 3D grid + YOLO frame: refresh every push (zero-delay web sync).
+            # The 2D SLAM radar is now rendered natively in the browser from this
+            # same slam_3d grid, so we no longer encode a heavy SLAM PNG here.
             self._slam3d_cache = self._get_slam_3d(env, frontiers_raw=frontiers_raw)
-            slam_img = self._render_slam_map(env, frontiers_raw=frontiers_raw)
-            yolo_img = self._grab_yolo_hud(env)
-            if slam_img or yolo_img:
+            yolo_img = self._grab_yolo_frame(env)
+            if yolo_img:
                 if not self._image_cache:
                     self._image_cache = {}
-                if slam_img:
-                    self._image_cache["slam_map"] = slam_img
-                if yolo_img:
-                    self._image_cache["yolo_hud"] = yolo_img
+                # Clean camera frame — native component overlays boxes itself.
+                self._image_cache["yolo_frame"] = yolo_img
 
-            # YOLO sidebar stats for the dashboard tab
-            yolo_stats: dict[str, Any] = {}
+            # YOLO native-HUD payload (boxes + intel + rescue log + status)
             perception = getattr(env, "_perception", None)
-            if perception is not None:
-                # `last_best_person_conf` is the *current frame* value — it collapses
-                # to 0 the instant no person is in view (SCANNING), which made the
-                # dashboard read 0% even after strong detections.  The persistent
-                # per-person peaks live in `_person_best_conf` (same source the HUD
-                # rescue log draws from), so surface the real peak here.
-                current_conf = float(getattr(perception, "last_best_person_conf", 0.0))
-                peak_conf = current_conf
-                pbc = getattr(perception, "_person_best_conf", None)
-                if isinstance(pbc, dict) and pbc:
-                    peak_conf = max(peak_conf, max(float(v) for v in pbc.values()))
-                last_intel = getattr(perception, "_last_intel", None)
-                if isinstance(last_intel, dict):
-                    try:
-                        peak_conf = max(peak_conf, float(last_intel.get("conf", 0.0)))
-                    except (TypeError, ValueError):
-                        pass
-                yolo_stats = {
-                    "conf_threshold":  round(float(getattr(perception, "person_conf_threshold", 0.0)), 3),
-                    "best_conf":       round(peak_conf, 4),
-                    "current_conf":    round(current_conf, 4),
-                    "detection_count": int(getattr(perception, "detection_count", 0)),
-                    "person_found":    bool(getattr(brain, "found_person", False)) if brain else False,
-                    "person_seen":     bool(getattr(perception, "person_ever_detected", False)),
-                }
+            yolo_stats = self._build_yolo_stats(perception, brain)
 
             # ---- Assemble state dict -----------------------------------
             state: dict[str, Any] = {
@@ -751,8 +725,13 @@ class LiveDroneTelemetry:
             print(f"[LiveTelemetry] _get_slam_3d() error: {exc}")
             return {}
 
-    def _grab_yolo_hud(self, env) -> str:
-        """Return base64 PNG of the OpenCV YOLO HUD (2× upscale for HD dashboard)."""
+    def _grab_yolo_frame(self, env) -> str:
+        """Return base64 JPEG of the *clean* camera frame perception ran YOLO on.
+
+        This is the exact frame the normalized boxes in ``yolo_stats`` were
+        computed from, so the native web HUD overlays them in perfect sync.
+        Upscaled 2× (Lanczos) for a crisp HD backdrop.
+        """
         try:
             import cv2
 
@@ -760,18 +739,95 @@ class LiveDroneTelemetry:
             if perception is None:
                 return self._yolo_hud_cache
 
-            frame = getattr(perception, "_last_display_frame", None)
+            frame = getattr(perception, "_web_frame_bgr", None)
             if frame is None:
                 return self._yolo_hud_cache
 
             h, w = frame.shape[:2]
             hd = cv2.resize(frame, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
-            b64 = _ndarray_to_png_b64(hd)
+            b64 = _ndarray_to_jpeg_b64(hd, quality=92)
             self._yolo_hud_cache = b64
             return b64
         except Exception as exc:
-            print(f"[LiveTelemetry] _grab_yolo_hud() error: {exc}")
+            print(f"[LiveTelemetry] _grab_yolo_frame() error: {exc}")
             return self._yolo_hud_cache
+
+    @staticmethod
+    def _build_yolo_stats(perception, brain) -> dict:
+        """Assemble the full native-HUD payload from the perception module."""
+        if perception is None:
+            return {}
+
+        # ---- Confidence (persistent peak vs instantaneous) ----
+        current_conf = float(getattr(perception, "last_best_person_conf", 0.0))
+        peak_conf = current_conf
+        pbc = getattr(perception, "_person_best_conf", None)
+        if isinstance(pbc, dict) and pbc:
+            peak_conf = max(peak_conf, max(float(v) for v in pbc.values()))
+
+        state = getattr(perception, "_web_state", None) or {}
+        intel = getattr(perception, "_last_intel", None)
+        if isinstance(intel, dict):
+            try:
+                peak_conf = max(peak_conf, float(intel.get("conf", 0.0)))
+            except (TypeError, ValueError):
+                pass
+
+        # ---- Rescue log snapshot ----
+        rescue_log = []
+        for entry in (getattr(perception, "_detection_log", None) or [])[:12]:
+            try:
+                rescue_log.append({
+                    "label":   str(entry.get("label", "")),
+                    "conf":    round(float(entry.get("conf", 0.0)), 4),
+                    "gps_lat": entry.get("gps_lat"),
+                    "gps_lon": entry.get("gps_lon"),
+                    "key":     str(entry.get("person_key", "")),
+                    "frame":   int(entry.get("frame", 0)),
+                })
+            except Exception:
+                continue
+
+        # ---- Intel panel ----
+        intel_out = None
+        if isinstance(intel, dict):
+            intel_out = {
+                "label":   str(intel.get("label", "")).upper(),
+                "conf":    round(float(intel.get("conf", 0.0)), 4),
+                "gps_lat": intel.get("gps_lat"),
+                "gps_lon": intel.get("gps_lon"),
+                "dist":    intel.get("dist"),
+            }
+
+        person_found = bool(getattr(brain, "found_person", False)) if brain else False
+        thresh = float(getattr(perception, "person_conf_threshold", 0.7))
+
+        # ---- Canonical detection state (single source of truth for the UI) ----
+        if person_found or state.get("has_confirmed"):
+            status, status_label = "confirmed", "TARGET CONFIRMED"
+        elif peak_conf >= thresh or state.get("operator_alert"):
+            status, status_label = "detected", "HUMAN DETECTED"
+        elif peak_conf > 0.0:
+            status, status_label = "seen", "CONTACT · TRACKING"
+        else:
+            status, status_label = "idle", "SCANNING"
+
+        return {
+            "conf_threshold":  round(thresh, 3),
+            "best_conf":       round(peak_conf, 4),
+            "current_conf":    round(current_conf, 4),
+            "detection_count": int(getattr(perception, "detection_count", 0)),
+            "person_found":    person_found,
+            "person_seen":     bool(getattr(perception, "person_ever_detected", False)),
+            "status":          status,
+            "status_label":    status_label,
+            "scan_label":      state.get("scan_label"),
+            "operator_alert":  bool(state.get("operator_alert", False)),
+            "alert_conf":      round(float(state.get("alert_conf", 0.0)), 4),
+            "boxes":           list(getattr(perception, "_web_boxes", []) or []),
+            "intel":           intel_out,
+            "rescue_log":      rescue_log,
+        }
 
     def _grab_ae_recon(self, env, depth_small) -> str:
         """Run the AE encoder+decoder on the current depth frame and return JPEG b64.

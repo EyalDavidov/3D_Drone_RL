@@ -525,6 +525,48 @@ class PerceptionModule:
             cv2.putText(vis, label, (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
         return vis
 
+    def _collect_web_boxes(
+        self, results, coord_scale: float, img_w: int, img_h: int,
+    ) -> list[dict]:
+        """Normalized person boxes (0..1) for the native web HUD overlay.
+
+        Mirrors _annotate_detections' selection (person class, conf>=0.15) so the
+        browser draws exactly what the OpenCV HUD would, but as crisp vector
+        overlays instead of a baked-in bitmap.
+        """
+        boxes: list[dict] = []
+        if results is None or results.boxes is None:
+            return boxes
+        cs = float(coord_scale)
+        iw = max(1.0, float(img_w))
+        ih = max(1.0, float(img_h))
+        for box in results.boxes:
+            try:
+                if int(box.cls[0]) != 0:
+                    continue
+                conf = float(box.conf[0].item())
+                if conf < 0.15:
+                    continue
+                x1, y1, x2, y2 = self._box_xyxy_scaled(box, cs)
+                if conf >= self.person_conf_threshold:
+                    tier = "confirmed"
+                elif conf >= self.noted_conf_threshold:
+                    tier = "noted"
+                else:
+                    tier = "low"
+                boxes.append({
+                    "x": round(max(0.0, min(1.0, x1 / iw)), 4),
+                    "y": round(max(0.0, min(1.0, y1 / ih)), 4),
+                    "w": round(max(0.0, min(1.0, (x2 - x1) / iw)), 4),
+                    "h": round(max(0.0, min(1.0, (y2 - y1) / ih)), 4),
+                    "conf": round(conf, 4),
+                    "tier": tier,
+                })
+            except Exception:
+                continue
+        boxes.sort(key=lambda b: -b["conf"])
+        return boxes
+
     def _draw_intel_panel(
         self,
         canvas: np.ndarray,
@@ -1096,6 +1138,22 @@ class PerceptionModule:
                 )
             else:
                 print(f"[YOLO] No person in view (threshold {self.person_conf_threshold:.0%})")
+
+        # ── Publish native web-HUD payload (synced: same frame as the boxes) ──
+        self._web_frame_bgr = display_bgr
+        self._web_boxes = self._collect_web_boxes(
+            filtered_results, coord_back, img_w, img_h,
+        )
+        self._web_state = {
+            "has_confirmed":  bool(has_confirmed_person),
+            "has_noted":      bool(has_noted and not has_confirmed_person),
+            "noted_deferred": bool(noted_deferred),
+            "operator_alert": bool(operator_alert),
+            "rescue_armed":   bool(rescue_armed),
+            "alert_conf":     float(alert_conf),
+            "display_conf":   float(display_conf),
+            "scan_label":     scan_label,
+        }
 
         try:
             self._show_detection_window(

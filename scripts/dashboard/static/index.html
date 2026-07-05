@@ -239,35 +239,89 @@
                             <div class="slam-stat-row"><span class="slam-stat-label">Runtime</span><span class="mono slam-stat-val" id="slam-time-val">0s</span></div>
                         </div>
                     </div>
-                    <!-- 2D SLAM occupancy map (matches OpenCV visualizer) -->
-                    <div class="panel slam-2d-panel">
-                        <div class="panel-header">
-                            <span class="panel-icon">🗺️</span>
-                            <span class="panel-title">2D SLAM Map</span>
-                            <span class="panel-badge dim">ZOOM</span>
-                            <span class="panel-badge live">LIVE</span>
+                    <!-- 2D SLAM occupancy map (native top-down radar) -->
+                    <div class="glass-panel smap slam-2d-panel" id="slam2d">
+                        <div class="glass-header">
+                            <span class="glass-title"><span class="glass-title-icon">🗺️</span> 2D SLAM Radar</span>
+                            <span class="glass-live"><span class="glass-live-dot"></span> LIVE</span>
                         </div>
-                        <div class="panel-body slam-2d-body">
-                            <canvas id="cam-slam-main"></canvas>
-                            <div class="slam-2d-hint">Scroll zoom · Drag pan · Double-click reset</div>
+                        <div class="glass-body smap-body">
+                            <canvas id="slam2d-canvas" class="smap-canvas"></canvas>
+                            <div class="smap-vignette"></div>
+                            <span class="yhud-bracket tl"></span>
+                            <span class="yhud-bracket tr"></span>
+                            <span class="yhud-bracket bl"></span>
+                            <span class="yhud-bracket br"></span>
+
+                            <div class="smap-legend">
+                                <span><i style="background:#78cdff"></i>Wall</span>
+                                <span><i style="background:#26364e"></i>Free</span>
+                                <span><i style="background:#ffb020"></i>Frontier</span>
+                                <span><i class="smap-legend-drone"></i>Drone</span>
+                            </div>
+
+                            <div class="smap-hud">
+                                <span class="mono" id="slam2d-coord">X 0.00  Y 0.00</span>
+                                <span class="mono smap-hud-zoom" id="slam2d-zoom">1.0×</span>
+                            </div>
+                            <div class="smap-hint">Scroll zoom · Drag pan · Double-click reset</div>
                         </div>
                     </div>
                 </div>
             </div>
         </section>
 
-        <!-- ======== TAB 4: YOLO DETECTION ======== -->
+        <!-- ======== TAB 4: YOLO DETECTION (native HUD component) ======== -->
         <section class="tab-content" id="tab-yolo">
             <div class="yolo-tab-layout">
-                <div class="glass-panel yolo-main">
-                    <div class="glass-header">
-                        <span class="glass-title"><span class="glass-title-icon">🎯</span> Brain Nav · YOLO HUD</span>
-                        <span class="glass-live"><span class="glass-live-dot"></span> LIVE</span>
+                <!-- ===== Live detection stage ===== -->
+                <div class="yhud" id="yolo-hud" data-state="idle">
+                    <!-- Top status bar -->
+                    <div class="yhud-topbar">
+                        <div class="yhud-brand">
+                            <span class="yhud-brand-mark">BRAIN&nbsp;NAV</span>
+                            <span class="yhud-brand-sub">YOLO11 · PERSON DETECTION</span>
+                        </div>
+                        <div class="yhud-status" id="yolo-status-pill">
+                            <span class="yhud-status-dot"></span>
+                            <span class="yhud-status-text" id="yolo-status-val">SCANNING</span>
+                        </div>
                     </div>
-                    <div class="glass-body yolo-hud-body">
-                        <canvas id="cam-yolo-hud"></canvas>
 
-                        <!-- Futuristic HUD detection alert (overlay) -->
+                    <!-- Camera stage: canvas backdrop + vector box overlay + scan grid -->
+                    <div class="yhud-stage">
+                        <canvas id="yolo-canvas" class="yhud-canvas"></canvas>
+                        <div class="yhud-grid"></div>
+                        <div class="yhud-scanline" id="yolo-scanline"></div>
+                        <div class="yhud-vignette"></div>
+
+                        <!-- Corner frame brackets -->
+                        <span class="yhud-bracket tl"></span>
+                        <span class="yhud-bracket tr"></span>
+                        <span class="yhud-bracket bl"></span>
+                        <span class="yhud-bracket br"></span>
+
+                        <!-- Scan label chip (top-left) -->
+                        <div class="yhud-chip" id="yolo-scan-chip" hidden>
+                            <span class="yhud-chip-icon">◎</span>
+                            <span id="yolo-scan-label">ROOM</span>
+                        </div>
+
+                        <!-- Intel card (bottom-left, appears on detection) -->
+                        <div class="yhud-intel" id="yolo-intel" hidden>
+                            <div class="yhud-intel-head">
+                                <span class="yhud-intel-dot"></span>
+                                <span id="yolo-intel-label">TARGET</span>
+                                <span class="yhud-intel-conf" id="yolo-intel-conf">0%</span>
+                            </div>
+                            <div class="yhud-intel-grid">
+                                <span class="yhud-intel-k">LAT</span><span class="mono" id="yolo-intel-lat">—</span>
+                                <span class="yhud-intel-k">LON</span><span class="mono" id="yolo-intel-lon">—</span>
+                                <span class="yhud-intel-k">DIST</span><span class="mono" id="yolo-intel-dist">—</span>
+                            </div>
+                        </div>
+
+                        <!-- Detection alert (bottom-center HUD notification) -->
                         <div class="hud-alert" id="yolo-hud-alert" data-state="idle">
                             <div class="hud-alert-scan"></div>
                             <div class="hud-alert-icon" id="yolo-alert-icon">◎</div>
@@ -281,18 +335,55 @@
                             <div class="hud-alert-conf" id="yolo-alert-conf">0.0<span class="hud-alert-pct">%</span></div>
                         </div>
                     </div>
+
+                    <!-- Bottom readout bar -->
+                    <div class="yhud-footer">
+                        <div class="yhud-readout">
+                            <span class="yhud-readout-num" id="yolo-conf-big">0<span class="yhud-readout-pct">%</span></span>
+                            <span class="yhud-readout-cap">CONFIDENCE</span>
+                        </div>
+                        <div class="yhud-meter">
+                            <div class="yhud-meter-track">
+                                <div class="yhud-meter-fill" id="yolo-foot-meter"></div>
+                                <div class="yhud-meter-thresh" id="yolo-foot-thresh"></div>
+                            </div>
+                            <div class="yhud-meter-labels">
+                                <span>0%</span>
+                                <span id="yolo-thresh-cap">THRESHOLD 70%</span>
+                                <span>100%</span>
+                            </div>
+                        </div>
+                        <div class="yhud-frame">
+                            <span class="mono" id="yolo-frame-val">#0</span>
+                            <span class="yhud-frame-cap">cls·person</span>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- ===== Rescue log + telemetry sidebar ===== -->
                 <div class="yolo-stats-col">
-                    <div class="glass-panel" style="flex:1;">
+                    <div class="glass-panel yhud-log-panel">
                         <div class="glass-header">
-                            <span class="glass-title"><span class="glass-title-icon">📊</span> Detection Telemetry</span>
+                            <span class="glass-title"><span class="glass-title-icon">🛟</span> Rescue Log</span>
+                            <span class="yhud-log-count" id="yolo-log-count">0</span>
+                        </div>
+                        <div class="glass-body yhud-log" id="yolo-log">
+                            <div class="yhud-log-empty" id="yolo-log-empty">
+                                <div class="yhud-log-empty-ring"></div>
+                                <div class="yhud-log-empty-t">NO DETECTIONS YET</div>
+                                <div class="yhud-log-empty-s">Awaiting scan…</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass-panel">
+                        <div class="glass-header">
+                            <span class="glass-title"><span class="glass-title-icon">📊</span> Telemetry</span>
                         </div>
                         <div class="glass-body glass-stats">
-                            <div class="glass-stat-row"><span class="glass-stat-label">Status</span><span class="mono glass-stat-val" id="yolo-status-val">SCANNING</span></div>
                             <div class="glass-stat-row"><span class="glass-stat-label">Best Conf</span><span class="mono glass-stat-val" id="yolo-conf-val">0.0%</span></div>
                             <div class="glass-stat-row"><span class="glass-stat-label">Live Conf</span><span class="mono glass-stat-val" id="yolo-live-val">0.0%</span></div>
                             <div class="glass-stat-row"><span class="glass-stat-label">Threshold</span><span class="mono glass-stat-val" id="yolo-thresh-val">70%</span></div>
-                            <div class="glass-stat-row"><span class="glass-stat-label">Frame #</span><span class="mono glass-stat-val" id="yolo-frame-val">0</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Detections</span><span class="mono glass-stat-val" id="yolo-boxes-val">0</span></div>
                             <div class="glass-stat-row"><span class="glass-stat-label">Person</span><span class="mono glass-stat-val" id="yolo-person-val">Not found</span></div>
                         </div>
                     </div>
