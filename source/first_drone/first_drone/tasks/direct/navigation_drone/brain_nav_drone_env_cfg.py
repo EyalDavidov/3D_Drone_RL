@@ -80,6 +80,66 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
         ),
     )
 
+    # --- Dashboard follow cameras (play-mode only, not used by policy) ---
+    # World-anchored so they are NOT double-transformed by the drone body.
+    # Their world pose is driven every step via set_world_poses_from_view()
+    # so they always AIM AT the drone (see BrainNavDroneEnv.update_follow_cameras).
+    # The offset here is only the spawn placeholder; runtime poses override it.
+
+    # Chase camera — trails the drone from behind + above, looking at it.
+    chase_camera: CameraCfg = CameraCfg(
+        prim_path="/World/DashCam_Chase",
+        update_period=0.0,
+        height=180,
+        width=320,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=14.0,
+            focus_distance=400.0,
+            horizontal_aperture=33.0,
+            clipping_range=(0.05, 100000.0),
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.0, 0.0, 2.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"
+        ),
+    )
+
+    # Left-side camera — offset to the drone's left, looking at it.
+    left_camera: CameraCfg = CameraCfg(
+        prim_path="/World/DashCam_Left",
+        update_period=0.0,
+        height=180,
+        width=320,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=14.0,
+            focus_distance=400.0,
+            horizontal_aperture=33.0,
+            clipping_range=(0.05, 100000.0),
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.0, 0.0, 2.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"
+        ),
+    )
+
+    # Top-down camera — hovers above the drone, looking straight down at it.
+    top_camera: CameraCfg = CameraCfg(
+        prim_path="/World/DashCam_Top",
+        update_period=0.0,
+        height=180,
+        width=320,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=12.0,
+            focus_distance=400.0,
+            horizontal_aperture=33.0,
+            clipping_range=(0.05, 100000.0),
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.0, 0.0, 5.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"
+        ),
+    )
+
     # ---------- Terrain: no visible default Isaac Lab ground plane ----------
     # final_flat.usd provides floor/walls/collision. Keep terrain only for env_origins bookkeeping.
     terrain: TerrainImporterCfg = TerrainImporterCfg(

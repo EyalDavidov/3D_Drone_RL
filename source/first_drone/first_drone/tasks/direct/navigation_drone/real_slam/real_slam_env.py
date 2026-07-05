@@ -236,7 +236,7 @@ class SlamBrainModule(BrainModule):
                 if getattr(self, "last_scan_pos", None) is not None:
                     dist_since_last_scan = float(np.linalg.norm(d_pos_w[:2] - self.last_scan_pos[:2]))
                     
-                if dist_since_last_scan > 4.5:
+                if dist_since_last_scan > 2.5:
                     print(f"[SLAM Brain] Reached frontier. Travelled {dist_since_last_scan:.2f}m since last scan. Initiating 360 SCAN.")
                     self.state = "SCAN"
                     self.env._scan_step_count = 0
@@ -260,7 +260,7 @@ class SlamBrainModule(BrainModule):
             if need_target:
                 self.explore_step_count = 0
                 self.active_frontier_ticks = 0
-                frontiers = self.mapper.detect_frontiers(min_size=12)
+                frontiers = self.mapper.detect_frontiers(min_size=8)
                 
                 # Filter out frontiers near blacklisted coordinates
                 frontiers = [
@@ -272,25 +272,73 @@ class SlamBrainModule(BrainModule):
                 if not frontiers:
                     prob = self.mapper.get_occupancy_grid()
                     explored_cells = int(np.sum(prob < 0.35))
-                    # Require substantial exploration before declaring COMPLETE.
-                    # 8000 cells @ 0.10m cell = ~80m² explored (roughly rooms 1-3 minimum)
-                    # Also require the drone has reached at least the room-3 area (Y <= -6.0)
                     drone_y = float(d_pos_w[1])
-                    reached_deep_enough = drone_y <= -6.0
-                    if explored_cells > 8000 and reached_deep_enough:
-                        print(f"[SLAM Brain] No frontiers left. Exploration COMPLETE ({explored_cells} cells explored, Y={drone_y:.1f}m).")
+
+                    # Hard requirement: drone must have physically entered room 4
+                    # (Y <= -16.0 is inside the room-4 entrance corridor).
+                    # Also require enough total cells explored to cover all 4 rooms.
+                    # 12000 cells @ 0.10m² = ~120 m² ≈ full 4-room footprint.
+                    reached_room4 = drone_y <= -16.0
+                    enough_explored = explored_cells > 12000
+
+                    if reached_room4 and enough_explored:
+                        print(
+                            f"[SLAM Brain] All frontiers cleared AND room 4 reached. "
+                            f"Exploration COMPLETE ({explored_cells} cells, Y={drone_y:.1f}m)."
+                        )
                         self.state = "COMPLETE"
                         self.mission_finished = True
+                    elif not reached_room4:
+                        # Force the drone toward room 4 by synthesising a temporary
+                        # waypoint at the room-4 entrance so it doesn't idle here.
+                        room4_entry = np.array([-2.0, -17.0], dtype=np.float32)
+                        print(
+                            f"[SLAM Brain] No visible frontiers but room 4 not reached "
+                            f"(Y={drone_y:.1f}m, cells={explored_cells}). "
+                            f"Driving toward room-4 entrance {room4_entry}."
+                        )
+                        # Inject a synthetic frontier so EXPLORE logic picks it up
+                        self.active_frontier = {
+                            "centroid_world": room4_entry.tolist(),
+                            "cells": [],
+                        }
+                        self.astar_path_world = [room4_entry.tolist()]
+                        self.active_frontier_ticks = 0
                     else:
-                        # Not enough explored or not deep enough yet — wait for more mapping
-                        print(f"[SLAM Brain] No frontiers, but not complete yet ({explored_cells} cells, Y={drone_y:.1f}m). Waiting...")
+                        print(
+                            f"[SLAM Brain] No frontiers visible but not enough explored yet "
+                            f"({explored_cells} cells, Y={drone_y:.1f}m). Waiting for more map data."
+                        )
                         self.active_frontier = None
                         self.astar_path_world = []
                 else:
-                    sorted_frontiers = sorted(
-                        frontiers,
-                        key=lambda f: np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])),
+                    # Room boundaries (world Y): Room 1 is shallowest (Y≈+2),
+                    # Room 4 is deepest (Y≈-21).
+                    def _frontier_room(f_y: float) -> int:
+                        if f_y > -3.0:
+                            return 1
+                        elif f_y > -9.0:
+                            return 2
+                        elif f_y > -17.0:
+                            return 3
+                        return 4
+
+                    # Always clear the shallowest room that still has frontiers
+                    # before advancing to deeper rooms.  Use a 200 m "virtual
+                    # distance" penalty per room number gap so distance within a
+                    # room never overrides room priority.
+                    min_room = min(
+                        _frontier_room(float(f["centroid_world"][1])) for f in frontiers
                     )
+
+                    def _frontier_score(f):
+                        cw   = np.array(f["centroid_world"])
+                        dist = float(np.linalg.norm(d_pos_w[:2] - cw))
+                        room = _frontier_room(float(cw[1]))
+                        # 200 m gap per room ensures room priority is always dominant
+                        return (room - min_room) * 200.0 + dist
+
+                    sorted_frontiers = sorted(frontiers, key=_frontier_score)
                     grid_path = None
                     selected_f = None
                     inflated = self.mapper.get_inflated_grid()

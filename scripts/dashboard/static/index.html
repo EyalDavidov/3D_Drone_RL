@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RL Drone Dashboard — Play Mode</title>
+    <meta name="description" content="Real-time monitoring dashboard for RL drone navigation play mode">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- ===== TOP BAR ===== -->
+    <header id="dashboard-header">
+        <div class="header-left">
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/>
+                    <path d="M2 12l10 5 10-5"/>
+                </svg>
+                <h1>Drone Dashboard</h1>
+            </div>
+            <div class="header-badge" id="sim-status">
+                <span class="status-dot"></span>
+                <span class="status-text">CONNECTING…</span>
+            </div>
+        </div>
+
+        <!-- TABS (Chrome-style) -->
+        <nav class="tab-bar" id="tab-bar">
+            <button class="tab active" data-tab="cameras">
+                <span class="tab-icon">📷</span> Cameras
+            </button>
+            <button class="tab" data-tab="navigation">
+                <span class="tab-icon">🗺️</span> Navigation
+            </button>
+            <button class="tab" data-tab="slam">
+                <span class="tab-icon">🧭</span> SLAM Map
+            </button>
+        </nav>
+
+        <div class="header-right">
+            <!-- Level Selector (clickable) -->
+            <div class="level-selector">
+                <span class="label">LEVEL</span>
+                <div class="level-pills" id="level-pills">
+                    <button class="pill" data-level="1" title="Force Level 1">1</button>
+                    <button class="pill" data-level="2" title="Force Level 2">2</button>
+                    <button class="pill" data-level="3" title="Force Level 3">3</button>
+                    <button class="pill" data-level="4" title="Force Level 4">4</button>
+                </div>
+                <button class="auto-btn active" id="auto-btn" title="Auto-cycle levels">AUTO</button>
+            </div>
+            <div class="header-stat">
+                <span class="label">TIME</span>
+                <span class="value mono" id="episode-time">0.00s</span>
+                <span class="sep">/</span>
+                <span class="value mono" id="episode-duration">0.00s</span>
+            </div>
+            <div class="header-stat">
+                <span class="label">TICK</span>
+                <span class="value mono" id="tick-counter">0</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ===== TAB CONTENT ===== -->
+    <main id="dashboard-main">
+
+        <!-- ======== TAB 1: CAMERAS ======== -->
+        <section class="tab-content active" id="tab-cameras">
+            <!-- Row 1: First Person + Third Person Angle 1 -->
+            <div class="cam-row cam-row-2">
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🎥</span>
+                        <span class="panel-title">Front Camera — First Person</span>
+                        <span class="panel-badge live">LIVE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-fp" width="640" height="360"></canvas></div>
+                </div>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">📷</span>
+                        <span class="panel-title">Chase Camera — Behind</span>
+                        <span class="panel-badge dim">CHASE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-t1" width="640" height="360"></canvas></div>
+                </div>
+            </div>
+            <!-- Row 2: Depth Colormap + AE Reconstruction -->
+            <div class="cam-row cam-row-2">
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🌈</span>
+                        <span class="panel-title">Side Camera — Left</span>
+                        <span class="panel-badge dim">LEFT</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-t2" width="640" height="360"></canvas></div>
+                </div>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🧠</span>
+                        <span class="panel-title">Top-Down Camera</span>
+                        <span class="panel-badge dim">TOP</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-t3" width="640" height="360"></canvas></div>
+                </div>
+            </div>
+            <!-- Row 3: Depth + Saliency + AE -->
+            <div class="cam-row cam-row-3">
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🌊</span>
+                        <span class="panel-title">Depth Input</span>
+                        <span class="panel-badge dim">128×72</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-depth" width="512" height="288"></canvas></div>
+                </div>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🔥</span>
+                        <span class="panel-title">Depth Saliency</span>
+                        <span class="panel-badge dim">HEATMAP</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-saliency" width="512" height="288"></canvas></div>
+                </div>
+                <div class="panel cam-cell">
+                    <div class="panel-header">
+                        <span class="panel-icon">🧠</span>
+                        <span class="panel-title">AE Reconstruction</span>
+                        <span class="panel-badge dim">z=64</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-ae" width="512" height="288"></canvas></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ======== TAB 2: NAVIGATION ======== -->
+        <section class="tab-content" id="tab-navigation">
+            <!-- Top row: LLC | Camera | PPO -->
+            <div class="nav-top-row">
+                <div class="panel nav-chart-col" id="panel-llc">
+                    <div class="panel-header">
+                        <span class="panel-icon">⚡</span>
+                        <span class="panel-title">LLC Motor Commands</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body chart-body">
+                        <canvas id="chart-llc"></canvas>
+                    </div>
+                </div>
+                <div class="panel nav-camera-col">
+                    <div class="panel-header">
+                        <span class="panel-icon">📷</span>
+                        <span class="panel-title">Third Person — Angle 1</span>
+                        <span class="panel-badge live">LIVE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body"><canvas id="cam-nav-main" width="960" height="540"></canvas></div>
+                </div>
+                <div class="panel nav-chart-col" id="panel-ppo">
+                    <div class="panel-header">
+                        <span class="panel-icon">🎯</span>
+                        <span class="panel-title">PPO Navigation</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body chart-body">
+                        <canvas id="chart-ppo"></canvas>
+                    </div>
+                </div>
+            </div>
+            <!-- Bottom: 3D Map + SLAM Map side by side -->
+            <div class="nav-bottom-row nav-bottom-split">
+                <div class="panel nav-map-panel">
+                    <div class="panel-header">
+                        <span class="panel-icon">🗺️</span>
+                        <span class="panel-title">3D Navigation Map</span>
+                        <span class="panel-badge dim">Three.js</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body viewport-body" id="viewport-container">
+                        <canvas id="canvas-3d"></canvas>
+                        <!-- Metrics overlay -->
+                        <div class="map-overlay" id="map-metrics">
+                            <div class="ov-item"><span class="ov-label">VEL</span><span class="ov-val mono" id="metric-speed">0.00</span><span class="ov-unit">m/s</span></div>
+                            <div class="ov-item"><span class="ov-label">ALT</span><span class="ov-val mono" id="metric-alt">0.00</span><span class="ov-unit">m</span></div>
+                            <div class="ov-item"><span class="ov-label">DIST</span><span class="ov-val mono" id="metric-dist">0.00</span><span class="ov-unit">m</span></div>
+                            <div class="ov-item"><span class="ov-label">THR</span><span class="ov-val mono" id="metric-thrust">0.00</span><span class="ov-unit">N</span></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Live SLAM map (mini, alongside 3D) -->
+                <div class="panel nav-slam-mini">
+                    <div class="panel-header">
+                        <span class="panel-icon">🧭</span>
+                        <span class="panel-title">SLAM Occupancy Map</span>
+                        <span class="panel-badge live">LIVE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body cam-cell" style="padding:4px;">
+                        <canvas id="cam-slam-nav" width="300" height="500"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ======== TAB 3: SLAM MAP ======== -->
+        <section class="tab-content" id="tab-slam">
+            <div class="slam-tab-layout">
+                <!-- 3D SLAM scene -->
+                <div class="panel slam-map-main">
+                    <div class="panel-header">
+                        <span class="panel-icon">🧭</span>
+                        <span class="panel-title">3D SLAM Map — Live</span>
+                        <span class="panel-badge live">LIVE</span>
+                        <button class="minimize-btn" title="Minimize">−</button>
+                    </div>
+                    <div class="panel-body slam-3d-body">
+                        <div id="slam-3d-container"></div>
+                    </div>
+                </div>
+                <!-- Stats sidebar -->
+                <div class="slam-stats-col">
+                    <div class="panel" style="flex:1;">
+                        <div class="panel-header">
+                            <span class="panel-icon">📊</span>
+                            <span class="panel-title">SLAM Telemetry</span>
+                        </div>
+                        <div class="panel-body" style="flex-direction:column; align-items:flex-start; padding:14px; gap:10px;">
+                            <div class="slam-stat-row"><span class="slam-stat-label">State</span><span class="mono slam-stat-val" id="slam-state-val">—</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">Explored</span><span class="mono slam-stat-val" id="slam-explored-val">0%</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">Frontiers</span><span class="mono slam-stat-val" id="slam-frontiers-val">0</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">Person</span><span class="mono slam-stat-val" id="slam-person-val">Not found</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">X / Y</span><span class="mono slam-stat-val" id="slam-pos-val">0.00 / 0.00</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">Altitude</span><span class="mono slam-stat-val" id="slam-alt-val">0.00 m</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">Heading</span><span class="mono slam-stat-val" id="slam-hdg-val">0.0°</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">Speed</span><span class="mono slam-stat-val" id="slam-spd-val">0.00 m/s</span></div>
+                            <div class="slam-stat-row"><span class="slam-stat-label">Runtime</span><span class="mono slam-stat-val" id="slam-time-val">0s</span></div>
+                        </div>
+                    </div>
+                    <!-- Attitude HUD reused here -->
+                    <div class="panel" style="flex:0 0 auto;">
+                        <div class="panel-header">
+                            <span class="panel-icon">✈️</span>
+                            <span class="panel-title">Attitude</span>
+                        </div>
+                        <div class="panel-body" style="justify-content:center; padding:8px;">
+                            <canvas id="canvas-hud" width="160" height="160"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="js/cameras.js"></script>
+    <script src="js/metrics.js"></script>
+    <script src="js/hud.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/three_scene.js"></script>
+    <script src="js/slam3d.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

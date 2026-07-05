@@ -1,0 +1,522 @@
+/* ============================================================
+   RL Drone Dashboard — Dark Glassmorphism Theme (Tabbed Layout)
+   ============================================================ */
+
+:root {
+    --bg-primary: #0a0e17;
+    --bg-secondary: #111827;
+    --bg-panel: rgba(17, 24, 39, 0.75);
+    --bg-panel-hover: rgba(23, 33, 54, 0.85);
+    --bg-card: rgba(30, 41, 59, 0.6);
+    --glass-blur: 16px;
+    --glass-border: rgba(99, 130, 190, 0.15);
+    --glass-border-hover: rgba(99, 130, 190, 0.3);
+    --accent-primary: #60a5fa;
+    --accent-secondary: #a78bfa;
+    --accent-success: #34d399;
+    --accent-warning: #fbbf24;
+    --accent-danger: #f87171;
+    --accent-cyan: #22d3ee;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --gap: 8px;
+    --radius: 12px;
+    --radius-sm: 8px;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+body { display: flex; flex-direction: column; }
+.mono { font-family: var(--font-mono); }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 3px; }
+
+/* ========== HEADER ========== */
+#dashboard-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 14px;
+    background: rgba(17, 24, 39, 0.95);
+    backdrop-filter: blur(var(--glass-blur));
+    border-bottom: 1px solid var(--glass-border);
+    z-index: 100;
+    flex-shrink: 0;
+    height: 48px;
+    gap: 12px;
+}
+
+.header-left, .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+
+.logo { display: flex; align-items: center; gap: 8px; color: var(--accent-primary); }
+.logo h1 {
+    font-size: 15px; font-weight: 600; letter-spacing: -0.3px;
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.logo svg { flex-shrink: 0; }
+
+/* Status badge */
+.header-badge {
+    display: flex; align-items: center; gap: 5px;
+    padding: 3px 8px; border-radius: 20px;
+    background: rgba(30, 41, 59, 0.6); border: 1px solid var(--glass-border);
+    font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent-warning); animation: pulse 1.5s ease-in-out infinite;
+}
+.header-badge.connected .status-dot {
+    background: var(--accent-success); animation: none; box-shadow: 0 0 8px var(--accent-success);
+}
+.header-badge.disconnected .status-dot {
+    background: var(--accent-danger); animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* ========== TABS (Chrome-style) ========== */
+.tab-bar {
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 100%; padding-top: 6px;
+}
+
+.tab {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 18px;
+    background: rgba(30, 41, 59, 0.3);
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 10px 10px 0 0;
+    color: var(--text-muted);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    position: relative;
+    top: 1px;
+}
+
+.tab:hover {
+    background: rgba(30, 41, 59, 0.6);
+    color: var(--text-secondary);
+}
+
+.tab.active {
+    background: var(--bg-primary);
+    border-color: var(--glass-border);
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.tab-icon { font-size: 14px; }
+
+/* ========== LEVEL SELECTOR ========== */
+.level-selector { display: flex; align-items: center; gap: 6px; }
+.level-selector .label,
+.header-stat .label {
+    font-size: 9px; font-weight: 600; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 1px;
+}
+
+.level-pills { display: flex; gap: 3px; }
+
+.pill {
+    width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px; font-size: 12px; font-weight: 600;
+    background: var(--bg-card); border: 1px solid var(--glass-border);
+    color: var(--text-muted); cursor: pointer;
+    transition: all 0.2s ease;
+}
+.pill:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    transform: translateY(-1px);
+}
+.pill.active {
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    color: #fff; border-color: transparent;
+    box-shadow: 0 0 10px rgba(96, 165, 250, 0.35);
+}
+.pill.completed {
+    background: rgba(52, 211, 153, 0.12);
+    color: var(--accent-success);
+    border-color: rgba(52, 211, 153, 0.3);
+}
+.pill.forced {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--accent-warning);
+    border-color: var(--accent-warning);
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.25);
+}
+
+.auto-btn {
+    padding: 3px 8px; border-radius: 4px;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+    background: rgba(30, 41, 59, 0.5); border: 1px solid var(--glass-border);
+    color: var(--text-muted); cursor: pointer;
+    transition: all 0.2s ease;
+}
+.auto-btn:hover { border-color: var(--accent-success); color: var(--accent-success); }
+.auto-btn.active {
+    background: rgba(52, 211, 153, 0.15);
+    border-color: var(--accent-success);
+    color: var(--accent-success);
+}
+
+.header-stat { display: flex; align-items: center; gap: 4px; }
+.header-stat .value { font-size: 13px; font-weight: 500; }
+.header-stat .sep { color: var(--text-muted); font-size: 11px; }
+
+/* ========== MAIN / TAB CONTENT ========== */
+#dashboard-main { flex: 1; overflow: hidden; min-height: 0; position: relative; }
+
+.tab-content {
+    display: none;
+    flex-direction: column;
+    gap: var(--gap);
+    padding: var(--gap);
+    height: 100%;
+    overflow-y: auto;
+}
+.tab-content.active { display: flex; }
+
+/* ========== PANELS (Glassmorphism) ========== */
+.panel {
+    background: var(--bg-panel);
+    backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    resize: both; /* Enable resizing of panels */
+    min-height: 48px;
+    min-width: 120px;
+}
+.panel:hover {
+    border-color: var(--glass-border-hover);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+.panel.minimized {
+    resize: none !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    max-height: 34px !important;
+}
+
+.panel-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--glass-border);
+    flex-shrink: 0;
+    height: 34px;
+}
+.panel-icon { font-size: 13px; }
+.panel-title { font-size: 11px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.2px; }
+.panel-badge {
+    margin-left: auto; font-size: 8px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    padding: 2px 5px; border-radius: 4px;
+    background: rgba(30, 41, 59, 0.8); border: 1px solid var(--glass-border);
+}
+.panel-badge.live { color: var(--accent-success); border-color: rgba(52, 211, 153, 0.3); background: rgba(52, 211, 153, 0.1); }
+.panel-badge.dim { color: var(--text-muted); }
+
+/* Minimize button */
+.minimize-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    margin-left: 8px;
+}
+.minimize-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+.panel-body {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    min-height: 0; overflow: hidden;
+}
+
+.panel.minimized .panel-body {
+    display: none !important;
+}
+
+/* ========== TAB 1: CAMERAS GRID ========== */
+.cam-row {
+    display: grid; gap: var(--gap);
+    min-height: 0;
+    height: 100%;
+}
+.cam-row-2 { grid-template-columns: 1fr 1fr; }
+.cam-row-3 { grid-template-columns: 1fr 1fr 1fr; }
+
+.cam-cell { min-height: 0; height: 100%; }
+.cam-cell .panel-body {
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+}
+.cam-cell canvas {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: var(--radius-sm);
+    background: #000;
+    display: block;
+}
+
+/* Rows should take smaller proportions for RGB, larger for depth streams */
+#tab-cameras {
+    display: none;
+    grid-template-rows: 0.8fr 0.8fr 1fr;
+    height: 100%;
+    overflow: hidden;
+}
+#tab-cameras.active {
+    display: grid;
+}
+
+/* ========== TAB 2: NAVIGATION LAYOUT ========== */
+#tab-navigation {
+    display: none;
+    grid-template-rows: 1fr 1fr;
+}
+#tab-navigation.active {
+    display: grid;
+}
+
+/* Top: LLC | Camera | PPO */
+.nav-top-row {
+    display: grid;
+    grid-template-columns: 220px 1fr 220px;
+    gap: var(--gap);
+    min-height: 0;
+}
+
+.nav-chart-col {
+    min-height: 0;
+}
+.nav-chart-col .chart-body {
+    padding: 8px;
+}
+.nav-chart-col .chart-body canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
+.nav-camera-col {
+    min-height: 0;
+}
+.nav-camera-col .panel-body { padding: 4px; }
+.nav-camera-col canvas {
+    width: 100%; height: 100%; object-fit: contain;
+    border-radius: var(--radius-sm); background: #000; display: block;
+}
+
+/* Bottom: 3D Map (+ optional SLAM mini panel) */
+.nav-bottom-row {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.nav-bottom-split {
+    flex-direction: row;   /* side-by-side when slam map present */
+    gap: var(--gap);
+}
+.nav-map-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.nav-slam-mini {
+    flex: 0 0 300px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.nav-slam-mini .panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 4px;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+}
+.nav-slam-mini canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    background: #0a0e17;
+    border-radius: var(--radius-sm);
+    image-rendering: pixelated;
+}
+
+.viewport-body {
+    position: relative; padding: 0; flex: 1; min-height: 0;
+}
+#canvas-3d {
+    width: 100%; height: 100%; display: block;
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+
+/* Metrics overlay on 3D map */
+.map-overlay {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 12px;
+    padding: 6px 14px;
+    background: rgba(10, 14, 23, 0.8);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    z-index: 10;
+}
+.ov-item { display: flex; align-items: baseline; gap: 4px; }
+.ov-label { font-size: 9px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.5px; }
+.ov-val { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.ov-unit { font-size: 9px; color: var(--text-muted); }
+
+/* Attitude HUD overlay on 3D map */
+.hud-overlay {
+    position: absolute; top: 10px; left: 10px;
+    z-index: 10;
+    opacity: 0.85;
+    transition: opacity 0.2s;
+}
+.hud-overlay:hover { opacity: 1; }
+#canvas-hud { display: block; }
+
+/* ========== TAB 3: SLAM MAP ========== */
+#tab-slam {
+    display: none;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+#tab-slam.active {
+    display: flex;
+}
+.slam-tab-layout {
+    display: flex;
+    flex: 1;
+    gap: var(--gap);
+    min-height: 0;
+    overflow: hidden;
+}
+.slam-map-main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.slam-map-main .panel-body {
+    flex: 1;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+}
+/* 3D scene body: flex column so the container div stretches to fill */
+.slam-3d-body {
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    padding: 0 !important;
+}
+#slam-3d-container {
+    width: 100%;
+    flex: 1;
+    min-height: 300px;
+    display: flex;
+    overflow: hidden;
+}
+/* Three.js manages its own canvas size via setSize() — just ensure display block */
+#slam-3d-container canvas {
+    display: block !important;
+}
+.slam-stats-col {
+    flex: 0 0 220px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-height: 0;
+    overflow: hidden;
+}
+.slam-stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(99, 130, 190, 0.08);
+}
+.slam-stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+}
+.slam-stat-val {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+/* ========== ANIMATIONS ========== */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.panel { animation: fadeIn 0.4s ease-out backwards; }
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 1100px) {
+    .nav-top-row { grid-template-columns: 180px 1fr 180px; }
+    .slam-stats-col { flex: 0 0 180px; }
+}
+@media (max-width: 800px) {
+    .cam-row-2 { grid-template-columns: 1fr; }
+    .cam-row-3 { grid-template-columns: 1fr; }
+    .nav-top-row { grid-template-columns: 1fr; }
+    .nav-bottom-split { flex-direction: column; }
+    .slam-tab-layout { flex-direction: column; }
+    #tab-cameras.active, #tab-navigation.active {
+        grid-template-rows: none;
+        overflow-y: auto;
+    }
+}

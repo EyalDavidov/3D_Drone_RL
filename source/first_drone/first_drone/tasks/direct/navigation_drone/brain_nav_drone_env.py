@@ -359,6 +359,17 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         from isaaclab.sensors import Camera
         self._view_camera = Camera(self.cfg.view_camera)
 
+        # Extra angle cameras for the live dashboard (play-mode only, no model impact)
+        self._chase_camera: "Camera | None" = None
+        self._left_camera:  "Camera | None" = None
+        self._top_camera:   "Camera | None" = None
+        try:
+            self._chase_camera = Camera(self.cfg.chase_camera)
+            self._left_camera  = Camera(self.cfg.left_camera)
+            self._top_camera   = Camera(self.cfg.top_camera)
+        except Exception as _cam_exc:
+            print(f"[BrainNavEnv] Angle cameras not created (play-mode only): {_cam_exc}")
+
         # No LiDAR in Multilevel training — policy uses camera + state only
         self._lidar = None
         self._last_lidar_scan = None
@@ -373,6 +384,14 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
         self.scene.sensors["tiled_camera"] = self._tiled_camera
+
+        # Register dashboard follow cameras so they render each step
+        if self._chase_camera is not None:
+            self.scene.sensors["dashcam_chase"] = self._chase_camera
+        if self._left_camera is not None:
+            self.scene.sensors["dashcam_left"] = self._left_camera
+        if self._top_camera is not None:
+            self.scene.sensors["dashcam_top"] = self._top_camera
 
         # Behind-drone chase camera for the viewport (Multilevel_AE_PPO)
         try:
@@ -402,6 +421,51 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         self._cache_room_spawn_bounds()
         self._sync_dynamic_obstacle_registry()
+
+    def update_follow_cameras(self):
+        """Aim the 3 dashboard follow cameras at the drone every step.
+
+        Uses set_world_poses_from_view so each camera stands off from the drone
+        and looks directly at it: one trailing behind, one to the left, one above.
+        Play-mode only — has no effect on the policy or perception pipeline.
+        """
+        if self._chase_camera is None and self._left_camera is None and self._top_camera is None:
+            return
+        try:
+            pos_w  = self._robot.data.root_pos_w[0]      # (3,) world position
+            quat_w = self._robot.data.root_quat_w[0]     # (w, x, y, z)
+            qw, qx, qy, qz = (float(quat_w[0]), float(quat_w[1]),
+                              float(quat_w[2]), float(quat_w[3]))
+            yaw = math.atan2(2.0 * (qw * qz + qx * qy),
+                             1.0 - 2.0 * (qy * qy + qz * qz))
+            cy, sy = math.cos(yaw), math.sin(yaw)
+
+            dx, dy, dz = float(pos_w[0]), float(pos_w[1]), float(pos_w[2])
+            device = self._robot.data.root_pos_w.device
+            target = torch.tensor([[dx, dy, dz]], dtype=torch.float32, device=device)
+
+            def _place(cam, eye_xyz):
+                if cam is None:
+                    return
+                eye = torch.tensor([eye_xyz], dtype=torch.float32, device=device)
+                cam.set_world_poses_from_view(eye, target)
+
+            # Chase: 3.0 m behind along heading, 1.2 m above
+            back = 3.0
+            _place(self._chase_camera,
+                   [dx - back * cy, dy - back * sy, dz + 1.2])
+
+            # Left: 3.0 m to the drone's left (heading + 90°), 0.8 m above
+            side = 3.0
+            lx, ly = -sy, cy   # unit left vector in world XY
+            _place(self._left_camera,
+                   [dx + side * lx, dy + side * ly, dz + 0.8])
+
+            # Top: 5.0 m directly above, looking straight down
+            _place(self._top_camera,
+                   [dx, dy, dz + 5.0])
+        except Exception as exc:
+            print(f"[BrainNavEnv] update_follow_cameras() error: {exc}")
 
     def _build_sequential_spawn_sequence(self) -> tuple[tuple, list[str]]:
         """Build scan/nav waypoints: rooms 1–4, then corr1 → corr2 → Worker final room."""
