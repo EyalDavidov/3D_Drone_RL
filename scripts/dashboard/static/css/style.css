@@ -25,6 +25,19 @@
     --gap: 8px;
     --radius: 12px;
     --radius-sm: 8px;
+
+    /* Cyber-Industrial Glassmorphism accents */
+    --neon-cyan: #2ff3ff;
+    --neon-magenta: #ff2d95;
+    --neon-lime: #b6ff3c;
+    --neon-amber: #ffb020;
+    --glass-fill: rgba(15, 22, 38, 0.55);
+    --glass-fill-strong: rgba(12, 18, 32, 0.78);
+    --glass-stroke: rgba(120, 190, 255, 0.16);
+    --glass-stroke-lit: rgba(47, 243, 255, 0.55);
+    --glass-hi: rgba(255, 255, 255, 0.06);
+    --glow-cyan: 0 0 18px rgba(47, 243, 255, 0.35);
+    --glow-magenta: 0 0 22px rgba(255, 45, 149, 0.45);
 }
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -103,28 +116,42 @@ body { display: flex; flex-direction: column; }
 .tab {
     display: flex; align-items: center; gap: 6px;
     padding: 8px 18px;
-    background: rgba(30, 41, 59, 0.3);
+    background: linear-gradient(180deg, rgba(30, 41, 59, 0.25), rgba(12, 18, 32, 0.35));
     border: 1px solid transparent;
     border-bottom: none;
     border-radius: 10px 10px 0 0;
     color: var(--text-muted);
-    font-size: 12px; font-weight: 500;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.4px;
+    text-transform: uppercase;
     cursor: pointer;
+    position: relative;
+    backdrop-filter: blur(10px);
     transition: all 0.2s ease;
     position: relative;
     top: 1px;
 }
 
 .tab:hover {
-    background: rgba(30, 41, 59, 0.6);
+    background: rgba(47, 243, 255, 0.08);
     color: var(--text-secondary);
+    border-color: var(--glass-stroke);
 }
 
 .tab.active {
-    background: var(--bg-primary);
-    border-color: var(--glass-border);
-    color: var(--text-primary);
-    font-weight: 600;
+    background: linear-gradient(180deg, rgba(47, 243, 255, 0.14), rgba(12, 18, 32, 0.55));
+    border-color: var(--glass-stroke-lit);
+    color: #eafcff;
+    font-weight: 700;
+    box-shadow: 0 -1px 14px rgba(47, 243, 255, 0.22);
+}
+
+.tab.active::after {
+    content: '';
+    position: absolute;
+    left: 12px; right: 12px; top: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+    box-shadow: var(--glow-cyan);
 }
 
 .tab-icon { font-size: 14px; }
@@ -470,12 +497,47 @@ body { display: flex; flex-direction: column; }
     display: block !important;
 }
 .slam-stats-col {
-    flex: 0 0 220px;
+    flex: 0 0 380px;
     display: flex;
     flex-direction: column;
     gap: var(--gap);
     min-height: 0;
     overflow: hidden;
+}
+.slam-2d-panel {
+    flex: 1.4;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.slam-2d-body {
+    flex: 1;
+    min-height: 520px;
+    padding: 0 !important;
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    background: #050810;
+    position: relative;
+    overflow: hidden;
+}
+#cam-slam-main {
+    width: 100%;
+    flex: 1;
+    min-height: 480px;
+    display: block;
+    cursor: grab;
+    touch-action: none;
+}
+.slam-2d-hint {
+    position: absolute;
+    bottom: 6px;
+    right: 8px;
+    font-size: 9px;
+    color: rgba(148, 163, 184, 0.55);
+    pointer-events: none;
+    letter-spacing: 0.2px;
 }
 .slam-stat-row {
     display: flex;
@@ -497,6 +559,256 @@ body { display: flex; flex-direction: column; }
     color: var(--text-primary);
 }
 
+/* ========== TAB 4: YOLO DETECTION — Cyber-Industrial Glassmorphism ========== */
+#tab-yolo {
+    display: none;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    padding: var(--gap);
+    /* Ambient neon field behind the frosted glass */
+    background:
+        radial-gradient(1100px 520px at 78% -10%, rgba(47, 243, 255, 0.10), transparent 60%),
+        radial-gradient(900px 480px at 12% 118%, rgba(255, 45, 149, 0.10), transparent 60%),
+        linear-gradient(180deg, #070b14, #0a0e1a);
+}
+#tab-yolo.active {
+    display: flex;
+}
+.yolo-tab-layout {
+    display: flex;
+    flex: 1;
+    gap: 12px;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* ---- Frosted glass panel primitive ---- */
+.glass-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-radius: 16px;
+    background: var(--glass-fill);
+    backdrop-filter: blur(22px) saturate(140%);
+    -webkit-backdrop-filter: blur(22px) saturate(140%);
+    border: 1px solid var(--glass-stroke);
+    box-shadow:
+        0 10px 40px rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 var(--glass-hi);
+    overflow: hidden;
+}
+/* Top hairline neon edge */
+.glass-panel::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(47, 243, 255, 0.6), rgba(255, 45, 149, 0.4), transparent);
+    opacity: 0.7;
+}
+.yolo-main {
+    flex: 1;
+    min-height: 0;
+}
+.glass-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--glass-stroke);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+    flex-shrink: 0;
+}
+.glass-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 700;
+    letter-spacing: 1.4px; text-transform: uppercase;
+    color: #dbeeff;
+}
+.glass-title-icon { font-size: 15px; filter: drop-shadow(0 0 6px rgba(47,243,255,0.6)); }
+.glass-live {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+    color: var(--neon-cyan);
+    padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--glass-stroke-lit);
+    background: rgba(47, 243, 255, 0.08);
+}
+.glass-live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--neon-cyan);
+    box-shadow: var(--glow-cyan);
+    animation: glassPulse 1.6s ease-in-out infinite;
+}
+@keyframes glassPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.glass-body {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column;
+}
+.yolo-hud-body {
+    position: relative;
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 0;
+    background:
+        repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0 1px, transparent 1px 3px),
+        #0a0f1a;
+}
+#cam-yolo-hud {
+    width: 100%;
+    height: 100%;
+    flex: 1;
+    display: block;
+}
+
+/* Stats column + glass stat rows */
+.yolo-stats-col {
+    flex: 0 0 300px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    overflow: hidden;
+}
+.glass-stats {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+    gap: 8px;
+    overflow-y: auto;
+}
+.glass-stat-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(120, 190, 255, 0.08);
+}
+.glass-stat-label {
+    font-size: 10px; font-weight: 600; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--text-secondary);
+}
+.glass-stat-val { font-size: 13px; font-weight: 600; color: #eafcff; }
+.glass-stat-val[data-state="confirmed"] { color: var(--neon-lime);   text-shadow: 0 0 10px rgba(182,255,60,0.5); }
+.glass-stat-val[data-state="detected"]  { color: var(--neon-magenta); text-shadow: var(--glow-magenta); }
+.glass-stat-val[data-state="seen"]      { color: var(--neon-amber); }
+.glass-stat-val[data-state="idle"]      { color: var(--text-secondary); }
+
+/* ---- Futuristic HUD detection alert (overlay bottom-center of feed) ---- */
+.hud-alert {
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 340px;
+    max-width: 82%;
+    padding: 12px 18px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(12, 20, 34, 0.72), rgba(10, 14, 26, 0.62));
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    border: 1px solid var(--glass-stroke);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 var(--glass-hi);
+    overflow: hidden;
+    transition: border-color 0.35s ease, box-shadow 0.35s ease, transform 0.35s ease;
+    z-index: 6;
+}
+/* Sweeping scanline accent */
+.hud-alert-scan {
+    position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(47,243,255,0.10), transparent);
+    transform: translateX(-100%);
+    pointer-events: none;
+}
+.hud-alert-icon {
+    font-size: 22px; line-height: 1;
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 10px;
+    background: rgba(47, 243, 255, 0.08);
+    border: 1px solid var(--glass-stroke-lit);
+    color: var(--neon-cyan);
+    flex-shrink: 0;
+    transition: all 0.35s ease;
+}
+.hud-alert-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.hud-alert-label {
+    font-size: 12px; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; color: #cfefff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hud-alert-meter {
+    position: relative;
+    height: 6px; border-radius: 3px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+.hud-alert-meter-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 0%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--neon-cyan), #7ad9ff);
+    box-shadow: var(--glow-cyan);
+    transition: width 0.3s ease, background 0.35s ease, box-shadow 0.35s ease;
+}
+.hud-alert-meter-thresh {
+    position: absolute; top: -2px; bottom: -2px;
+    width: 2px; left: 70%;
+    background: rgba(255, 255, 255, 0.55);
+}
+.hud-alert-conf {
+    font-family: var(--font-mono);
+    font-size: 26px; font-weight: 700;
+    line-height: 1; color: #eafcff;
+    letter-spacing: -0.5px;
+    flex-shrink: 0;
+    transition: color 0.35s ease, text-shadow 0.35s ease;
+}
+.hud-alert-pct { font-size: 14px; opacity: 0.7; margin-left: 1px; }
+
+/* ---- Alert state theming (replaces the old ugly red default) ---- */
+.hud-alert[data-state="idle"] {
+    border-color: var(--glass-stroke);
+    opacity: 0.82;
+}
+.hud-alert[data-state="idle"] .hud-alert-icon { animation: glassPulse 2s ease-in-out infinite; }
+
+.hud-alert[data-state="seen"] {
+    border-color: rgba(255, 176, 32, 0.5);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 22px rgba(255, 176, 32, 0.22);
+}
+.hud-alert[data-state="seen"] .hud-alert-icon { color: var(--neon-amber); border-color: rgba(255,176,32,0.5); background: rgba(255,176,32,0.10); }
+.hud-alert[data-state="seen"] .hud-alert-meter-fill { background: linear-gradient(90deg, var(--neon-amber), #ffd27a); box-shadow: 0 0 16px rgba(255,176,32,0.5); }
+.hud-alert[data-state="seen"] .hud-alert-conf { color: var(--neon-amber); }
+
+.hud-alert[data-state="detected"] {
+    border-color: var(--neon-magenta);
+    box-shadow: 0 12px 46px rgba(0,0,0,0.5), var(--glow-magenta);
+    animation: hudAlertPop 0.4s ease;
+}
+.hud-alert[data-state="detected"] .hud-alert-icon { color: var(--neon-magenta); border-color: var(--neon-magenta); background: rgba(255,45,149,0.12); }
+.hud-alert[data-state="detected"] .hud-alert-label { color: #ffd6ea; }
+.hud-alert[data-state="detected"] .hud-alert-meter-fill { background: linear-gradient(90deg, var(--neon-magenta), #ff7ab8); box-shadow: var(--glow-magenta); }
+.hud-alert[data-state="detected"] .hud-alert-conf { color: #ff5aa8; text-shadow: var(--glow-magenta); }
+.hud-alert[data-state="detected"] .hud-alert-scan { animation: hudScan 1.8s linear infinite; }
+
+.hud-alert[data-state="confirmed"] {
+    border-color: var(--neon-lime);
+    box-shadow: 0 12px 46px rgba(0,0,0,0.5), 0 0 26px rgba(182,255,60,0.35);
+}
+.hud-alert[data-state="confirmed"] .hud-alert-icon { color: var(--neon-lime); border-color: var(--neon-lime); background: rgba(182,255,60,0.12); }
+.hud-alert[data-state="confirmed"] .hud-alert-label { color: #e6ffc4; }
+.hud-alert[data-state="confirmed"] .hud-alert-meter-fill { background: linear-gradient(90deg, var(--neon-lime), #d9ff8f); box-shadow: 0 0 16px rgba(182,255,60,0.5); }
+.hud-alert[data-state="confirmed"] .hud-alert-conf { color: var(--neon-lime); text-shadow: 0 0 12px rgba(182,255,60,0.5); }
+.hud-alert[data-state="confirmed"] .hud-alert-scan { animation: hudScan 2.2s linear infinite; }
+
+@keyframes hudScan { 0% { transform: translateX(-100%);} 100% { transform: translateX(100%);} }
+@keyframes hudAlertPop { 0% { transform: translateX(-50%) scale(0.96); } 60% { transform: translateX(-50%) scale(1.015);} 100% { transform: translateX(-50%) scale(1);} }
+
 /* ========== ANIMATIONS ========== */
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(6px); }
@@ -507,7 +819,7 @@ body { display: flex; flex-direction: column; }
 /* ========== RESPONSIVE ========== */
 @media (max-width: 1100px) {
     .nav-top-row { grid-template-columns: 180px 1fr 180px; }
-    .slam-stats-col { flex: 0 0 180px; }
+    .slam-stats-col { flex: 0 0 320px; }
 }
 @media (max-width: 800px) {
     .cam-row-2 { grid-template-columns: 1fr; }
@@ -515,6 +827,7 @@ body { display: flex; flex-direction: column; }
     .nav-top-row { grid-template-columns: 1fr; }
     .nav-bottom-split { flex-direction: column; }
     .slam-tab-layout { flex-direction: column; }
+    .yolo-tab-layout { flex-direction: column; }
     #tab-cameras.active, #tab-navigation.active {
         grid-template-rows: none;
         overflow-y: auto;

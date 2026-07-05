@@ -74,6 +74,24 @@ class PerceptionModule:
         self._alert_window_name = "RESCUE ALERT - Person Detected"
         self._last_display_frame = None
         self._display_error_logged = False
+        # ── Cyber-Industrial HUD palette (BGR for OpenCV) ─────────────────
+        # Mirrors the web dashboard's glassmorphism theme: deep navy-black
+        # surfaces, dim cyan strokes, and neon cyan/magenta/lime/amber accents.
+        self._hc = {
+            "bg":        (26, 15, 10),    # deep navy-black base
+            "panel":     (38, 22, 15),    # header / footer / sidebar bars
+            "card":      (52, 32, 22),    # rescue-log cards
+            "bar_bg":    (50, 34, 24),    # meter track
+            "edge":      (86, 64, 40),    # dim cyan-blue stroke
+            "edge_lit":  (200, 168, 60),  # lit cyan stroke
+            "cyan":      (255, 243, 47),  # neon cyan  (#2ff3ff)
+            "magenta":   (149, 45, 255),  # neon magenta (#ff2d95)
+            "lime":      (60, 255, 182),  # neon lime  (#b6ff3c)
+            "amber":     (32, 176, 255),  # neon amber (#ffb020)
+            "text":      (255, 252, 234), # near-white
+            "text_dim":  (184, 163, 148), # secondary
+            "text_muted":(139, 116, 100), # muted labels
+        }
         self._noted_streak = 0
         self._active_scan_label: str | None = None
         self._operator_alert_until = 0
@@ -81,6 +99,12 @@ class PerceptionModule:
         self._last_intel: dict | None = None
         self._rescue_person_slots = list(rescue_person_slots or [])
         self._person_match_radius = float(person_match_radius)
+        # ── Native web-HUD payload (rendered by the browser, not OpenCV) ──
+        # Published every YOLO pass so the dashboard's native component can draw
+        # a fully synced HUD: same frame the boxes were computed on.
+        self._web_frame_bgr: np.ndarray | None = None
+        self._web_boxes: list[dict] = []
+        self._web_state: dict | None = None
 
         if not self.use_mock:
             yolo_path = _REPO_ROOT / "YOLO" / "yolo11n.pt"
@@ -239,17 +263,18 @@ class PerceptionModule:
         pass
 
     # ── colour helpers ────────────────────────────────────────────────────
-    @staticmethod
-    def _conf_color(conf: float) -> tuple[int, int, int]:
-        """BGR colour that transitions green→yellow→red with confidence."""
+    def _conf_color(self, conf: float) -> tuple[int, int, int]:
+        """Neon BGR that steps lime → cyan → amber as confidence rises."""
+        hc = self._hc
         if conf >= 0.80:
-            return (60, 220, 120)
+            return hc["lime"]
         if conf >= 0.60:
-            return (40, 200, 255)
-        return (80, 140, 255)
+            return hc["cyan"]
+        return hc["amber"]
 
     def _slot_accent(self, person_key: str) -> tuple[int, int, int]:
-        palette = [(0, 200, 255), (80, 220, 100), (255, 180, 40), (200, 80, 255)]
+        hc = self._hc
+        palette = [hc["cyan"], hc["lime"], hc["amber"], hc["magenta"]]
         idx = hash(person_key) % len(palette)
         return palette[idx]
 
@@ -273,49 +298,88 @@ class PerceptionModule:
             cv2.circle(canvas, (x1 - r, y0 + r), r, color, -1)
 
     @staticmethod
-    def _conf_bar(canvas, x0: int, y0: int, w: int, h: int,
-                  conf: float, thresh: float,
-                  filled_color: tuple, bg_color: tuple = (40, 45, 55)) -> None:
+    def _draw_corner_brackets(canvas, x0: int, y0: int, x1: int, y1: int,
+                              color: tuple, *, arm: int = 20, thickness: int = 2) -> None:
+        """Neon corner brackets (HUD framing) around a rectangle."""
         import cv2
 
+        arm = max(4, min(arm, (x1 - x0) // 3, (y1 - y0) // 3))
+        for (cx, cy, dx, dy) in [
+            (x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)
+        ]:
+            cv2.line(canvas, (cx, cy), (cx + dx * arm, cy), color, thickness, cv2.LINE_AA)
+            cv2.line(canvas, (cx, cy), (cx, cy + dy * arm), color, thickness, cv2.LINE_AA)
+
+    @staticmethod
+    def _center_text(canvas, text: str, x0: int, w: int, y: int,
+                     scale: float, color: tuple) -> None:
+        """Draw horizontally centered text within [x0, x0+w]."""
+        import cv2
+
+        tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0]
+        cv2.putText(canvas, text, (x0 + (w - tw) // 2, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+
+    @staticmethod
+    def _pill_outline(canvas, x0: int, y0: int, x1: int, y1: int, color: tuple) -> None:
+        """Rounded outline matching _filled_pill geometry."""
+        import cv2
+
+        r = (y1 - y0) // 2
+        cv2.line(canvas, (x0 + r, y0), (x1 - r, y0), color, 1, cv2.LINE_AA)
+        cv2.line(canvas, (x0 + r, y1), (x1 - r, y1), color, 1, cv2.LINE_AA)
+        cv2.ellipse(canvas, (x0 + r, y0 + r), (r, r), 90, 90, 270, color, 1, cv2.LINE_AA)
+        cv2.ellipse(canvas, (x1 - r, y0 + r), (r, r), 270, 90, 270, color, 1, cv2.LINE_AA)
+
+    def _conf_bar(self, canvas, x0: int, y0: int, w: int, h: int,
+                  conf: float, thresh: float,
+                  filled_color: tuple, bg_color: tuple | None = None) -> None:
+        import cv2
+
+        hc = self._hc
+        bg_color = bg_color or hc["bar_bg"]
         cv2.rectangle(canvas, (x0, y0), (x0 + w, y0 + h), bg_color, -1)
         fill = int(w * min(max(conf, 0.0), 1.0))
         if fill > 0:
             cv2.rectangle(canvas, (x0, y0), (x0 + fill, y0 + h), filled_color, -1)
+        # Threshold marker (neon cyan tick)
         tx = x0 + int(w * thresh)
-        cv2.line(canvas, (tx, y0 - 3), (tx, y0 + h + 3), (0, 220, 255), 2)
+        cv2.line(canvas, (tx, y0 - 3), (tx, y0 + h + 3), hc["cyan"], 2)
 
     def _draw_detection_sidebar(self, canvas: np.ndarray) -> None:
         import cv2
 
+        hc = self._hc
         x0 = self._video_width
         w = self._sidebar_width
         h = self._display_height
         hh = self._header_h
 
-        # Sidebar background
-        cv2.rectangle(canvas, (x0, 0), (x0 + w - 1, h - 1), (22, 22, 26), -1)
-        cv2.line(canvas, (x0, 0), (x0, h - 1), (55, 55, 70), 1)
+        # Sidebar background (slightly lifted navy) + neon divider from video
+        cv2.rectangle(canvas, (x0, 0), (x0 + w - 1, h - 1), hc["panel"], -1)
+        cv2.line(canvas, (x0, 0), (x0, h - 1), hc["edge"], 1)
+        cv2.line(canvas, (x0 + 1, 0), (x0 + 1, h - 1), hc["cyan"], 1)
 
-        # Sidebar header — same shade as main header
-        cv2.rectangle(canvas, (x0, 0), (x0 + w - 1, hh - 1), (26, 26, 32), -1)
-        cv2.line(canvas, (x0, hh - 1), (x0 + w - 1, hh - 1), (55, 55, 70), 1)
+        # Sidebar header
+        cv2.rectangle(canvas, (x0, 0), (x0 + w - 1, hh - 1), hc["card"], -1)
+        cv2.line(canvas, (x0, hh - 1), (x0 + w - 1, hh - 1), hc["edge"], 1)
 
         # "RESCUE LOG" title with dot indicator
         num = len(self._detection_log)
-        cv2.circle(canvas, (x0 + 18, hh // 2), 5, (0, 200, 255) if num > 0 else (70, 80, 100), -1)
+        cv2.circle(canvas, (x0 + 18, hh // 2), 5,
+                   hc["cyan"] if num > 0 else hc["text_muted"], -1, cv2.LINE_AA)
         cv2.putText(
             canvas, "RESCUE LOG", (x0 + 30, hh // 2 + 6),
-            cv2.FONT_HERSHEY_DUPLEX, 0.55, (200, 210, 230), 1, cv2.LINE_AA,
+            cv2.FONT_HERSHEY_DUPLEX, 0.52, hc["text"], 1, cv2.LINE_AA,
         )
         if num > 0:
             badge_txt = str(num)
             tw = cv2.getTextSize(badge_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)[0][0]
             bx = x0 + w - 14 - tw - 10
             self._filled_pill(canvas, bx - 4, hh // 2 - 10, bx + tw + 10, hh // 2 + 10,
-                               (0, 140, 220))
+                               hc["cyan"])
             cv2.putText(canvas, badge_txt, (bx, hh // 2 + 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (12, 18, 26), 1, cv2.LINE_AA)
 
         # Cards area
         card_top = hh + 6
@@ -325,10 +389,12 @@ class PerceptionModule:
 
         if not shown:
             mid_y = card_top + (h - card_top) // 2
-            cv2.putText(canvas, "No detections yet", (x0 + 18, mid_y - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (55, 68, 90), 1, cv2.LINE_AA)
-            cv2.putText(canvas, "Awaiting scan...", (x0 + 22, mid_y + 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (45, 56, 76), 1, cv2.LINE_AA)
+            cv2.circle(canvas, (x0 + w // 2, mid_y - 40), 16, hc["edge"], 1, cv2.LINE_AA)
+            cv2.circle(canvas, (x0 + w // 2, mid_y - 40), 3, hc["edge"], -1, cv2.LINE_AA)
+            self._center_text(canvas, "NO DETECTIONS YET", x0, w, mid_y - 6,
+                              0.48, hc["text_dim"])
+            self._center_text(canvas, "Awaiting scan...", x0, w, mid_y + 16,
+                              0.40, hc["text_muted"])
             return
 
         card_h = self._sidebar_card_h
@@ -338,13 +404,13 @@ class PerceptionModule:
             cx0 = x0 + 10
             cx1 = x0 + w - 10
 
-            # Card background
-            cv2.rectangle(canvas, (cx0, cy0), (cx1, cy1), (30, 30, 38), -1)
-            cv2.rectangle(canvas, (cx0, cy0), (cx1, cy0 + 1), (55, 55, 68), -1)
+            # Card background (frosted navy) + neon top hairline + edge
+            cv2.rectangle(canvas, (cx0, cy0), (cx1, cy1), hc["card"], -1)
+            cv2.rectangle(canvas, (cx0, cy0), (cx1, cy1), hc["edge"], 1)
 
-            # Left accent stripe (4px wide, full card height, rounded top/bottom)
+            # Left accent stripe keyed to the person slot
             accent = self._slot_accent(entry.get("person_key", ""))
-            cv2.rectangle(canvas, (cx0, cy0), (cx0 + 5, cy1), accent, -1)
+            cv2.rectangle(canvas, (cx0, cy0), (cx0 + 4, cy1), accent, -1)
 
             conf = float(entry["conf"])
             conf_pct = int(round(conf * 100))
@@ -352,45 +418,41 @@ class PerceptionModule:
 
             # ── Row 1: label (left) + conf badge (right)
             label_txt = entry["label"][:20]
-            cv2.putText(canvas, label_txt, (cx0 + 12, cy0 + 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (210, 220, 240), 1, cv2.LINE_AA)
+            cv2.putText(canvas, label_txt, (cx0 + 14, cy0 + 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, hc["text"], 1, cv2.LINE_AA)
 
             badge_txt = f"{conf_pct}%"
             btw = cv2.getTextSize(badge_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)[0][0]
             bpx = cx1 - btw - 16
-            if bpx + btw + 10 > cy1 - cy0:  # ensure pill fits
-                py0b, py1b = cy0 + 8, cy0 + 28
-                self._filled_pill(canvas, bpx - 4, py0b, bpx + btw + 8, py1b, c_col)
-                cv2.putText(canvas, badge_txt, (bpx, py0b + 14),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.48, (10, 10, 10), 1, cv2.LINE_AA)
+            py0b, py1b = cy0 + 8, cy0 + 28
+            self._filled_pill(canvas, bpx - 6, py0b, bpx + btw + 8, py1b, c_col)
+            cv2.putText(canvas, badge_txt, (bpx, py0b + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (12, 18, 12), 1, cv2.LINE_AA)
 
             # ── Row 2: thin confidence bar
-            bar_y = cy0 + 32
-            self._conf_bar(canvas, cx0 + 12, bar_y, cx1 - cx0 - 18, 6,
+            bar_y = cy0 + 34
+            self._conf_bar(canvas, cx0 + 14, bar_y, cx1 - cx0 - 22, 6,
                            conf, self.person_conf_threshold, c_col)
 
             # ── Row 3 & 4: GPS coords
             gps_lat = entry.get("gps_lat")
             gps_lon = entry.get("gps_lon")
             xyz = entry.get("xyz")
-            y3 = cy0 + 52
-            y4 = cy0 + 70
+            y3 = cy0 + 54
+            y4 = cy0 + 72
             if gps_lat is not None and gps_lon is not None:
-                cv2.putText(canvas, "LAT", (cx0 + 12, y3),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, (70, 90, 120), 1, cv2.LINE_AA)
-                cv2.putText(canvas, f"{gps_lat:.6f}", (cx0 + 42, y3),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.40, (130, 210, 255), 1, cv2.LINE_AA)
-                cv2.putText(canvas, "LON", (cx0 + 12, y4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, (70, 90, 120), 1, cv2.LINE_AA)
-                cv2.putText(canvas, f"{gps_lon:.6f}", (cx0 + 42, y4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.40, (130, 210, 255), 1, cv2.LINE_AA)
+                cv2.putText(canvas, "LAT", (cx0 + 14, y3),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, hc["text_muted"], 1, cv2.LINE_AA)
+                cv2.putText(canvas, f"{gps_lat:.6f}", (cx0 + 46, y3),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.40, hc["cyan"], 1, cv2.LINE_AA)
+                cv2.putText(canvas, "LON", (cx0 + 14, y4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, hc["text_muted"], 1, cv2.LINE_AA)
+                cv2.putText(canvas, f"{gps_lon:.6f}", (cx0 + 46, y4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.40, hc["cyan"], 1, cv2.LINE_AA)
             elif xyz is not None:
                 xyzstr = f"X{xyz[0]:.1f}  Y{xyz[1]:.1f}  Z{xyz[2]:.1f}"
-                cv2.putText(canvas, xyzstr, (cx0 + 12, y3 + 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (130, 210, 255), 1, cv2.LINE_AA)
-
-            # Bottom divider line
-            cv2.line(canvas, (cx0 + 10, cy1), (cx1 - 10, cy1), (45, 52, 68), 1)
+                cv2.putText(canvas, xyzstr, (cx0 + 14, y3 + 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, hc["cyan"], 1, cv2.LINE_AA)
 
     def _init_display_window(self) -> None:
         """Create a resizable OpenCV window once."""
@@ -441,11 +503,11 @@ class PerceptionModule:
             x1, y1, x2, y2 = self._box_xyxy_scaled(box, cs)
             x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
             if conf >= self.person_conf_threshold:
-                color = (60, 230, 120)
+                color = self._hc["lime"]
             elif conf >= thresh:
-                color = (40, 200, 255)
+                color = self._hc["cyan"]
             else:
-                color = (100, 130, 200)
+                color = self._hc["amber"]
             # Corner-bracket style instead of full rectangle
             arm = max(6, min((x2 - x1) // 4, (y2 - y1) // 4, 20))
             t = 2
@@ -478,43 +540,44 @@ class PerceptionModule:
 
         if not intel:
             return
-        pad_x, pad_y = 10, 8
+        hc = self._hc
+        pad_x, pad_y = 12, 8
         line_h = 22
         lines = []
         if intel.get("label"):
-            lines.append(("LOC", intel["label"].upper(), (180, 220, 255)))
+            lines.append(("LOC", intel["label"].upper(), hc["text"]))
         if intel.get("conf") is not None:
             lines.append(("CONF", f"{int(intel['conf'] * 100)}%", self._conf_color(intel["conf"])))
         if intel.get("gps_lat") is not None:
-            lines.append(("LAT", f"{intel['gps_lat']:.6f}", (100, 210, 255)))
-            lines.append(("LON", f"{intel['gps_lon']:.6f}", (100, 210, 255)))
+            lines.append(("LAT", f"{intel['gps_lat']:.6f}", hc["cyan"]))
+            lines.append(("LON", f"{intel['gps_lon']:.6f}", hc["cyan"]))
         if intel.get("dist") is not None:
-            lines.append(("DIST", f"{intel['dist']:.1f} m", (200, 200, 200)))
+            lines.append(("DIST", f"{intel['dist']:.1f} m", hc["text_dim"]))
 
         if not lines:
             return
 
-        panel_w = 210
+        panel_w = 214
         panel_h = pad_y * 2 + len(lines) * line_h + 4
         px = video_x0 + 8
         py = video_y0 + video_h - panel_h - 8
 
-        # Semi-transparent background
+        # Frosted-glass background (blend toward deep navy)
         roi = canvas[py: py + panel_h, px: px + panel_w]
         if roi.shape[0] < 1 or roi.shape[1] < 1:
             return
-        dark = (roi * 0.35).astype(np.uint8)
-        canvas[py: py + panel_h, px: px + panel_w] = dark
+        glass = np.full_like(roi, hc["bg"])
+        canvas[py: py + panel_h, px: px + panel_w] = cv2.addWeighted(glass, 0.6, roi, 0.4, 0)
 
-        # Left accent stripe
-        cv2.rectangle(canvas, (px, py), (px + 3, py + panel_h), (0, 200, 255), -1)
-        cv2.rectangle(canvas, (px, py), (px + panel_w - 1, py + panel_h - 1), (60, 80, 110), 1)
+        # Neon left accent + edge
+        cv2.rectangle(canvas, (px, py), (px + 3, py + panel_h), hc["cyan"], -1)
+        cv2.rectangle(canvas, (px, py), (px + panel_w - 1, py + panel_h - 1), hc["edge"], 1)
 
         for i, (key, val, col) in enumerate(lines):
             ry = py + pad_y + i * line_h + 14
-            cv2.putText(canvas, key, (px + 8, ry),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, (120, 130, 150), 1, cv2.LINE_AA)
-            cv2.putText(canvas, val, (px + 48, ry),
+            cv2.putText(canvas, key, (px + 10, ry),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, hc["text_muted"], 1, cv2.LINE_AA)
+            cv2.putText(canvas, val, (px + 52, ry),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
 
     def _draw_hud_panel(
@@ -541,8 +604,13 @@ class PerceptionModule:
         dh = self._display_height
         dw = self._display_width
 
+        hc = self._hc
         canvas = np.zeros((dh, dw, 3), dtype=np.uint8)
-        canvas[:] = (20, 20, 24)  # near-black, neutral cool
+        canvas[:] = hc["bg"]  # deep navy-black base
+
+        # Subtle vertical gradient wash over the whole canvas for depth
+        grad = np.linspace(1.0, 0.72, dh, dtype=np.float32)[:, None, None]
+        canvas[:] = np.clip(canvas.astype(np.float32) * grad, 0, 255).astype(np.uint8)
 
         # ── 1. Scale + place camera feed ──────────────────────────────────
         src_h, src_w = frame.shape[:2]
@@ -556,51 +624,65 @@ class PerceptionModule:
         upscaled = cv2.resize(frame, (view_w, view_h), interpolation=cv2.INTER_LANCZOS4)
         canvas[vy0: vy0 + view_h, mx: mx + view_w] = upscaled
 
-        # Thin border around video
-        cv2.rectangle(canvas, (mx - 1, vy0 - 1), (mx + view_w, vy0 + view_h), (50, 62, 82), 1)
+        # Neon corner brackets around the video feed (HUD framing)
+        self._draw_corner_brackets(
+            canvas, mx - 2, vy0 - 2, mx + view_w + 1, vy0 + view_h + 1,
+            hc["edge_lit"], arm=22, thickness=2,
+        )
+        cv2.rectangle(canvas, (mx - 2, vy0 - 2), (mx + view_w + 1, vy0 + view_h + 1),
+                      hc["edge"], 1)
 
         # ── 2. Header bar ─────────────────────────────────────────────────
-        cv2.rectangle(canvas, (0, 0), (vw - 1, hh - 1), (26, 26, 32), -1)
-        cv2.line(canvas, (0, hh - 1), (vw - 1, hh - 1), (55, 55, 70), 1)
+        cv2.rectangle(canvas, (0, 0), (vw - 1, hh - 1), hc["panel"], -1)
+        # Neon underline (double stroke → subtle glow)
+        cv2.line(canvas, (0, hh - 1), (vw - 1, hh - 1), hc["edge"], 2)
+        cv2.line(canvas, (0, hh - 1), (vw - 1, hh - 1), hc["cyan"], 1)
 
         # Left: app title
         cv2.putText(canvas, "BRAIN NAV", (14, hh - 17),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 210, 255), 2, cv2.LINE_AA)
-        cv2.line(canvas, (120, 10), (120, hh - 10), (55, 55, 70), 1)
-        cv2.putText(canvas, "YOLO11 Person Detection", (135, hh - 19),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 110, 130), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_DUPLEX, 0.58, hc["cyan"], 1, cv2.LINE_AA)
+        cv2.line(canvas, (128, 12), (128, hh - 12), hc["edge"], 1)
+        cv2.putText(canvas, "YOLO11 PERSON DETECTION", (142, hh - 19),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, hc["text_dim"], 1, cv2.LINE_AA)
 
-        # Right: status pill — all ASCII, cool palette only
+        # Right: status pill — cohesive neon states
         if has_confirmed:
             pill_txt  = "TARGET CONFIRMED"
-            pill_bg, pill_fg = (30, 140, 60), (240, 255, 240)
+            pill_bg, pill_fg = hc["lime"], (12, 22, 8)
         elif operator_alert or has_noted:
             pct = int(round((alert_conf or best_conf) * 100))
             if (alert_conf or best_conf) >= self.person_conf_threshold:
-                pill_txt  = f"DETECTED  {pct}%"
-                pill_bg, pill_fg = (30, 30, 160), (255, 255, 255)
+                pill_txt  = f"HUMAN DETECTED  {pct}%"
+                pill_bg, pill_fg = hc["magenta"], (255, 255, 255)
             elif rescue_armed:
-                pill_txt  = f"SEEN  {pct}%"
-                pill_bg, pill_fg = (100, 60, 20), (240, 255, 255)
+                pill_txt  = f"CONTACT  {pct}%"
+                pill_bg, pill_fg = hc["amber"], (14, 20, 30)
             else:
                 pill_txt  = f"NOTED  {pct}%"
-                pill_bg, pill_fg = (80, 80, 30), (220, 240, 255)
+                pill_bg, pill_fg = hc["amber"], (14, 20, 30)
         elif noted_deferred:
             pill_txt  = "NOTED - CONTINUE"
-            pill_bg, pill_fg = (80, 80, 30), (220, 240, 255)
+            pill_bg, pill_fg = hc["amber"], (14, 20, 30)
         elif scan_label:
             pill_txt  = f"SCAN  {scan_label.upper()}"
-            pill_bg, pill_fg = (100, 70, 20), (240, 250, 255)  # dark steel-blue bg, white text
+            pill_bg, pill_fg = hc["card"], hc["cyan"]
         else:
             pill_txt  = "SCANNING"
-            pill_bg, pill_fg = (44, 44, 54), (160, 170, 185)
+            pill_bg, pill_fg = hc["card"], hc["text_dim"]
 
         ptw = cv2.getTextSize(pill_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)[0][0]
-        px1 = vw - ptw - 28
-        px0 = px1 - 8
+        pill_w = ptw + 42            # room for a leading status dot
+        pill_x1 = vw - 16
+        pill_x0 = pill_x1 - pill_w
         pill_y0, pill_y1 = 10, hh - 10
-        self._filled_pill(canvas, px0, pill_y0, px0 + ptw + 22, pill_y1, pill_bg)
-        cv2.putText(canvas, pill_txt, (px1, pill_y1 - 6),
+        pill_cy = (pill_y0 + pill_y1) // 2
+        # Status dot + pill; dark pills get a neon outline so they read on navy
+        dot_col = hc["cyan"] if pill_bg == hc["card"] else pill_bg
+        self._filled_pill(canvas, pill_x0, pill_y0, pill_x1, pill_y1, pill_bg)
+        if pill_bg == hc["card"]:
+            self._pill_outline(canvas, pill_x0, pill_y0, pill_x1, pill_y1, hc["edge"])
+        cv2.circle(canvas, (pill_x0 + 16, pill_cy), 4, dot_col, -1, cv2.LINE_AA)
+        cv2.putText(canvas, pill_txt, (pill_x0 + 28, pill_y1 - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, pill_fg, 1, cv2.LINE_AA)
 
         # ── 3. Intel panel (detected person info, fixed bottom-left of video) ──
@@ -610,60 +692,68 @@ class PerceptionModule:
                 video_x0=mx, video_y0=vy0, video_w=view_w, video_h=view_h,
             )
 
-        # ── 4. Operator alert overlay ─────────────────────────────────────
+        # ── 4. Operator alert overlay (sleek magenta HUD, no ugly red) ────
         if operator_alert:
-            pulse = 1.0 if (detection_count // 8) % 2 == 0 else 0.5
-            # Thin glowing red border around the video area only
-            cv2.rectangle(canvas, (mx - 1, vy0 - 1), (mx + view_w, vy0 + view_h), (0, 0, 255), 2)
-            
-            # Semi-transparent dark red floating banner at the top of the video frame
-            banner_h = 32
+            pulse_on = (detection_count // 8) % 2 == 0
+            alert_col = hc["lime"] if has_confirmed else hc["magenta"]
+            # Neon corner brackets + thin frame around the video (pulses)
+            self._draw_corner_brackets(
+                canvas, mx - 2, vy0 - 2, mx + view_w + 1, vy0 + view_h + 1,
+                alert_col, arm=26, thickness=2 if pulse_on else 1,
+            )
+            if pulse_on:
+                cv2.rectangle(canvas, (mx - 2, vy0 - 2),
+                              (mx + view_w + 1, vy0 + view_h + 1), alert_col, 1)
+
+            # Frosted-glass banner strip at the top of the video frame
+            banner_h = 30
             bx0, by0 = mx, vy0
             bx1, by1 = mx + view_w, vy0 + banner_h
-            
             roi = canvas[by0:by1, bx0:bx1]
             if roi.shape[0] > 0 and roi.shape[1] > 0:
-                overlay = np.full_like(roi, (15, 15, 120))  # BGR deep red
-                canvas[by0:by1, bx0:bx1] = cv2.addWeighted(overlay, 0.70, roi, 0.30, 0)
-                
-            ac_txt = f"WARNING: PERSON DETECTED ({int(round(alert_conf * 100))}%)"
+                overlay = np.full_like(roi, (18, 12, 26))  # deep navy glass
+                canvas[by0:by1, bx0:bx1] = cv2.addWeighted(overlay, 0.62, roi, 0.38, 0)
+                cv2.line(canvas, (bx0, by1), (bx1, by1), alert_col, 1, cv2.LINE_AA)
+
+            label = "TARGET CONFIRMED" if has_confirmed else "HUMAN DETECTED"
+            ac_txt = f"{label}  {int(round(alert_conf * 100))}%"
             if scan_label:
-                ac_txt += f" | {scan_label.upper()}"
-            tw2 = cv2.getTextSize(ac_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
-            tx = mx + (view_w - tw2) // 2
-            ty = vy0 + 20
-            cv2.putText(canvas, ac_txt, (tx, ty),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+                ac_txt += f"   |   {scan_label.upper()}"
+            cv2.circle(canvas, (bx0 + 16, vy0 + banner_h // 2), 5, alert_col, -1, cv2.LINE_AA)
+            cv2.putText(canvas, ac_txt, (bx0 + 30, vy0 + 20),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.46, hc["text"], 1, cv2.LINE_AA)
 
         # ── 5. Footer bar ─────────────────────────────────────────────────
         fy0 = dh - fh
-        cv2.rectangle(canvas, (0, fy0), (vw - 1, dh - 1), (26, 26, 32), -1)
-        cv2.line(canvas, (0, fy0), (vw - 1, fy0), (55, 55, 70), 1)
+        cv2.rectangle(canvas, (0, fy0), (vw - 1, dh - 1), hc["panel"], -1)
+        cv2.line(canvas, (0, fy0), (vw - 1, fy0), hc["edge"], 2)
+        cv2.line(canvas, (0, fy0), (vw - 1, fy0), hc["cyan"], 1)
 
         conf_pct = int(round(best_conf * 100))
         thresh_pct = int(round(self.person_conf_threshold * 100))
 
-        # Confidence label
-        bar_color = (60, 200, 100) if has_confirmed else self._conf_color(best_conf)
-        cv2.putText(canvas, f"{conf_pct}%", (12, fy0 + 22),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.72, bar_color, 1, cv2.LINE_AA)
-        cv2.putText(canvas, "conf", (12, fy0 + 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (80, 90, 110), 1, cv2.LINE_AA)
+        # Confidence readout
+        bar_color = hc["lime"] if has_confirmed else self._conf_color(best_conf)
+        cv2.putText(canvas, f"{conf_pct}%", (14, fy0 + 24),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.74, bar_color, 1, cv2.LINE_AA)
+        cv2.putText(canvas, "CONF", (16, fy0 + 42),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, hc["text_muted"], 1, cv2.LINE_AA)
 
-        # Confidence bar
-        bx, by, bw, bh2 = 65, fy0 + 12, vw - 180, 16
+        # Confidence bar (rounded track feel via inner padding)
+        bx, by, bw, bh2 = 74, fy0 + 14, vw - 190, 14
+        cv2.rectangle(canvas, (bx - 1, by - 1), (bx + bw + 1, by + bh2 + 1), hc["edge"], 1)
         self._conf_bar(canvas, bx, by, bw, bh2, best_conf, self.person_conf_threshold, bar_color)
 
         # Threshold label below bar
         tx = bx + int(bw * self.person_conf_threshold)
         cv2.putText(canvas, f"{thresh_pct}%", (tx - 10, fy0 + 46),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 200, 220), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, hc["cyan"], 1, cv2.LINE_AA)
 
         # Frame counter (right side)
-        cv2.putText(canvas, f"#{detection_count}", (vw - 100, fy0 + 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (100, 115, 140), 1, cv2.LINE_AA)
-        cv2.putText(canvas, "cls:person", (vw - 100, fy0 + 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, (65, 75, 95), 1, cv2.LINE_AA)
+        cv2.putText(canvas, f"#{detection_count}", (vw - 100, fy0 + 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, hc["text_dim"], 1, cv2.LINE_AA)
+        cv2.putText(canvas, "cls:person", (vw - 100, fy0 + 42),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, hc["text_muted"], 1, cv2.LINE_AA)
 
         # ── 6. Sidebar ────────────────────────────────────────────────────
         self._draw_detection_sidebar(canvas)
@@ -711,10 +801,12 @@ class PerceptionModule:
                 self._display_error_logged = True
             display = self._make_simple_view(annotated_frame)
 
+        if display is not None:
+            self._last_display_frame = display.copy()
+
         try:
             cv2.imshow(self._window_name, display)
             cv2.waitKey(1)
-            self._last_display_frame = display.copy()
         except Exception as exc:
             if not self._display_error_logged:
                 print(f"[Perception] OpenCV imshow failed: {exc}")

@@ -1,11 +1,10 @@
 /**
  * three_scene.js — 3D Navigation Map
  *
- * Coordinate mapping: Sim (X, Y, Z) → Three.js (X, Z, Y)
- *   sim X = lateral     → Three X
- *   sim Y = forward     → Three Z (depth)
- *   sim Z = height      → Three Y (up in Three.js)
- * This makes the level layout HORIZONTAL instead of vertical.
+ * Coordinate mapping: Sim (X, Y, Z) → Three.js (X, Z, -Y mirrored for map view)
+ *   sim X = lateral     → Three -X  (mirrored so room 4 appears on the right, matching 2D SLAM map)
+ *   sim Y = forward     → Three Z (depth along the room chain)
+ *   sim Z = height      → Three Y (up)
  */
 
 class NavigationScene {
@@ -22,7 +21,7 @@ class NavigationScene {
         const initW = this.container.clientWidth || 800;
         const initH = this.container.clientHeight || 400;
         this.camera = new THREE.PerspectiveCamera(55, initW / initH, 0.1, 200);
-        this.camera.position.set(12, 14, 8);
+        this.camera.position.set(-6, 20, 8);
         this._needsInitialResize = true;
 
         this.renderer = new THREE.WebGLRenderer({
@@ -37,9 +36,10 @@ class NavigationScene {
         this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.08;
-        this.controls.target.set(0, 1, -10);
+        // Center on the R-shaped final_flat.usd layout
+        this.controls.target.set(0, 1.0, -10.0);
         this.controls.minDistance = 3;
-        this.controls.maxDistance = 60;
+        this.controls.maxDistance = 80;
 
         // Lighting
         this.scene.add(new THREE.AmbientLight(0x4466aa, 0.6));
@@ -51,7 +51,9 @@ class NavigationScene {
         this.scene.add(ptLight);
 
         this._buildGrid();
-        this._buildRooms();
+        this._zoneGroup = new THREE.Group();
+        this.scene.add(this._zoneGroup);
+        this._zonesBuilt = false;
         this._buildDrone();
         this._buildTarget();
         this._buildTrail();
@@ -74,60 +76,102 @@ class NavigationScene {
 
     // ---- Coordinate helper: sim → Three.js ----
     _s2t(x, y, z) {
-        return [x, z, y]; // sim(x,y,z) → three(x, z_sim_as_y, y_sim_as_z)
+        // Mirror sim X so the R-tail (room 4 at negative world X) appears on the right.
+        return [-x, z, y];
+    }
+
+    _zoneCenter(xMin, xMax, yMin, yMax) {
+        return [-(xMin + xMax) / 2, (yMin + yMax) / 2];
     }
 
     _buildGrid() {
-        const grid = new THREE.GridHelper(60, 60, 0x1e3a5f, 0x0f1b2d);
+        const grid = new THREE.GridHelper(80, 80, 0x1e3a5f, 0x0f1b2d);
+        grid.position.set(0, 0, -10);
         this.scene.add(grid);
     }
 
-    _buildRooms() {
-        const roomBounds = [
-            [-2, 2, -3, 2, 0, 2],
-            [-2, 2, -9, -2, 0, 2],
-            [-2, 2, -17, -8, 0, 2],
-            [-6, 2, -21, -16, 0, 2],
-        ];
-        const colors = [0x60a5fa, 0xa78bfa, 0x34d399, 0xfbbf24];
+    // Zone styles — matches final_flat.usd: 4 rooms + 2 corridors (R-shape)
+    _zoneStyle(name) {
+        const styles = {
+            room_1:        { color: 0x60a5fa, label: 'R1', corridor: false },
+            room_2:        { color: 0xa78bfa, label: 'R2', corridor: false },
+            room_3:        { color: 0x34d399, label: 'R3', corridor: false },
+            room_4:        { color: 0xfbbf24, label: 'R4', corridor: false },
+            corridor:      { color: 0x22d3ee, label: 'Corridor', corridor: true },
+            side_coridors: { color: 0xf472b6, label: 'Side Corr.', corridor: true },
+        };
+        return styles[name] || { color: 0x94a3b8, label: name, corridor: false };
+    }
+
+    _zoneDrawOrder(names) {
+        const order = ['room_1', 'room_2', 'room_3', 'room_4', 'corridor', 'side_coridors'];
+        return names.sort((a, b) => {
+            const ia = order.indexOf(a), ib = order.indexOf(b);
+            return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        });
+    }
+
+    _buildMapZones(mapZones) {
+        while (this._zoneGroup.children.length > 0) {
+            this._zoneGroup.remove(this._zoneGroup.children[0]);
+        }
         this._roomMeshes = [];
 
-        roomBounds.forEach((b, i) => {
-            const [xMin, xMax, yMin, yMax, zMin, zMax] = b;
-            // In Three.js coords: width=X, height=Z_sim(up)=Y_three, depth=Y_sim=Z_three
+        const zMin = 0.0, zMax = 2.5;
+        const names = this._zoneDrawOrder(Object.keys(mapZones));
+
+        names.forEach((name) => {
+            const zone = mapZones[name];
+            if (!zone || !zone.bounds) return;
+
+            const [xMin, xMax, yMin, yMax] = zone.bounds;
+            const style = this._zoneStyle(name);
+            const [cx, cz] = this._zoneCenter(xMin, xMax, yMin, yMax);
+
             const w = xMax - xMin;
-            const h = zMax - zMin; // height (up)
-            const d = yMax - yMin; // depth (forward)
+            const h = zMax - zMin;
+            const d = yMax - yMin;
+
+            const wireOpacity = style.corridor ? 0.78 : 0.50;
+            const floorOpacity = style.corridor ? 0.22 : 0.08;
 
             const geo = new THREE.BoxGeometry(w, h, d);
             const edges = new THREE.EdgesGeometry(geo);
-            const mat = new THREE.LineBasicMaterial({ color: colors[i], transparent: true, opacity: 0.3 });
+            const mat = new THREE.LineBasicMaterial({
+                color: style.color, transparent: true, opacity: wireOpacity,
+            });
             const wireframe = new THREE.LineSegments(edges, mat);
-            // Position center: three(cx_x, cx_z, cx_y)
-            wireframe.position.set(
-                (xMin + xMax) / 2,
-                (zMin + zMax) / 2,
-                (yMin + yMax) / 2
-            );
-            this.scene.add(wireframe);
+            wireframe.position.set(cx, (zMin + zMax) / 2, cz);
+            this._zoneGroup.add(wireframe);
             this._roomMeshes.push(wireframe);
 
-            // Semi-transparent floor (in XZ plane at Y=0.01)
             const floorGeo = new THREE.PlaneGeometry(w, d);
             const floorMat = new THREE.MeshBasicMaterial({
-                color: colors[i], transparent: true, opacity: 0.05, side: THREE.DoubleSide,
+                color: style.color, transparent: true, opacity: floorOpacity,
+                side: THREE.DoubleSide,
             });
             const floor = new THREE.Mesh(floorGeo, floorMat);
             floor.rotation.x = -Math.PI / 2;
-            floor.position.set((xMin + xMax) / 2, 0.01, (yMin + yMax) / 2);
-            this.scene.add(floor);
+            floor.position.set(cx, 0.01, cz);
+            this._zoneGroup.add(floor);
 
-            // Level label
-            const label = this._createLabel(`L${i + 1}`, colors[i]);
-            const [lx, ly, lz] = this._s2t(xMin + 0.3, yMin + 0.3, zMax + 0.3);
-            label.position.set(lx, ly, lz);
-            this.scene.add(label);
+            // Corridor volumes get a faint solid shell so they read as passageways
+            if (style.corridor) {
+                const shellMat = new THREE.MeshBasicMaterial({
+                    color: style.color, transparent: true, opacity: 0.10,
+                    side: THREE.DoubleSide, depthWrite: false,
+                });
+                const shell = new THREE.Mesh(geo, shellMat);
+                shell.position.copy(wireframe.position);
+                this._zoneGroup.add(shell);
+            }
+
+            const label = this._createLabel(style.label, style.color);
+            label.position.set(cx, zMax + 0.5, cz);
+            this._zoneGroup.add(label);
         });
+
+        this._zonesBuilt = true;
     }
 
     _createLabel(text, color) {
@@ -231,6 +275,11 @@ class NavigationScene {
 
     update(data) {
         if (!data) return;
+
+        // Build zone wireframes once from USD-aligned map_zones telemetry
+        if (data.map_zones && !this._zonesBuilt) {
+            this._buildMapZones(data.map_zones);
+        }
 
         // Drone position: sim(x,y,z) → three(x, z, y)
         if (data.pos) {

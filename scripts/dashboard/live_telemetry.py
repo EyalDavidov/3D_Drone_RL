@@ -22,13 +22,25 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# Room layout constants (must match BrainNavDroneEnvCfg)
+# Map layout from assets/rooms/final_flat.usd (env-local = world coords)
 # ---------------------------------------------------------------------------
+MAP_ZONES = {
+    "room_1":        {"bounds": [-2.05,  2.05,  -2.05,  2.05]},
+    "room_2":        {"bounds": [-2.05,  2.05,  -8.05, -2.00]},
+    "room_3":        {"bounds": [-4.05,  4.05, -16.05, -7.95]},
+    "room_4":        {"bounds": [-8.55, -4.45, -23.05, -17.95]},
+    "corridor":      {"bounds": [-4.50,  0.55, -22.05, -16.00]},
+    "side_coridors": {"bounds": [-2.70,  2.70, -18.05, -16.00]},
+}
+
+# Legacy list form (x_min, x_max, y_min, y_max, z_min, z_max) for older consumers
 ROOM_BOUNDS = [
-    (-2.0, 2.0,  -3.0,  2.0,  0.0, 2.0),
-    (-2.0, 2.0,  -9.0, -2.0,  0.0, 2.0),
-    (-2.0, 2.0, -17.0, -8.0,  0.0, 2.0),
-    (-6.0, 2.0, -21.0, -16.0, 0.0, 2.0),
+    (*MAP_ZONES["room_1"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["room_2"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["room_3"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["room_4"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["corridor"]["bounds"],      0.0, 2.0),
+    (*MAP_ZONES["side_coridors"]["bounds"], 0.0, 2.0),
 ]
 
 
@@ -71,11 +83,11 @@ def _make_rgb_png(width: int, height: int, pixels) -> bytes:
     return out
 
 
-def _ndarray_to_jpeg_b64(arr_bgr) -> str:
+def _ndarray_to_jpeg_b64(arr_bgr, quality: int = 80) -> str:
     """Encode a BGR uint8 ndarray as JPEG, return base64 string."""
     try:
         import cv2
-        ok, buf = cv2.imencode(".jpg", arr_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        ok, buf = cv2.imencode(".jpg", arr_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
         if ok:
             return base64.b64encode(buf.tobytes()).decode("ascii")
     except Exception:
@@ -145,6 +157,7 @@ class LiveDroneTelemetry:
         # Image cache — regenerated every N pushes to keep CPU load low
         self._image_cache: dict = {}
         self._slam3d_cache: dict = {}
+        self._yolo_hud_cache: str = ""
         self._img_push_counter = 0
         self._img_regen_interval = 4   # regenerate every 4 env steps (~15 Hz at 60 fps)
 
@@ -168,6 +181,27 @@ class LiveDroneTelemetry:
     # ------------------------------------------------------------------ #
     #  Data extraction from env                                            #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _get_map_zones(env) -> dict:
+        """Return USD zone outlines (rooms + corridors) in env-local coordinates."""
+        zones = getattr(env, "_map_zones", None)
+        if zones:
+            out: dict[str, dict] = {}
+            for name, zone in sorted(zones.items()):
+                lx0, lx1, ly0, ly1 = zone["bounds"]
+                entry: dict = {
+                    "bounds": [
+                        round(float(lx0), 2), round(float(lx1), 2),
+                        round(float(ly0), 2), round(float(ly1), 2),
+                    ],
+                }
+                center = zone.get("center")
+                if center is not None:
+                    entry["center"] = [round(float(center[0]), 2), round(float(center[1]), 2)]
+                out[name] = entry
+            return out
+        return MAP_ZONES
 
     def push(self, env, elapsed_secs: float) -> None:
         """Extract live data from a running env instance and update snapshot."""
@@ -235,13 +269,9 @@ class LiveDroneTelemetry:
                 except Exception:
                     pass
 
-            # Frontier count from SLAM mapper
-            frontier_count = 0
-            if mapper is not None:
-                try:
-                    frontier_count = len(mapper.detect_frontiers(min_size=12))
-                except Exception:
-                    pass
+            # Frontiers — single detect_frontiers() call shared by 2D map, 3D map, and stats
+            frontiers_raw = self._collect_slam_frontiers(mapper)
+            frontier_count = len(frontiers_raw)
 
             # ---- Current room from Y position --------------------------
             drone_y = float(pos_w[1])
@@ -286,11 +316,51 @@ class LiveDroneTelemetry:
             moment_y = float(ang_vel[1]) * 0.0005
             moment_z = float(ang_vel[2]) * 0.0005
 
-            # ---- Camera images + 3D SLAM data (rate-limited) -----------
+            # ---- Camera images (rate-limited) ----------------------------
             self._img_push_counter += 1
             if self._img_push_counter % self._img_regen_interval == 0 or not self._image_cache:
                 self._image_cache = self._grab_images(env)
-                self._slam3d_cache = self._get_slam_3d(env)
+
+            # SLAM 2D/3D + YOLO HUD: refresh every push (zero-delay web sync)
+            self._slam3d_cache = self._get_slam_3d(env, frontiers_raw=frontiers_raw)
+            slam_img = self._render_slam_map(env, frontiers_raw=frontiers_raw)
+            yolo_img = self._grab_yolo_hud(env)
+            if slam_img or yolo_img:
+                if not self._image_cache:
+                    self._image_cache = {}
+                if slam_img:
+                    self._image_cache["slam_map"] = slam_img
+                if yolo_img:
+                    self._image_cache["yolo_hud"] = yolo_img
+
+            # YOLO sidebar stats for the dashboard tab
+            yolo_stats: dict[str, Any] = {}
+            perception = getattr(env, "_perception", None)
+            if perception is not None:
+                # `last_best_person_conf` is the *current frame* value — it collapses
+                # to 0 the instant no person is in view (SCANNING), which made the
+                # dashboard read 0% even after strong detections.  The persistent
+                # per-person peaks live in `_person_best_conf` (same source the HUD
+                # rescue log draws from), so surface the real peak here.
+                current_conf = float(getattr(perception, "last_best_person_conf", 0.0))
+                peak_conf = current_conf
+                pbc = getattr(perception, "_person_best_conf", None)
+                if isinstance(pbc, dict) and pbc:
+                    peak_conf = max(peak_conf, max(float(v) for v in pbc.values()))
+                last_intel = getattr(perception, "_last_intel", None)
+                if isinstance(last_intel, dict):
+                    try:
+                        peak_conf = max(peak_conf, float(last_intel.get("conf", 0.0)))
+                    except (TypeError, ValueError):
+                        pass
+                yolo_stats = {
+                    "conf_threshold":  round(float(getattr(perception, "person_conf_threshold", 0.0)), 3),
+                    "best_conf":       round(peak_conf, 4),
+                    "current_conf":    round(current_conf, 4),
+                    "detection_count": int(getattr(perception, "detection_count", 0)),
+                    "person_found":    bool(getattr(brain, "found_person", False)) if brain else False,
+                    "person_seen":     bool(getattr(perception, "person_ever_detected", False)),
+                }
 
             # ---- Assemble state dict -----------------------------------
             state: dict[str, Any] = {
@@ -318,12 +388,14 @@ class LiveDroneTelemetry:
                 "frontier_count":   frontier_count,
                 "images":           self._image_cache,
                 "slam_3d":          self._slam3d_cache,
+                "yolo_stats":       yolo_stats,
                 "level":            level,
                 "level_time":       round(elapsed_secs, 2),
                 "level_duration":   999.0,
                 "level_mode":       "auto",
                 "status":           "running",
                 "room_bounds":      ROOM_BOUNDS,
+                "map_zones":        self._get_map_zones(env),
                 "poles":            [],
             }
 
@@ -415,15 +487,20 @@ class LiveDroneTelemetry:
         except Exception as exc:
             print(f"[LiveTelemetry] _grab_images() error: {exc}")
 
-        # --- SLAM occupancy map (rendered server-side) ---
-        slam_img = self._render_slam_map(env)
-        if slam_img:
-            images["slam_map"] = slam_img
-
         return images
 
-    def _render_slam_map(self, env) -> str:
-        """Render the SLAM occupancy grid as a compact JPEG for the web dashboard."""
+    @staticmethod
+    def _collect_slam_frontiers(mapper) -> list:
+        """Return frontier dicts from the mapper (same call as OpenCV visualizer)."""
+        if mapper is None:
+            return []
+        try:
+            return mapper.detect_frontiers()
+        except Exception:
+            return []
+
+    def _render_slam_map(self, env, frontiers_raw: list | None = None) -> str:
+        """Render the SLAM occupancy grid — same visual logic as OpenCV draw_slam_visualizer."""
         try:
             import cv2
             import numpy as np
@@ -451,79 +528,95 @@ class LiveDroneTelemetry:
             inflated = mapper.get_inflated_grid()
             grid_h, grid_w = prob.shape
 
-            map_w, map_h = 300, 500  # portrait aspect ratio for web mini-map panel
+            # HD output (2× OpenCV) — PNG lossless for sharp walls/overlays
+            map_w, map_h = 900, 1200
 
-            # Build base map
             canvas = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
             canvas[(prob >= 0.35) & (prob <= 0.65)] = [25, 18, 12]
             canvas[prob < 0.35]                      = [45, 38, 30]
             canvas[inflated == 1]                    = [30, 20, 75]
             canvas[prob > 0.65]                      = [255, 230, 80]
 
-            canvas_s = cv2.resize(canvas, (map_w, map_h), interpolation=cv2.INTER_LINEAR)
-            # NOTE: do NOT flip – the mapper stores row 0 = max_y (room 1 area),
-            # so row-0 naturally maps to the TOP of the image which is correct.
+            # NEAREST keeps occupancy cells crisp before overlay drawing
+            canvas_s = cv2.resize(canvas, (map_w, map_h), interpolation=cv2.INTER_NEAREST)
+            # North-up: Room 1 at top, Room 4 at bottom (same as OpenCV)
+            canvas_s = cv2.flip(canvas_s, 0)
 
-            def to_d(wx, wy):
+            # Radar grid overlay (scaled for HD)
+            grid_step = 60
+            for x in range(0, map_w, grid_step):
+                cv2.line(canvas_s, (x, 0), (x, map_h), (35, 28, 20), 1, cv2.LINE_AA)
+            for y in range(0, map_h, grid_step):
+                cv2.line(canvas_s, (0, y), (map_w, y), (35, 28, 20), 1, cv2.LINE_AA)
+
+            def to_disp(wx, wy):
                 r, c = mapper.world_to_grid(wx, wy)
                 cx = int(np.clip(c * (map_w / grid_w), 0, map_w - 1))
-                cy = int(np.clip(r * (map_h / grid_h), 0, map_h - 1))
+                cy_raw = int(np.clip(r * (map_h / grid_h), 0, map_h - 1))
+                cy = map_h - 1 - cy_raw
                 return cx, cy
 
-            # A* path
+            # A* path (dual stroke like OpenCV, scaled for HD)
             if astar_path and len(astar_path) > 1:
                 for i in range(len(astar_path) - 1):
-                    p0 = to_d(astar_path[i][0],   astar_path[i][1])
-                    p1 = to_d(astar_path[i+1][0], astar_path[i+1][1])
-                    cv2.line(canvas_s, p0, p1, (0, 200, 0), 2, cv2.LINE_AA)
+                    p0 = to_disp(astar_path[i][0],   astar_path[i][1])
+                    p1 = to_disp(astar_path[i + 1][0], astar_path[i + 1][1])
+                    cv2.line(canvas_s, p0, p1, (100, 255, 100), 6, cv2.LINE_AA)
+                    cv2.line(canvas_s, p0, p1, (0, 255, 0), 3, cv2.LINE_AA)
 
-            # Frontiers
+            if frontiers_raw is None:
+                frontiers_raw = self._collect_slam_frontiers(mapper)
             try:
-                frontiers = mapper.detect_frontiers(min_size=12)
-                for f in frontiers:
+                for f in frontiers_raw:
                     if active_frontier is None or np.linalg.norm(
                         np.array(f["centroid_world"]) - np.array(active_frontier["centroid_world"])
                     ) > 0.1:
-                        cx, cy = to_d(f["centroid_world"][0], f["centroid_world"][1])
-                        cv2.circle(canvas_s, (cx, cy), 5, (255, 180, 50), -1, cv2.LINE_AA)
-                        cv2.circle(canvas_s, (cx, cy), 2, (255, 255, 255), -1, cv2.LINE_AA)
+                        cx, cy = to_disp(f["centroid_world"][0], f["centroid_world"][1])
+                        cv2.circle(canvas_s, (cx, cy), 10, (255, 180, 50), -1, cv2.LINE_AA)
+                        cv2.circle(canvas_s, (cx, cy), 4, (255, 255, 255), -1, cv2.LINE_AA)
             except Exception:
                 pass
 
-            # Active frontier
+            # Active frontier (gold crosshair)
             if active_frontier is not None:
-                cx, cy = to_d(active_frontier["centroid_world"][0], active_frontier["centroid_world"][1])
-                cv2.circle(canvas_s, (cx, cy), 8, (0, 200, 255), 1, cv2.LINE_AA)
-                cv2.line(canvas_s, (cx - 10, cy), (cx + 10, cy), (0, 200, 255), 1, cv2.LINE_AA)
-                cv2.line(canvas_s, (cx, cy - 10), (cx, cy + 10), (0, 200, 255), 1, cv2.LINE_AA)
-                cv2.circle(canvas_s, (cx, cy), 3, (0, 0, 255), -1, cv2.LINE_AA)
+                cx, cy = to_disp(active_frontier["centroid_world"][0], active_frontier["centroid_world"][1])
+                cv2.circle(canvas_s, (cx, cy), 18, (0, 200, 255), 2, cv2.LINE_AA)
+                cv2.line(canvas_s, (cx - 22, cy), (cx + 22, cy), (0, 200, 255), 2, cv2.LINE_AA)
+                cv2.line(canvas_s, (cx, cy - 22), (cx, cy + 22), (0, 200, 255), 2, cv2.LINE_AA)
+                cv2.circle(canvas_s, (cx, cy), 6, (0, 0, 255), -1, cv2.LINE_AA)
 
             # Person marker
             if person_found and person_pos is not None:
                 try:
-                    px, py = to_d(float(person_pos[0]), float(person_pos[1]))
+                    px, py = to_disp(float(person_pos[0]), float(person_pos[1]))
                     cv2.drawMarker(canvas_s, (px, py), (255, 0, 255),
-                                   cv2.MARKER_STAR, 14, 2, cv2.LINE_AA)
+                                   cv2.MARKER_STAR, 24, 3, cv2.LINE_AA)
                 except Exception:
                     pass
 
-            # Drone triangle (same display_yaw = -yaw convention)
-            d_cx, d_cy = to_d(pos_w[0], pos_w[1])
+            # Drone triangle + FOV cone
+            d_cx, d_cy = to_disp(pos_w[0], pos_w[1])
             dy = -yaw
-            p_nose = (int(d_cx + 10 * math.cos(dy)),       int(d_cy + 10 * math.sin(dy)))
-            p_l    = (int(d_cx + 6  * math.cos(dy + 2.4)), int(d_cy + 6  * math.sin(dy + 2.4)))
-            p_r    = (int(d_cx + 6  * math.cos(dy - 2.4)), int(d_cy + 6  * math.sin(dy - 2.4)))
+            p_nose = (int(d_cx + 20 * math.cos(dy)),       int(d_cy + 20 * math.sin(dy)))
+            p_l    = (int(d_cx + 12 * math.cos(dy + 2.4)), int(d_cy + 12 * math.sin(dy + 2.4)))
+            p_r    = (int(d_cx + 12 * math.cos(dy - 2.4)), int(d_cy + 12 * math.sin(dy - 2.4)))
             pts = np.array([p_nose, p_l, p_r], np.int32)
             cv2.fillPoly(canvas_s, [pts], (0, 230, 0))
-            cv2.polylines(canvas_s, [pts], True, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.polylines(canvas_s, [pts], True, (255, 255, 255), 2, cv2.LINE_AA)
 
-            return _ndarray_to_jpeg_b64(canvas_s)
+            fov_half = 0.7
+            p_cl = (int(d_cx + 50 * math.cos(dy + fov_half)), int(d_cy + 50 * math.sin(dy + fov_half)))
+            p_cr = (int(d_cx + 50 * math.cos(dy - fov_half)), int(d_cy + 50 * math.sin(dy - fov_half)))
+            cv2.line(canvas_s, (d_cx, d_cy), p_cl, (0, 200, 0), 2, cv2.LINE_AA)
+            cv2.line(canvas_s, (d_cx, d_cy), p_cr, (0, 200, 0), 2, cv2.LINE_AA)
+
+            return _ndarray_to_png_b64(canvas_s)
 
         except Exception as exc:
             print(f"[LiveTelemetry] _render_slam_map() error: {exc}")
             return ""
 
-    def _get_slam_3d(self, env) -> dict:
+    def _get_slam_3d(self, env, frontiers_raw: list | None = None) -> dict:
         """Build compact 3D SLAM telemetry dict for the Three.js SLAM scene.
 
         Returns a dict with:
@@ -532,7 +625,7 @@ class LiveDroneTelemetry:
           min_x/max_x/min_y/max_y – world bounds of the grid
           cell_w, cell_d – world-space cell size after downsampling
           drone  – {x, y, z, yaw}
-          frontiers – list of [x, y] centroids (max 20)
+          frontiers – list of [x, y] centroids (all, same set as 2D map)
           active – active frontier [x, y] or null
           path   – A* path [[x,y], …] every 4th point
           person – detected person [x, y] or null
@@ -593,16 +686,17 @@ class LiveDroneTelemetry:
             yaw = math.atan2(2.0 * (qw * qz + qx * qy),
                              1.0 - 2.0 * (qy * qy + qz * qz))
 
-            # ---- Frontiers ----
+            # ---- Frontiers (same list as 2D map / OpenCV visualizer) ----
             frontiers_list: list = []
             active_frontier = getattr(env, "active_frontier", None)
-            try:
-                frs = mapper.detect_frontiers(min_size=8)
-                for f in frs[:20]:
+            if frontiers_raw is None:
+                frontiers_raw = self._collect_slam_frontiers(mapper)
+            for f in frontiers_raw:
+                try:
                     cw = f["centroid_world"]
                     frontiers_list.append([round(float(cw[0]), 3), round(float(cw[1]), 3)])
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
             # ---- Active frontier ----
             active_data = None
@@ -656,6 +750,28 @@ class LiveDroneTelemetry:
         except Exception as exc:
             print(f"[LiveTelemetry] _get_slam_3d() error: {exc}")
             return {}
+
+    def _grab_yolo_hud(self, env) -> str:
+        """Return base64 PNG of the OpenCV YOLO HUD (2× upscale for HD dashboard)."""
+        try:
+            import cv2
+
+            perception = getattr(env, "_perception", None)
+            if perception is None:
+                return self._yolo_hud_cache
+
+            frame = getattr(perception, "_last_display_frame", None)
+            if frame is None:
+                return self._yolo_hud_cache
+
+            h, w = frame.shape[:2]
+            hd = cv2.resize(frame, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
+            b64 = _ndarray_to_png_b64(hd)
+            self._yolo_hud_cache = b64
+            return b64
+        except Exception as exc:
+            print(f"[LiveTelemetry] _grab_yolo_hud() error: {exc}")
+            return self._yolo_hud_cache
 
     def _grab_ae_recon(self, env, depth_small) -> str:
         """Run the AE encoder+decoder on the current depth frame and return JPEG b64.
@@ -785,11 +901,13 @@ class LiveDroneTelemetry:
             "frontier_count": 0,
             "images": {},
             "slam_3d": {},
+            "yolo_stats": {},
             "level": 1,
             "level_time": 0.0,
             "level_duration": 999.0,
             "level_mode": "auto",
             "status": "waiting",
             "room_bounds": ROOM_BOUNDS,
+            "map_zones":   MAP_ZONES,
             "poles": [],
         }

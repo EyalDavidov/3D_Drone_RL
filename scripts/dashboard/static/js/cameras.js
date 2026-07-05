@@ -14,7 +14,7 @@ class CameraFeeds {
             depth:            'cam-depth',
             depth_saliency:   'cam-saliency',
             ae_recon:         'cam-ae',
-            // slam_map is only mirrored to the nav-tab mini panel; the SLAM tab uses Three.js
+            // slam_map rendered by SlamMap2D (interactive pan/zoom)
         };
 
         this._canvases = {};
@@ -34,9 +34,7 @@ class CameraFeeds {
 
         // Extra canvases that mirror a feed (no separate data key needed)
         this._mirrors = [
-            // { sourceKey, canvasId }
             { sourceKey: 'rgb_third_1', canvasId: 'cam-nav-main' },
-            { sourceKey: 'slam_map',    canvasId: 'cam-slam-nav'  },
         ];
         this._mirrorCtx = {};
         for (const m of this._mirrors) {
@@ -51,8 +49,11 @@ class CameraFeeds {
             img.onload = () => {
                 const mc = this._mirrorCtx[m.canvasId];
                 if (mc) {
-                    mc.ctx.clearRect(0, 0, mc.canvas.width, mc.canvas.height);
-                    mc.ctx.drawImage(img, 0, 0, mc.canvas.width, mc.canvas.height);
+                    const { ctx, canvas } = mc;
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 }
             };
             this._mirrorImgs[m.canvasId] = { img, sourceKey: m.sourceKey };
@@ -86,6 +87,8 @@ class CameraFeeds {
         if (!ctx || !canvas || !img) return;
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     }
 }

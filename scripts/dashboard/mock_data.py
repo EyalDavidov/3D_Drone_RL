@@ -32,12 +32,24 @@ LEVEL_TARGETS = [
 
 LEVEL_DURATIONS = [7.0, 10.0, 12.0, 12.0]
 
-# Room bounding boxes per level (x_min, x_max, y_min, y_max, z_min, z_max)
+# Map layout from assets/rooms/final_flat.usd (env-local = world coords)
+MAP_ZONES = {
+    "room_1":        {"bounds": [-2.05,  2.05,  -2.05,  2.05]},
+    "room_2":        {"bounds": [-2.05,  2.05,  -8.05, -2.00]},
+    "room_3":        {"bounds": [-4.05,  4.05, -16.05, -7.95]},
+    "room_4":        {"bounds": [-8.55, -4.45, -23.05, -17.95]},
+    "corridor":      {"bounds": [-4.50,  0.55, -22.05, -16.00]},
+    "side_coridors": {"bounds": [-2.70,  2.70, -18.05, -16.00]},
+}
+
+# Room bounding boxes (x_min, x_max, y_min, y_max, z_min, z_max)
 ROOM_BOUNDS = [
-    (-2.0, 2.0,  -3.0,  2.0,  0.0, 2.0),
-    (-2.0, 2.0,  -9.0, -2.0,  0.0, 2.0),
-    (-2.0, 2.0, -17.0, -8.0,  0.0, 2.0),
-    (-6.0, 2.0, -21.0, -16.0, 0.0, 2.0),
+    (*MAP_ZONES["room_1"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["room_2"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["room_3"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["room_4"]["bounds"],        0.0, 2.0),
+    (*MAP_ZONES["corridor"]["bounds"],      0.0, 2.0),
+    (*MAP_ZONES["side_coridors"]["bounds"], 0.0, 2.0),
 ]
 
 POLE_POSITIONS_Y = {
@@ -392,6 +404,7 @@ class MockDroneTelemetry:
             "images": self._image_cache,
 
             "room_bounds": ROOM_BOUNDS,
+            "map_zones":   MAP_ZONES,
             "poles": [(round(p[0], 2), round(p[1], 2), round(p[2], 2))
                       for p in self.pole_positions],
         }

@@ -39,6 +39,9 @@
             <button class="tab" data-tab="slam">
                 <span class="tab-icon">🧭</span> SLAM Map
             </button>
+            <button class="tab" data-tab="yolo">
+                <span class="tab-icon">🎯</span> YOLO Detection
+            </button>
         </nav>
 
         <div class="header-right">
@@ -179,8 +182,8 @@
                     </div>
                 </div>
             </div>
-            <!-- Bottom: 3D Map + SLAM Map side by side -->
-            <div class="nav-bottom-row nav-bottom-split">
+            <!-- Bottom: 3D Navigation Map -->
+            <div class="nav-bottom-row">
                 <div class="panel nav-map-panel">
                     <div class="panel-header">
                         <span class="panel-icon">🗺️</span>
@@ -197,18 +200,6 @@
                             <div class="ov-item"><span class="ov-label">DIST</span><span class="ov-val mono" id="metric-dist">0.00</span><span class="ov-unit">m</span></div>
                             <div class="ov-item"><span class="ov-label">THR</span><span class="ov-val mono" id="metric-thrust">0.00</span><span class="ov-unit">N</span></div>
                         </div>
-                    </div>
-                </div>
-                <!-- Live SLAM map (mini, alongside 3D) -->
-                <div class="panel nav-slam-mini">
-                    <div class="panel-header">
-                        <span class="panel-icon">🧭</span>
-                        <span class="panel-title">SLAM Occupancy Map</span>
-                        <span class="panel-badge live">LIVE</span>
-                        <button class="minimize-btn" title="Minimize">−</button>
-                    </div>
-                    <div class="panel-body cam-cell" style="padding:4px;">
-                        <canvas id="cam-slam-nav" width="300" height="500"></canvas>
                     </div>
                 </div>
             </div>
@@ -248,14 +239,61 @@
                             <div class="slam-stat-row"><span class="slam-stat-label">Runtime</span><span class="mono slam-stat-val" id="slam-time-val">0s</span></div>
                         </div>
                     </div>
-                    <!-- Attitude HUD reused here -->
-                    <div class="panel" style="flex:0 0 auto;">
+                    <!-- 2D SLAM occupancy map (matches OpenCV visualizer) -->
+                    <div class="panel slam-2d-panel">
                         <div class="panel-header">
-                            <span class="panel-icon">✈️</span>
-                            <span class="panel-title">Attitude</span>
+                            <span class="panel-icon">🗺️</span>
+                            <span class="panel-title">2D SLAM Map</span>
+                            <span class="panel-badge dim">ZOOM</span>
+                            <span class="panel-badge live">LIVE</span>
                         </div>
-                        <div class="panel-body" style="justify-content:center; padding:8px;">
-                            <canvas id="canvas-hud" width="160" height="160"></canvas>
+                        <div class="panel-body slam-2d-body">
+                            <canvas id="cam-slam-main"></canvas>
+                            <div class="slam-2d-hint">Scroll zoom · Drag pan · Double-click reset</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ======== TAB 4: YOLO DETECTION ======== -->
+        <section class="tab-content" id="tab-yolo">
+            <div class="yolo-tab-layout">
+                <div class="glass-panel yolo-main">
+                    <div class="glass-header">
+                        <span class="glass-title"><span class="glass-title-icon">🎯</span> Brain Nav · YOLO HUD</span>
+                        <span class="glass-live"><span class="glass-live-dot"></span> LIVE</span>
+                    </div>
+                    <div class="glass-body yolo-hud-body">
+                        <canvas id="cam-yolo-hud"></canvas>
+
+                        <!-- Futuristic HUD detection alert (overlay) -->
+                        <div class="hud-alert" id="yolo-hud-alert" data-state="idle">
+                            <div class="hud-alert-scan"></div>
+                            <div class="hud-alert-icon" id="yolo-alert-icon">◎</div>
+                            <div class="hud-alert-body">
+                                <div class="hud-alert-label" id="yolo-alert-label">SCANNING FOR HUMANS</div>
+                                <div class="hud-alert-meter">
+                                    <div class="hud-alert-meter-fill" id="yolo-alert-meter"></div>
+                                    <div class="hud-alert-meter-thresh" id="yolo-alert-thresh"></div>
+                                </div>
+                            </div>
+                            <div class="hud-alert-conf" id="yolo-alert-conf">0.0<span class="hud-alert-pct">%</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="yolo-stats-col">
+                    <div class="glass-panel" style="flex:1;">
+                        <div class="glass-header">
+                            <span class="glass-title"><span class="glass-title-icon">📊</span> Detection Telemetry</span>
+                        </div>
+                        <div class="glass-body glass-stats">
+                            <div class="glass-stat-row"><span class="glass-stat-label">Status</span><span class="mono glass-stat-val" id="yolo-status-val">SCANNING</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Best Conf</span><span class="mono glass-stat-val" id="yolo-conf-val">0.0%</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Live Conf</span><span class="mono glass-stat-val" id="yolo-live-val">0.0%</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Threshold</span><span class="mono glass-stat-val" id="yolo-thresh-val">70%</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Frame #</span><span class="mono glass-stat-val" id="yolo-frame-val">0</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Person</span><span class="mono glass-stat-val" id="yolo-person-val">Not found</span></div>
                         </div>
                     </div>
                 </div>
@@ -273,6 +311,8 @@
     <script src="js/charts.js"></script>
     <script src="js/three_scene.js"></script>
     <script src="js/slam3d.js"></script>
+    <script src="js/slam2d.js"></script>
+    <script src="js/yolo_hud.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

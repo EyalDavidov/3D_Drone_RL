@@ -25,8 +25,10 @@
     const metricsPanel = new MetricsPanel();
     const liveCharts = new LiveCharts();
     const navScene = new NavigationScene();
-    const attitudeHud = new AttitudeHUD();
+    const attitudeHud = document.getElementById('canvas-hud') ? new AttitudeHUD() : null;
     const slam3dScene = new SlamScene3D('slam-3d-container');
+    const slam2dMap = document.getElementById('cam-slam-main') ? new SlamMap2D('cam-slam-main') : null;
+    const yoloHud = document.getElementById('cam-yolo-hud') ? new YoloHudView('cam-yolo-hud') : null;
 
     // SLAM tab stat elements
     const slamEls = {
@@ -77,6 +79,79 @@
         }
     }
 
+    const yoloEls = {
+        status:  document.getElementById('yolo-status-val'),
+        conf:    document.getElementById('yolo-conf-val'),
+        live:    document.getElementById('yolo-live-val'),
+        thresh:  document.getElementById('yolo-thresh-val'),
+        frame:   document.getElementById('yolo-frame-val'),
+        person:  document.getElementById('yolo-person-val'),
+        alert:      document.getElementById('yolo-hud-alert'),
+        alertIcon:  document.getElementById('yolo-alert-icon'),
+        alertLabel: document.getElementById('yolo-alert-label'),
+        alertConf:  document.getElementById('yolo-alert-conf'),
+        alertMeter: document.getElementById('yolo-alert-meter'),
+        alertThresh:document.getElementById('yolo-alert-thresh'),
+    };
+
+    function updateYoloStats(data) {
+        const ys = data && data.yolo_stats;
+        if (!ys) return;
+        const e = yoloEls;
+
+        // best_conf now reflects the persistent detection peak (never collapses to
+        // 0 mid-scan); current_conf is the instantaneous per-frame value.
+        const best = (typeof ys.best_conf === 'number') ? ys.best_conf : 0;
+        const live = (typeof ys.current_conf === 'number') ? ys.current_conf : best;
+        const thresh = ys.conf_threshold || 0.7;
+        const bestPct = best * 100;
+
+        if (e.conf)   e.conf.textContent = bestPct.toFixed(1) + '%';
+        if (e.live)   e.live.textContent = (live * 100).toFixed(1) + '%';
+        if (e.thresh) e.thresh.textContent = (thresh * 100).toFixed(0) + '%';
+        if (e.frame)  e.frame.textContent = ys.detection_count || 0;
+        if (e.person) {
+            e.person.textContent = ys.person_found ? 'FOUND' : 'Not found';
+            e.person.style.color = ys.person_found ? 'var(--neon-magenta)' : 'var(--text-secondary)';
+        }
+
+        // ---- Resolve detection state ----
+        let label, state;
+        if (ys.person_found) {
+            label = 'TARGET CONFIRMED'; state = 'confirmed';
+        } else if (best >= thresh) {
+            label = 'HUMAN DETECTED';   state = 'detected';
+        } else if (best > 0) {
+            label = 'CONTACT · TRACKING'; state = 'seen';
+        } else {
+            label = 'SCANNING'; state = 'idle';
+        }
+
+        if (e.status) {
+            e.status.textContent = label;
+            e.status.dataset.state = state;
+        }
+
+        // ---- Drive the HUD alert overlay ----
+        if (e.alert) e.alert.dataset.state = state;
+        if (e.alertLabel) {
+            e.alertLabel.textContent = state === 'idle' ? 'SCANNING FOR HUMANS' : label;
+        }
+        if (e.alertConf) {
+            e.alertConf.innerHTML = bestPct.toFixed(1) + '<span class="hud-alert-pct">%</span>';
+        }
+        if (e.alertIcon) {
+            e.alertIcon.textContent = state === 'idle' ? '◎'
+                : (state === 'confirmed' ? '✓' : '⚠');
+        }
+        if (e.alertMeter) {
+            e.alertMeter.style.width = Math.max(0, Math.min(100, bestPct)).toFixed(1) + '%';
+        }
+        if (e.alertThresh) {
+            e.alertThresh.style.left = (thresh * 100).toFixed(1) + '%';
+        }
+    }
+
     // ---- State ----
     let ws = null;
     let reconnectTimer = null;
@@ -96,7 +171,14 @@
             if (target === 'navigation') {
                 setTimeout(() => navScene._handleResize(), 50);
             } else if (target === 'slam') {
-                setTimeout(() => slam3dScene._handleResize(), 50);
+                setTimeout(() => {
+                    slam3dScene._handleResize();
+                    if (slam2dMap && slam2dMap._onResize) slam2dMap._onResize();
+                }, 50);
+            } else if (target === 'yolo') {
+                setTimeout(() => {
+                    if (yoloHud && yoloHud._onResize) yoloHud._onResize();
+                }, 50);
             }
         });
     });
@@ -161,9 +243,16 @@
             metricsPanel.update(data);
             liveCharts.update(data);
             navScene.update(data);
-            attitudeHud.update(data);
+            if (attitudeHud) attitudeHud.update(data);
             updateSlamStats(data);
+            updateYoloStats(data);
             slam3dScene.update(data.slam_3d || null, data.room_bounds || null);
+            if (slam2dMap && data.images && data.images.slam_map) {
+                slam2dMap.update(data.images.slam_map);
+            }
+            if (yoloHud && data.images && data.images.yolo_hud) {
+                yoloHud.update(data.images.yolo_hud);
+            }
         } catch (e) {
             console.error('[Dashboard] Parse error:', e);
         }
