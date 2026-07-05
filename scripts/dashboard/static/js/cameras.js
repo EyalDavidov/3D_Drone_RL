@@ -32,10 +32,8 @@ class CameraFeeds {
             }
         }
 
-        // Extra canvases that mirror a feed (no separate data key needed)
-        this._mirrors = [
-            { sourceKey: 'rgb_third_1', canvasId: 'cam-nav-main' },
-        ];
+        // Extra canvases that mirror a feed (none on Navigation tab)
+        this._mirrors = [];
         this._mirrorCtx = {};
         for (const m of this._mirrors) {
             const canvas = document.getElementById(m.canvasId);

@@ -171,6 +171,7 @@ class YoloHud {
         const e = this.el;
         if (!e.intel) return;
         if (!intel) { e.intel.hidden = true; return; }
+        if (YoloHud._isCameraView(intel.label)) { e.intel.hidden = true; return; }
         e.intel.hidden = false;
         if (e.intelLabel) e.intelLabel.textContent = intel.label || 'TARGET';
         if (e.intelConf)  e.intelConf.textContent = Math.round((intel.conf || 0) * 100) + '%';
@@ -180,20 +181,32 @@ class YoloHud {
     }
 
     // ---- Rescue log ----
+    static _isCameraView(label, key) {
+        if (key) {
+            const pk = String(key).trim().toLowerCase().replace(/\s+/g, '_');
+            if (pk === 'camera_view' || pk === 'cameraview') return true;
+        }
+        if (!label) return false;
+        return String(label).trim().toUpperCase().replace(/_/g, ' ') === 'CAMERA VIEW';
+    }
+
     _updateLog(log) {
         const host = this.el.log;
         if (!host) return;
-        if (this.el.logCount) this.el.logCount.textContent = log.length;
+        const filtered = (log || []).filter(
+            e => !YoloHud._isCameraView(e.label, e.key)
+        );
+        if (this.el.logCount) this.el.logCount.textContent = filtered.length;
 
-        const sig = log.map(e => `${e.key}:${e.conf}`).join('|');
+        const sig = filtered.map(e => `${e.key}:${e.conf}`).join('|');
         if (sig === this._logSig) return;   // no change → skip DOM churn
         this._logSig = sig;
 
         // Clear existing cards (keep empty-state node)
         host.querySelectorAll('.yhud-log-card').forEach(n => n.remove());
-        if (this.el.logEmpty) this.el.logEmpty.style.display = log.length ? 'none' : '';
+        if (this.el.logEmpty) this.el.logEmpty.style.display = filtered.length ? 'none' : '';
 
-        for (const entry of log) {
+        for (const entry of filtered) {
             const conf = entry.conf || 0;
             const tier = conf >= this._threshold ? 'confirmed'
                        : conf >= (this._threshold * 0.7) ? 'noted' : 'low';

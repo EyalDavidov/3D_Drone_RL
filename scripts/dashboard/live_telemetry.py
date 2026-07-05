@@ -243,6 +243,17 @@ class LiveDroneTelemetry:
 
             dist_to_goal = float(np.linalg.norm(np.array(pos_w[:2]) - np.array(goal_pos[:2])))
 
+            # OpenCV HUD parity: goal = active frontier centroid only; A* path length
+            astar_path = getattr(env, "astar_path_world", []) or []
+            astar_nodes = len(astar_path)
+            slam_goal = None
+            if active_frontier is not None:
+                try:
+                    cw = active_frontier["centroid_world"]
+                    slam_goal = [round(float(cw[0]), 2), round(float(cw[1]), 2)]
+                except Exception:
+                    pass
+
             # ---- SLAM state & stats ------------------------------------
             slam_state = getattr(env, "slam_state", "EXPLORE")
 
@@ -285,36 +296,32 @@ class LiveDroneTelemetry:
                 level = 4
 
             # ---- PPO actions -------------------------------------------
-            # Try to read the last applied actions; fall back to position-delta proxy
+            # BrainNavDroneEnv composes navigator output in env._actions each step.
             ppo_vx = ppo_vy = ppo_vz = ppo_yaw_rate = 0.0
-            prev_actions = getattr(env, "_previous_actions", None)
-            if prev_actions is not None:
+            hl_actions = getattr(env, "_actions", None)
+            if hl_actions is None:
+                hl_actions = getattr(env, "_previous_actions", None)
+            if hl_actions is not None:
                 try:
-                    pa = prev_actions[0].cpu().numpy()
-                    ppo_vx, ppo_vy, ppo_vz, ppo_yaw_rate = float(pa[0]), float(pa[1]), float(pa[2]), float(pa[3])
+                    pa = hl_actions[0].cpu().numpy()
+                    ppo_vx, ppo_vy, ppo_vz, ppo_yaw_rate = (
+                        float(pa[0]), float(pa[1]), float(pa[2]), float(pa[3])
+                    )
                 except Exception:
                     pass
-            else:
-                desired = getattr(env, "_desired_pos_w", None)
-                if desired is not None:
-                    dp = desired[0].cpu().numpy()
-                    ppo_vx = float(np.clip((dp[0] - pos_w[0]) / 1.0, -1, 1))
-                    ppo_vy = float(np.clip((dp[1] - pos_w[1]) / 1.0, -1, 1))
-                    ppo_vz = float(np.clip((dp[2] - pos_w[2]) / 0.5, -1, 1))
-                    ppo_yaw_rate = float(np.clip(ang_vel[2] / 3.0, -1, 1))
 
-            # ---- LLC / thrust estimation --------------------------------
-            # Isaac Lab CF2X uses dummy joint actuators — real thrust isn't exposed.
-            # Estimate from vertical acceleration proxy: thrust ≈ mass × (g + az)
-            thrust = 0.027 * 9.81  # hover thrust for 27 g CF2X
-            try:
-                az = float(robot.data.root_lin_vel_b[0, 2].item())
-                thrust = max(0.0, 0.027 * (9.81 + az * 3.0))
-            except Exception:
-                pass
-            moment_x = float(ang_vel[0]) * 0.0005
-            moment_y = float(ang_vel[1]) * 0.0005
-            moment_z = float(ang_vel[2]) * 0.0005
+            # ---- LLC motor wrench (from frozen flight controller) -------
+            thrust = moment_x = moment_y = moment_z = 0.0
+            thrust_buf = getattr(env, "_thrust", None)
+            moment_buf = getattr(env, "_moment", None)
+            if thrust_buf is not None and moment_buf is not None:
+                try:
+                    thrust = float(thrust_buf[0, 0, 2].item())
+                    moment_x = float(moment_buf[0, 0, 0].item())
+                    moment_y = float(moment_buf[0, 0, 1].item())
+                    moment_z = float(moment_buf[0, 0, 2].item())
+                except Exception:
+                    pass
 
             # ---- Camera images (rate-limited) ----------------------------
             self._img_push_counter += 1
@@ -346,6 +353,8 @@ class LiveDroneTelemetry:
                 "ang_vel":    [round(float(v), 4) for v in ang_vel],
                 "goal_pos":   [round(float(v), 4) for v in goal_pos],
                 "dist_to_goal": round(dist_to_goal, 4),
+                "slam_goal":    slam_goal,
+                "astar_nodes":  astar_nodes,
                 "ppo_actions": {
                     "vx": round(ppo_vx, 4), "vy": round(ppo_vy, 4),
                     "vz": round(ppo_vz, 4), "yaw_rate": round(ppo_yaw_rate, 4),
@@ -753,6 +762,17 @@ class LiveDroneTelemetry:
             return self._yolo_hud_cache
 
     @staticmethod
+    def _is_generic_camera_view(label: str | None = None, person_key: str | None = None) -> bool:
+        """True for placeholder 'camera view' rows (no room / rescue slot)."""
+        if person_key is not None:
+            pk = str(person_key).strip().lower().replace(" ", "_")
+            if pk in ("camera_view", "cameraview"):
+                return True
+        if label is None:
+            return False
+        return str(label).strip().upper().replace("_", " ") == "CAMERA VIEW"
+
+    @staticmethod
     def _build_yolo_stats(perception, brain) -> dict:
         """Assemble the full native-HUD payload from the perception module."""
         if perception is None:
@@ -763,26 +783,37 @@ class LiveDroneTelemetry:
         peak_conf = current_conf
         pbc = getattr(perception, "_person_best_conf", None)
         if isinstance(pbc, dict) and pbc:
-            peak_conf = max(peak_conf, max(float(v) for v in pbc.values()))
+            peaks = [
+                float(v) for k, v in pbc.items()
+                if not LiveDroneTelemetry._is_generic_camera_view(person_key=k)
+            ]
+            if peaks:
+                peak_conf = max(peak_conf, max(peaks))
 
         state = getattr(perception, "_web_state", None) or {}
         intel = getattr(perception, "_last_intel", None)
-        if isinstance(intel, dict):
+        if isinstance(intel, dict) and not LiveDroneTelemetry._is_generic_camera_view(
+            intel.get("label")
+        ):
             try:
                 peak_conf = max(peak_conf, float(intel.get("conf", 0.0)))
             except (TypeError, ValueError):
                 pass
 
-        # ---- Rescue log snapshot ----
+        # ---- Rescue log snapshot (room / slot detections only) ----
         rescue_log = []
         for entry in (getattr(perception, "_detection_log", None) or [])[:12]:
             try:
+                label = str(entry.get("label", ""))
+                key = str(entry.get("person_key", ""))
+                if LiveDroneTelemetry._is_generic_camera_view(label, key):
+                    continue
                 rescue_log.append({
-                    "label":   str(entry.get("label", "")),
+                    "label":   label,
                     "conf":    round(float(entry.get("conf", 0.0)), 4),
                     "gps_lat": entry.get("gps_lat"),
                     "gps_lon": entry.get("gps_lon"),
-                    "key":     str(entry.get("person_key", "")),
+                    "key":     key,
                     "frame":   int(entry.get("frame", 0)),
                 })
             except Exception:
@@ -790,7 +821,9 @@ class LiveDroneTelemetry:
 
         # ---- Intel panel ----
         intel_out = None
-        if isinstance(intel, dict):
+        if isinstance(intel, dict) and not LiveDroneTelemetry._is_generic_camera_view(
+            intel.get("label")
+        ):
             intel_out = {
                 "label":   str(intel.get("label", "")).upper(),
                 "conf":    round(float(intel.get("conf", 0.0)), 4),
@@ -949,6 +982,8 @@ class LiveDroneTelemetry:
             "ang_vel": [0.0, 0.0, 0.0],
             "goal_pos": [0.0, 0.0, 1.0],
             "dist_to_goal": 0.0,
+            "slam_goal": None,
+            "astar_nodes": 0,
             "ppo_actions": {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw_rate": 0.0},
             "llc_outputs": {"thrust": 0.0, "moment_x": 0.0, "moment_y": 0.0, "moment_z": 0.0},
             "slam_state": "INIT",

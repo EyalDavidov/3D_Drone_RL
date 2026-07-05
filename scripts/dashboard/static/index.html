@@ -150,7 +150,7 @@
 
         <!-- ======== TAB 2: NAVIGATION ======== -->
         <section class="tab-content" id="tab-navigation">
-            <!-- Top row: LLC | Camera | PPO -->
+            <!-- Top row: LLC + PPO charts -->
             <div class="nav-top-row">
                 <div class="panel nav-chart-col" id="panel-llc">
                     <div class="panel-header">
@@ -161,15 +161,6 @@
                     <div class="panel-body chart-body">
                         <canvas id="chart-llc"></canvas>
                     </div>
-                </div>
-                <div class="panel nav-camera-col">
-                    <div class="panel-header">
-                        <span class="panel-icon">📷</span>
-                        <span class="panel-title">Third Person — Angle 1</span>
-                        <span class="panel-badge live">LIVE</span>
-                        <button class="minimize-btn" title="Minimize">−</button>
-                    </div>
-                    <div class="panel-body"><canvas id="cam-nav-main" width="960" height="540"></canvas></div>
                 </div>
                 <div class="panel nav-chart-col" id="panel-ppo">
                     <div class="panel-header">
@@ -227,16 +218,29 @@
                             <span class="panel-icon">📊</span>
                             <span class="panel-title">SLAM Telemetry</span>
                         </div>
-                        <div class="panel-body" style="flex-direction:column; align-items:flex-start; padding:14px; gap:10px;">
-                            <div class="slam-stat-row"><span class="slam-stat-label">State</span><span class="mono slam-stat-val" id="slam-state-val">—</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">Explored</span><span class="mono slam-stat-val" id="slam-explored-val">0%</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">Frontiers</span><span class="mono slam-stat-val" id="slam-frontiers-val">0</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">Person</span><span class="mono slam-stat-val" id="slam-person-val">Not found</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">X / Y</span><span class="mono slam-stat-val" id="slam-pos-val">0.00 / 0.00</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">Altitude</span><span class="mono slam-stat-val" id="slam-alt-val">0.00 m</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">Heading</span><span class="mono slam-stat-val" id="slam-hdg-val">0.0°</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">Speed</span><span class="mono slam-stat-val" id="slam-spd-val">0.00 m/s</span></div>
-                            <div class="slam-stat-row"><span class="slam-stat-label">Runtime</span><span class="mono slam-stat-val" id="slam-time-val">0s</span></div>
+                        <div class="panel-body slam-stats-body">
+                            <div class="slam-stats-grid">
+                                <div class="slam-stats-block">
+                                    <div class="slam-stats-heading">Telemetry</div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">State</span><span class="mono slam-stat-val" id="slam-state-val">—</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">X-POS</span><span class="mono slam-stat-val" id="slam-x-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Y-POS</span><span class="mono slam-stat-val" id="slam-y-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Altitude</span><span class="mono slam-stat-val" id="slam-alt-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Heading</span><span class="mono slam-stat-val" id="slam-hdg-val">0.0°</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Speed</span><span class="mono slam-stat-val" id="slam-spd-val">0.00 m/s</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Time</span><span class="mono slam-stat-val" id="slam-time-val">0s</span></div>
+                                </div>
+                                <div class="slam-stats-block">
+                                    <div class="slam-stats-heading">Mapped Targets</div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Explored</span><span class="mono slam-stat-val" id="slam-explored-val">0%</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Frontiers</span><span class="mono slam-stat-val" id="slam-frontiers-val">0</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Person</span><span class="mono slam-stat-val" id="slam-person-val">Not found</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Goal</span><span class="mono slam-stat-val" id="slam-goal-val">None</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">A* Nodes</span><span class="mono slam-stat-val" id="slam-astar-val">0</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Dist Goal</span><span class="mono slam-stat-val" id="slam-dist-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Level</span><span class="mono slam-stat-val" id="slam-level-val">1</span></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <!-- 2D SLAM occupancy map (native top-down radar) -->

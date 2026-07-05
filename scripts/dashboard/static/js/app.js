@@ -36,11 +36,16 @@
         explored:  document.getElementById('slam-explored-val'),
         frontiers: document.getElementById('slam-frontiers-val'),
         person:    document.getElementById('slam-person-val'),
-        pos:       document.getElementById('slam-pos-val'),
+        x:         document.getElementById('slam-x-val'),
+        y:         document.getElementById('slam-y-val'),
         alt:       document.getElementById('slam-alt-val'),
         hdg:       document.getElementById('slam-hdg-val'),
         spd:       document.getElementById('slam-spd-val'),
         time:      document.getElementById('slam-time-val'),
+        goal:      document.getElementById('slam-goal-val'),
+        astar:     document.getElementById('slam-astar-val'),
+        dist:      document.getElementById('slam-dist-val'),
+        level:     document.getElementById('slam-level-val'),
     };
 
     function updateSlamStats(data) {
@@ -51,7 +56,8 @@
         if (s.frontiers) s.frontiers.textContent = data.frontier_count || 0;
         if (s.person)    s.person.textContent  = data.people_found ? 'FOUND' : 'Not found';
         if (data.pos) {
-            if (s.pos) s.pos.textContent = data.pos[0].toFixed(2) + ' / ' + data.pos[1].toFixed(2);
+            if (s.x)   s.x.textContent   = data.pos[0].toFixed(2) + ' m';
+            if (s.y)   s.y.textContent   = data.pos[1].toFixed(2) + ' m';
             if (s.alt) s.alt.textContent = data.pos[2].toFixed(2) + ' m';
         }
         if (s.hdg && data.yaw !== undefined) {
@@ -64,8 +70,19 @@
             s.spd.textContent = Math.sqrt(vx*vx + vy*vy + vz*vz).toFixed(2) + ' m/s';
         }
         if (s.time && data.level_time !== undefined) {
-            s.time.textContent = data.level_time.toFixed(0) + 's';
+            s.time.textContent = data.level_time.toFixed(1) + ' s';
         }
+        // OpenCV "Mapped Targets" column
+        if (s.goal) {
+            if (data.slam_goal && data.slam_goal.length >= 2) {
+                s.goal.textContent = '(' + data.slam_goal[0].toFixed(1) + ', ' + data.slam_goal[1].toFixed(1) + ')';
+            } else {
+                s.goal.textContent = 'None';
+            }
+        }
+        if (s.astar) s.astar.textContent = data.astar_nodes != null ? data.astar_nodes : 0;
+        if (s.dist)  s.dist.textContent  = (data.dist_to_goal != null ? data.dist_to_goal : 0).toFixed(2) + ' m';
+        if (s.level) s.level.textContent = data.level || 1;
         // Colour-code state
         if (s.state) {
             const col = data.slam_state === 'SCAN' ? '#22d3ee'
@@ -76,6 +93,14 @@
         }
         if (s.person) {
             s.person.style.color = data.people_found ? '#a78bfa' : '#94a3b8';
+        }
+        if (s.explored) {
+            s.explored.style.color = (data.map_explored_pct || 0) > 50 ? '#34d399' : '#eafcff';
+        }
+        if (s.goal && data.slam_goal) {
+            s.goal.style.color = '#2ff3ff';
+        } else if (s.goal) {
+            s.goal.style.color = '#94a3b8';
         }
     }
 

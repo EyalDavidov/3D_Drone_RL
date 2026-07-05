@@ -46,9 +46,9 @@ class LiveCharts {
                 this._dataset('My', '#8b5cf6'),
                 this._dataset('Mz', '#14b8a6'),
             ],
-            yLabel: 'Value',
+            yLabel: 'Thrust (N) / Torque (N·m)',
             suggestedMin: -0.02,
-            suggestedMax: 3.5,
+            suggestedMax: 0.6,
         });
     }
 
