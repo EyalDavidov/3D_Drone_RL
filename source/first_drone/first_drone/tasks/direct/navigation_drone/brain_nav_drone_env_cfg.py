@@ -197,6 +197,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     brain_coverage_mark_radius: float = 2.0   # meters to mark occupancy cells as visited after scan
     # Defer APPROACH/rescue until final room (segment 5); earlier rooms log detections only
     brain_rescue_min_segment: int = 5
+    brain_real_slam_mode: bool = False  # True in RealSlamDroneEnv — rescue anywhere, no sequential defer
 
     # ---------- Curriculum: Fixed at Level 5 (fully trained policy) ----------
     initial_curriculum_level: int = 5

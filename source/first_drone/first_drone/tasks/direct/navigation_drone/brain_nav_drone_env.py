@@ -935,7 +935,11 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         print()
 
     def _capture_brain_mission(self):
-        if not hasattr(self, "_brain") or self._brain.found_person:
+        if not hasattr(self, "_brain"):
+            return None
+        # For SLAM brain, skip mission capture if people have been found (no need to re-rescue)
+        found = getattr(self._brain, "found_person", False) or len(getattr(self._brain, "rescued_people", [])) > 0
+        if found:
             return None
         if not getattr(self.cfg, "brain_preserve_mission_on_crash", True):
             return None
@@ -1625,10 +1629,13 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             run_yolo = (self._timestep % max(1, self.cfg.brain_yolo_interval)) == 0
             if run_yolo:
                 defer_seg = int(getattr(self.cfg, "brain_rescue_min_segment", 3))
-                rescue_armed = (
-                    not getattr(self.cfg, "brain_use_sequential_spawns", False)
-                    or self._brain.segment_idx >= defer_seg
-                )
+                if getattr(self.cfg, "brain_real_slam_mode", False):
+                    rescue_armed = True
+                else:
+                    rescue_armed = (
+                        not getattr(self.cfg, "brain_use_sequential_spawns", False)
+                        or self._brain.segment_idx >= defer_seg
+                    )
                 person_found, person_world_xyz = self._perception.process_camera_data(
                     rgb_image,
                     depth_image,
@@ -1689,21 +1696,32 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 else:
                     print("[BrainNavEnv] Dynamic obstacles restored for navigation.\n")
 
+            slam_rescued = getattr(self._brain, "rescued_people", None)
+            slam_found_anyone = (slam_rescued is not None and len(slam_rescued) > 0)
+            legacy_found = getattr(self._brain, "found_person", False)
+
             if (
                 self._brain.state == "COMPLETE"
-                and self._brain.found_person
+                and (slam_found_anyone or legacy_found)
                 and not self._mission_complete
             ):
                 self._mission_complete = True
-                target = self._brain.target_person_pos
-                print(
-                    "\n[BrainNavEnv] MISSION COMPLETE — high-confidence person reached.\n"
-                    f"  Rescue coordinates (local): X:{target[0]:.2f} Y:{target[1]:.2f} Z:{target[2]:.2f}\n"
-                )
+                if slam_rescued and len(slam_rescued) > 0:
+                    positions = "; ".join(f"X:{p[0]:.2f} Y:{p[1]:.2f}" for p in slam_rescued)
+                    print(
+                        f"\n[BrainNavEnv] MISSION COMPLETE — SLAM patrol finished. {len(slam_rescued)} person(s) found.\n"
+                        f"  Locations: {positions}\n"
+                    )
+                else:
+                    target = self._brain.target_person_pos
+                    print(
+                        "\n[BrainNavEnv] MISSION COMPLETE — high-confidence person reached.\n"
+                        f"  Rescue coordinates (local): X:{target[0]:.2f} Y:{target[1]:.2f} Z:{target[2]:.2f}\n"
+                    )
             elif (
                 self._brain.state == "COMPLETE"
                 and getattr(self._brain, "mission_finished", False)
-                and not self._brain.found_person
+                and not (slam_found_anyone or legacy_found)
                 and not self._mission_complete
             ):
                 self._mission_complete = True
@@ -1811,7 +1829,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             self._stuck_step_count = 0
         else:
             moved = torch.norm(pos_now[:2] - self._prev_drone_pos_xy).item()
-            if moved < 0.03 and self._brain.state in ("GOTO_WAYPOINT", "APPROACH_TARGET"):
+            if moved < 0.03 and self._brain.state in ("GOTO_WAYPOINT", "APPROACH_TARGET", "EXPLORE"):
                 self._stuck_step_count += 1
             else:
                 self._stuck_step_count = 0
