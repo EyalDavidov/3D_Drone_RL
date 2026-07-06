@@ -41,6 +41,10 @@ class OccupancyGridMapper:
         self.wall_max_thickness_cells = 5  # ≤0.5 m short side for thin walls
         self.wall_min_elongation = 2.5     # fallback for L-corners / longer blobs
 
+        # Visual-only: cells once classified as structural walls stay yellow so
+        # sparse early scans don't flicker teal → yellow frame-to-frame.
+        self._sticky_wall_mask = np.zeros((self.h, self.w), dtype=np.uint8)
+
     def world_to_grid(self, x, y):
         """Convert world coordinates (meters) to grid indices (row, col)."""
         col = int(np.floor((x - self.min_x) / self.cell_size))
@@ -137,6 +141,30 @@ class OccupancyGridMapper:
         prob = 1.0 / (1.0 + np.exp(-self.grid_log_odds))
         return prob
 
+    def coverage_stats(self) -> tuple[int, int]:
+        """Pure SLAM map coverage — no USD / walkable mask.
+
+        Returns (known_cells, bbox_cells) where:
+          known_cells = grid cells observed as free OR occupied (not unknown)
+          bbox_cells  = area of the tight bounding box around all known cells
+
+        Percentage = known / bbox → "how complete is the map in the region
+        the drone has actually started exploring?" Dividing by the whole empty
+        grid or USD walkable floor kept the dashboard stuck at unrealistically
+        low values that didn't match what you see on the map.
+        """
+        prob = self.get_occupancy_grid()
+        known = (prob < 0.35) | (prob > 0.65)
+        visited = int(known.sum())
+        if visited == 0:
+            return 0, int(prob.size)
+
+        rows, cols = np.where(known)
+        r0, r1 = int(rows.min()), int(rows.max())
+        c0, c1 = int(cols.min()), int(cols.max())
+        bbox_area = (r1 - r0 + 1) * (c1 - c0 + 1)
+        return visited, int(bbox_area)
+
     def get_inflated_grid(self):
         """Generate binary grid with expanded obstacles for safety (all occupied)."""
         prob = self.get_occupancy_grid()
@@ -161,12 +189,16 @@ class OccupancyGridMapper:
             return True
         return False
 
-    def get_wall_obstacle_masks(self):
+    def get_wall_obstacle_masks(self, use_walkable=True):
         """Split occupied cells into structural walls vs. dodgeable small obstacles.
 
-        Returns (wall_mask, obstacle_mask) as uint8 grids. Perimeter / house
-        boundary cells are always walls (yellow in the 3D view). Compact blobs
-        inside walkable rooms are props (teal). Shape heuristics handle the rest.
+        Returns (wall_mask, obstacle_mask) as uint8 grids.
+
+        use_walkable=True  → may consult the static USD walkable mask (Signal 1).
+                             Use ONLY for visual colouring of the map.
+        use_walkable=False → PURE SLAM (shape heuristics only). Use for planning /
+                             frontier reachability so navigation never depends on
+                             the ground-truth USD map ("no cheating").
         """
         prob = self.get_occupancy_grid()
         occ = (prob > 0.65).astype(np.uint8)
@@ -175,12 +207,12 @@ class OccupancyGridMapper:
         if not occ.any():
             return wall_mask, obstacle_mask
 
-        # --- Signal 1: static floor boundary (only if the mask is trustworthy) ---
+        # --- Signal 1: static floor boundary (colouring only, trustworthy mask) --
         # Wall hits register AT the floor edge (still flagged walkable), so we erode
         # the walkable floor to the true room INTERIOR; occupied cells at/outside
         # that boundary are structural walls. Skip this if the mask is degenerate
         # (all True / all False) so a bad mask can't paint everything one colour.
-        walkable = getattr(self, "walkable_mask", None)
+        walkable = getattr(self, "walkable_mask", None) if use_walkable else None
         if (
             walkable is not None
             and walkable.shape == occ.shape
@@ -219,6 +251,19 @@ class OccupancyGridMapper:
 
         unlabeled = (occ > 0) & (wall_mask == 0) & (obstacle_mask == 0)
         obstacle_mask[unlabeled] = 1
+
+        # Sticky yellow (display colouring only — planning uses use_walkable=False).
+        # Once a cell is labelled structural wall it stays yellow for as long as
+        # the SLAM grid still marks it occupied; no flicker back to teal when the
+        # shape heuristic re-evaluates a partially-scanned segment.
+        if use_walkable:
+            self._sticky_wall_mask = np.maximum(
+                self._sticky_wall_mask, wall_mask.astype(np.uint8)
+            )
+            sticky = (self._sticky_wall_mask > 0) & (occ > 0)
+            obstacle_mask[sticky] = 0
+            wall_mask[sticky] = 1
+
         return wall_mask, obstacle_mask
 
     def get_planning_grid(self):
@@ -229,8 +274,11 @@ class OccupancyGridMapper:
         each pole *through the gaps between them* instead of aiming straight at one
         and relying on the policy to weave (the forced-yaw navigator can't). The
         small margin still leaves narrow passages open.
+
+        PURE SLAM: classification here never consults the USD walkable mask, so A*
+        and frontier reachability depend only on what the drone has actually mapped.
         """
-        wall_mask, obstacle_mask = self.get_wall_obstacle_masks()
+        wall_mask, obstacle_mask = self.get_wall_obstacle_masks(use_walkable=False)
         inflated_walls = cv2.dilate(wall_mask, self.inflation_kernel, iterations=1)
         small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         inflated_obs = cv2.dilate(obstacle_mask, small_k, iterations=1)
@@ -299,6 +347,33 @@ class OccupancyGridMapper:
             if self.is_in_bounds(int(r), int(c)) and blocked[int(r), int(c)]:
                 return True
         return False
+
+    def segment_is_known_free(self, x0, y0, x1, y1, tail_cells: int = 6) -> bool:
+        """True only if the straight segment runs through OBSERVED-FREE space.
+
+        Stricter than segment_hits_wall: it rejects the line if it crosses UNKNOWN
+        cells too (not just mapped walls). An unknown cell may hide a wall the drone
+        hasn't seen yet — beelining through it is exactly what makes the drone crash
+        into unmapped walls while chasing a far frontier. The last `tail_cells`
+        (nearest the frontier) are allowed to be unknown, since a frontier is by
+        definition adjacent to unknown space.
+        """
+        prob = self.get_occupancy_grid()
+        blocked = self.get_planning_grid()
+        known_free = (prob < 0.35) & (blocked == 0)
+        r0, c0 = self.world_to_grid(x0, y0)
+        r1, c1 = self.world_to_grid(x1, y1)
+        n = int(max(abs(r1 - r0), abs(c1 - c0))) + 1
+        rs = np.linspace(r0, r1, n).round().astype(int)
+        cs = np.linspace(c0, c1, n).round().astype(int)
+        cutoff = max(0, n - int(tail_cells))
+        for i in range(n):
+            if i >= cutoff:
+                break  # allow the short unknown tail at the frontier
+            r, c = int(rs[i]), int(cs[i])
+            if not self.is_in_bounds(r, c) or not known_free[r, c]:
+                return False
+        return True
 
     def is_frontier_reachable(self, reachable_mask, centroid_grid) -> bool:
         """True if a frontier centroid touches the reachable free region (3x3)."""

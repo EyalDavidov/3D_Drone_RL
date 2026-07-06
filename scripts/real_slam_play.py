@@ -279,12 +279,10 @@ def draw_slam_visualizer(
     cv2.putText(hud_panel, f"A* nodes: {path_len}", (20, 465),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
 
-    # Map coverage
-    if hasattr(mapper, "walkable_mask") and mapper.walkable_mask is not None:
-        explored_pct = (
-            np.sum(((prob < 0.35) | (prob > 0.65)) & mapper.walkable_mask)
-            / max(1, np.sum(mapper.walkable_mask)) * 100.0
-        )
+    # Map coverage (pure SLAM — known cells / bbox of mapped region)
+    if hasattr(mapper, "coverage_stats"):
+        visited, total = mapper.coverage_stats()
+        explored_pct = visited / max(1, total) * 100.0
     else:
         explored_pct = (np.sum(prob < 0.35) + np.sum(prob > 0.65)) / (grid_h * grid_w) * 100.0
     cv2.putText(hud_panel, f"Explored: {explored_pct:.1f}%", (20, 495),

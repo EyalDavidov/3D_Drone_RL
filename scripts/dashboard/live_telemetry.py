@@ -83,6 +83,33 @@ def _make_rgb_png(width: int, height: int, pixels) -> bytes:
     return out
 
 
+def _auto_brighten(bgr, target: float = 110.0, max_gain: float = 3.5):
+    """Automatic camera 'light': lift dark frames toward a target brightness.
+
+    Mimics auto-exposure/auto-gain — computes the frame's mean luma and applies a
+    clamped gain plus CLAHE for local contrast, so the drone's dim indoor camera
+    feeds are visible on the dashboard without blowing out already-bright frames.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        mean = float(gray.mean()) + 1e-3
+        gain = float(np.clip(target / mean, 1.0, max_gain))
+        out = bgr
+        if gain > 1.02:
+            out = np.clip(bgr.astype(np.float32) * gain, 0, 255).astype(np.uint8)
+        # Local contrast so shadow detail returns, not just a global scale.
+        lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        lab = cv2.merge((clahe.apply(l), a, b))
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    except Exception:
+        return bgr
+
+
 def _ndarray_to_jpeg_b64(arr_bgr, quality: int = 80) -> str:
     """Encode a BGR uint8 ndarray as JPEG, return base64 string."""
     try:
@@ -206,6 +233,9 @@ class LiveDroneTelemetry:
         # dashboard panel show the front-camera fallback (all four views identical).
         self._skip_angle_cams = False
         self._cam_err_logged: set[str] = set()
+        # Auto "camera light" — auto-exposure/gain + local contrast on RGB feeds so
+        # the dim indoor drone cameras are visible on the dashboard.
+        self._cam_auto_light = True
 
     # ------------------------------------------------------------------ #
     #  Interface expected by server.py                                     #
@@ -306,16 +336,13 @@ class LiveDroneTelemetry:
             # people_found: brain.found_person is a bool (SlamBrainModule and BrainModule)
             people_found = 1 if (brain and getattr(brain, "found_person", False)) else 0
 
-            # Map coverage from SLAM occupancy grid (preferred) or sequential coverage grid
+            # Map coverage — pure SLAM (known cells / bbox of mapped region)
             map_explored_pct = 0.0
-            if mapper is not None:
+            if mapper is not None and hasattr(mapper, "coverage_stats"):
                 try:
-                    prob = mapper.get_occupancy_grid()
-                    # Cells that are known (free or occupied) vs total
-                    known = int(np.sum(prob < 0.35) + np.sum(prob > 0.65))
-                    total = prob.size
+                    visited, total = mapper.coverage_stats()
                     if total > 0:
-                        map_explored_pct = known / total * 100.0
+                        map_explored_pct = visited / total * 100.0
                 except Exception:
                     pass
             elif brain and hasattr(brain, "coverage_stats"):
@@ -508,6 +535,8 @@ class LiveDroneTelemetry:
                 rgb_np = rgb_tensor[0].cpu().numpy()[:, :, :3]
                 bgr = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
                 bgr_small = cv2.resize(bgr, (320, 180), interpolation=cv2.INTER_AREA)
+                if getattr(self, "_cam_auto_light", True):
+                    bgr_small = _auto_brighten(bgr_small)
                 fallback_rgb_b64 = _ndarray_to_jpeg_b64(bgr_small)
                 images["rgb_first_person"] = fallback_rgb_b64
 
@@ -540,6 +569,8 @@ class LiveDroneTelemetry:
                                     rgb_np = rgb_np[:, :, :3]
                                 bgr = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
                                 bgr_small = cv2.resize(bgr, (320, 180), interpolation=cv2.INTER_AREA)
+                                if getattr(self, "_cam_auto_light", True):
+                                    bgr_small = _auto_brighten(bgr_small)
                                 images[img_key] = _ndarray_to_jpeg_b64(bgr_small)
                                 captured = True
                         except Exception as exc:
