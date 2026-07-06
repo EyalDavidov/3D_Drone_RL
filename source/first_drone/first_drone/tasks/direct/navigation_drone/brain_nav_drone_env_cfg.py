@@ -62,81 +62,52 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
         ),
     )
 
-    # Chase / behind-drone viewport camera (Multilevel_AE_PPO)
-    view_camera: CameraCfg = CameraCfg(
-        prim_path="/World/envs/env_0/Drone/body/Camera_View",
-        update_period=0.0,
-        height=720,
-        width=1280,
+    # Dashboard / viewport cameras — TiledCamera (same pipeline as the front cam).
+    view_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Drone/body/Camera_View",
+        height=180,
+        width=320,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=15.5,
-            focus_distance=400.0,
-            horizontal_aperture=33.0,
-            clipping_range=(0.1, 100000.0),
+            focal_length=18.0,
+            focus_distance=6.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.05, 1.0e5),
         ),
-        offset=CameraCfg.OffsetCfg(
+        offset=TiledCameraCfg.OffsetCfg(
             pos=(-0.15, 0.0, 0.05), rot=(0.5, -0.5, 0.5, -0.5), convention="ros"
         ),
     )
 
-    # --- Dashboard follow cameras (play-mode only, not used by policy) ---
-    # World-anchored so they are NOT double-transformed by the drone body.
-    # Their world pose is driven every step via set_world_poses_from_view()
-    # so they always AIM AT the drone (see BrainNavDroneEnv.update_follow_cameras).
-    # The offset here is only the spawn placeholder; runtime poses override it.
-
-    # Chase camera — trails the drone from behind + above, looking at it.
-    chase_camera: CameraCfg = CameraCfg(
-        prim_path="/World/DashCam_Chase",
-        update_period=0.0,
+    view_left_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Drone/body/Camera_ViewLeft",
         height=180,
         width=320,
-        data_types=["rgb"],
+        data_types=["depth", "rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=14.0,
-            focus_distance=400.0,
-            horizontal_aperture=33.0,
-            clipping_range=(0.05, 100000.0),
+            focal_length=18.0,
+            focus_distance=6.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.05, 1.0e5),
         ),
-        offset=CameraCfg.OffsetCfg(
-            pos=(0.0, 0.0, 2.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.0, 0.05, 0.05), rot=(0.7071, -0.7071, 0.0, 0.0), convention="ros"
         ),
     )
 
-    # Left-side camera — offset to the drone's left, looking at it.
-    left_camera: CameraCfg = CameraCfg(
-        prim_path="/World/DashCam_Left",
-        update_period=0.0,
+    view_right_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Drone/body/Camera_ViewRight",
         height=180,
         width=320,
-        data_types=["rgb"],
+        data_types=["depth", "rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=14.0,
-            focus_distance=400.0,
-            horizontal_aperture=33.0,
-            clipping_range=(0.05, 100000.0),
+            focal_length=18.0,
+            focus_distance=6.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.05, 1.0e5),
         ),
-        offset=CameraCfg.OffsetCfg(
-            pos=(0.0, 0.0, 2.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"
-        ),
-    )
-
-    # Top-down camera — hovers above the drone, looking straight down at it.
-    top_camera: CameraCfg = CameraCfg(
-        prim_path="/World/DashCam_Top",
-        update_period=0.0,
-        height=180,
-        width=320,
-        data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=12.0,
-            focus_distance=400.0,
-            horizontal_aperture=33.0,
-            clipping_range=(0.05, 100000.0),
-        ),
-        offset=CameraCfg.OffsetCfg(
-            pos=(0.0, 0.0, 5.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.0, -0.05, 0.05), rot=(0.0, 0.0, 0.7071, -0.7071), convention="ros"
         ),
     )
 
@@ -189,6 +160,8 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     brain_safety_margin: float = 0.7    # Wall clearance for waypoint generation in meters
     brain_yolo_interval: int = 1        # Run YOLO every N steps (1 = every step, needed during SCAN spin)
     brain_scan_yaw_rate: float = 0.05   # SCAN spin action (slower = better YOLO frames)
+    brain_room_entry_scan: bool = True  # do one slow 360 the first time the drone reaches each room checkpoint
+    brain_scan_trigger_radius: float = 2.0  # distance (m) to a room checkpoint that arms its entry scan
     brain_scan_pin_position: bool = True  # hold XYZ during 360 so the drone does not drift upward
     brain_scan_pitch_deg: float = 22.0   # nose-down pitch during SCAN (positive = nose down in Isaac Lab x-fwd y-left z-up)
     brain_scan_vertical_comp: float = -0.12  # downward action to prevent climb during spin
@@ -253,12 +226,15 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     brain_stuck_respawn: bool = False
     brain_use_worker_gps_for_nav: bool = False
     brain_allow_stuck_arrival_skip: bool = False
+    brain_force_yaw_to_target: bool = True  # steer drone yaw directly to look at next waypoint during explore
     yolo_noted_conf_threshold: float = 0.35
     brain_spawn_arrival_radius: float = 2.5  # unused for SCAN; kept for legacy stuck-skip helper
     brain_coverage_mark_radius: float = 2.0   # meters to mark occupancy cells as visited after scan
     # Defer APPROACH/rescue until final room (segment 5); earlier rooms log detections only
     brain_rescue_min_segment: int = 5
     brain_real_slam_mode: bool = False  # True in RealSlamDroneEnv — rescue anywhere, no sequential defer
+    # Fuse left/right body camera depth into the SLAM grid (mapping only, not policy input).
+    brain_slam_side_map_cameras: bool = False
 
     # ---------- Curriculum: Fixed at Level 5 (fully trained policy) ----------
     initial_curriculum_level: int = 5
@@ -300,6 +276,8 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     num_room3_big_gates: int = 1
     num_room3_small_gates: int = 2
     num_room3_poles_triangles: int = 2
+    # Real SLAM play: cap how many room-3 props are active (fixed layout, no shuffle).
+    brain_slam_room3_max_obstacles: int = 4
 
     wall_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "wall.usd"),

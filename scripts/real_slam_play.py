@@ -118,19 +118,27 @@ def draw_slam_visualizer(
         return
 
     prob     = mapper.get_occupancy_grid()
-    inflated = mapper.get_inflated_grid()
-
     grid_h, grid_w = prob.shape
-    map_w, map_h = 450, 600
-    hud_w  = 250
-    total_h = 600
+
+    if hasattr(mapper, "get_wall_obstacle_masks"):
+        wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks()
+        danger = mapper.get_planning_grid()
+    else:
+        wall_mask = (prob > 0.65).astype(np.uint8)
+        obstacle_mask = np.zeros_like(wall_mask)
+        danger = mapper.get_inflated_grid()
 
     # ---- Base map (sci-fi colour scheme) ----------------------------------
     canvas = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
     canvas[(prob >= 0.35) & (prob <= 0.65)] = [25, 18, 12]   # unknown — deep navy
     canvas[prob < 0.35]                      = [45, 38, 30]   # free — dark slate
-    canvas[inflated == 1]                    = [30, 20, 75]   # inflated obstacle — crimson
-    canvas[prob > 0.65]                      = [255, 230, 80] # wall — neon yellow
+    canvas[danger == 1]                      = [30, 20, 75]   # danger halo (walls only)
+    canvas[obstacle_mask == 1]               = [140, 156, 31] # teal — dodgeable props
+    canvas[wall_mask == 1]                   = [255, 230, 80] # amber — structural walls
+
+    map_w, map_h = 450, 600
+    hud_w  = 250
+    total_h = 600
 
     canvas_large = cv2.resize(canvas, (map_w, map_h), interpolation=cv2.INTER_LINEAR)
     # Flip vertically: Room 1 (Y≈+2) at TOP, Room 4 (Y≈-20) at BOTTOM.
@@ -377,17 +385,10 @@ def main():
 
     print("[SLAM Launcher] Loop running. Ctrl+C to exit.")
     start_run_time = time.time()
-    _follow_cam_counter = 0
 
     try:
         while simulation_app.is_running():
             t0 = time.time()
-
-            # Aim dashboard follow cameras at the drone (every 2 steps in web mode)
-            if hasattr(env, "update_follow_cameras"):
-                _follow_cam_counter += 1
-                if (not _web_dashboard) or (_follow_cam_counter % 2 == 0):
-                    env.update_follow_cameras()
 
             obs, rewards, terminated, truncated, info = env.step(dummy_action)
 
@@ -406,6 +407,17 @@ def main():
                     1.0 - 2.0 * (qy * qy + qz * qz),
                 )
                 frontiers = mapper.detect_frontiers()
+                _brain = getattr(env, "_brain", None)
+                _ahead = getattr(_brain, "is_frontier_ahead", None)
+                if callable(_ahead):
+                    frontiers = [f for f in frontiers if _ahead(f["centroid_world"])]
+                if hasattr(mapper, "compute_reachable_mask"):
+                    _sr, _sc = mapper.world_to_grid(float(d_pos[0]), float(d_pos[1]))
+                    _reach = mapper.compute_reachable_mask(_sr, _sc)
+                    frontiers = [
+                        f for f in frontiers
+                        if mapper.is_frontier_reachable(_reach, f["centroid_grid"])
+                    ]
                 draw_slam_visualizer(
                     mapper, d_pos, drone_yaw, env.slam_state, frontiers,
                     env.active_frontier, env.astar_path_world, start_run_time,

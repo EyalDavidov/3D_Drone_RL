@@ -197,10 +197,15 @@ class LiveDroneTelemetry:
         self._slam3d_push_counter = 0
         self._img_regen_interval = 10 if perf_mode else 4
         self._slam3d_regen_interval = 3 if perf_mode else 1
-        self._saliency_regen_interval = 999999 if perf_mode else 1
+        # Saliency is expensive (15 backprop samples); throttle in perf mode but
+        # keep it live (every ~4th image regen) rather than disabling it entirely.
+        self._saliency_regen_interval = 4 if perf_mode else 1
         self._yolo_upscale = 1 if perf_mode else 2
         self._yolo_jpeg_quality = 78 if perf_mode else 92
-        self._skip_angle_cams = perf_mode
+        # Always read body-mounted rear/left/right cameras — skipping them made every
+        # dashboard panel show the front-camera fallback (all four views identical).
+        self._skip_angle_cams = False
+        self._cam_err_logged: set[str] = set()
 
     # ------------------------------------------------------------------ #
     #  Interface expected by server.py                                     #
@@ -322,7 +327,9 @@ class LiveDroneTelemetry:
                     pass
 
             # Frontiers — single detect_frontiers() call shared by 2D map, 3D map, and stats
-            frontiers_raw = self._collect_slam_frontiers(mapper)
+            frontiers_raw = self._collect_slam_frontiers(
+                mapper, (float(pos_w[0]), float(pos_w[1])), getattr(env, "_brain", None)
+            )
             frontier_count = len(frontiers_raw)
 
             # ---- Current room from Y position --------------------------
@@ -371,6 +378,7 @@ class LiveDroneTelemetry:
                 compute_saliency = (
                     not self._perf_mode
                     or self._img_regen_serial % self._saliency_regen_interval == 0
+                    or not self._image_cache.get("depth_saliency")
                 )
                 self._image_cache = self._grab_images(env, compute_saliency=compute_saliency)
                 yolo_img = self._grab_yolo_frame(env)
@@ -503,29 +511,43 @@ class LiveDroneTelemetry:
                 fallback_rgb_b64 = _ndarray_to_jpeg_b64(bgr_small)
                 images["rgb_first_person"] = fallback_rgb_b64
 
-            # --- Angle cameras: chase (behind), left-side, top-down ---
+            # --- Real drone-mounted cameras: rear (behind), left side, right side ---
+            # These are physically attached to the drone (rear = Camera_View, sides =
+            # SLAM mapping cameras), so they always move with it — unlike the old
+            # world-anchored follow cameras which sat outside the map.
             if not getattr(self, "_skip_angle_cams", False):
                 _angle_cams = [
-                    ("_chase_camera", "rgb_third_1"),
-                    ("_left_camera",  "rgb_third_2"),
-                    ("_top_camera",   "rgb_third_3"),
+                    ("_view_camera",       "rgb_third_1"),  # rear / behind
+                    ("_view_left_camera",  "rgb_third_2"),  # left side
+                    ("_view_right_camera", "rgb_third_3"),  # right side
                 ]
                 for cam_attr, img_key in _angle_cams:
                     cam = getattr(env, cam_attr, None)
+                    if cam is None:
+                        cam = getattr(getattr(env, "unwrapped", env), cam_attr, None)
                     captured = False
                     if cam is not None:
                         try:
-                            rgb_out = cam.data.output.get("rgb")
+                            out = cam.data.output
+                            if out is None:
+                                raise ValueError("camera output is None")
+                            rgb_out = out.get("rgb")
+                            if rgb_out is None:
+                                rgb_out = out.get("rgba")
                             if rgb_out is not None and rgb_out.numel() > 0:
-                                rgb_np = rgb_out[0].cpu().numpy()[:, :, :3]
-                                bgr    = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
-                                images[img_key] = _ndarray_to_jpeg_b64(bgr)
+                                rgb_np = rgb_out[0].detach().cpu().numpy()
+                                if rgb_np.ndim == 3 and rgb_np.shape[-1] >= 3:
+                                    rgb_np = rgb_np[:, :, :3]
+                                bgr = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
+                                bgr_small = cv2.resize(bgr, (320, 180), interpolation=cv2.INTER_AREA)
+                                images[img_key] = _ndarray_to_jpeg_b64(bgr_small)
                                 captured = True
-                        except Exception:
-                            pass
-                    if not captured:
-                        if fallback_rgb_b64:
-                            images[img_key] = fallback_rgb_b64
+                        except Exception as exc:
+                            if cam_attr not in self._cam_err_logged:
+                                self._cam_err_logged.add(cam_attr)
+                                print(f"[LiveTelemetry] {cam_attr} capture failed: {exc}")
+                    if not captured and fallback_rgb_b64:
+                        images[img_key] = fallback_rgb_b64
             elif fallback_rgb_b64:
                 for key in ("rgb_third_1", "rgb_third_2", "rgb_third_3"):
                     images[key] = fallback_rgb_b64
@@ -536,12 +558,30 @@ class LiveDroneTelemetry:
         return images
 
     @staticmethod
-    def _collect_slam_frontiers(mapper) -> list:
-        """Return frontier dicts from the mapper (same call as OpenCV visualizer)."""
+    def _collect_slam_frontiers(mapper, drone_xy=None, brain=None) -> list:
+        """Return frontier dicts from the mapper, filtered by pure-SLAM reachability.
+
+        Only frontiers the drone can actually reach through observed free space are
+        shown. This drops "blue targets" that leaked outside the rooms or got walled
+        off — using the drone's own occupancy grid, NOT the ground-truth/USD map.
+        Also drops frontiers in rooms the drone has already passed (forward-only),
+        so the dashboard matches the drone's no-backtracking behaviour.
+        """
         if mapper is None:
             return []
         try:
-            return mapper.detect_frontiers()
+            frontiers = mapper.detect_frontiers()
+            ahead = getattr(brain, "is_frontier_ahead", None)
+            if callable(ahead):
+                frontiers = [f for f in frontiers if ahead(f["centroid_world"])]
+            if drone_xy is None or not hasattr(mapper, "compute_reachable_mask"):
+                return frontiers
+            start_r, start_c = mapper.world_to_grid(float(drone_xy[0]), float(drone_xy[1]))
+            reachable = mapper.compute_reachable_mask(start_r, start_c)
+            return [
+                f for f in frontiers
+                if mapper.is_frontier_reachable(reachable, f["centroid_grid"])
+            ]
         except Exception:
             return []
 
@@ -571,8 +611,17 @@ class LiveDroneTelemetry:
             astar_path      = getattr(env, "astar_path_world", [])
 
             prob     = mapper.get_occupancy_grid()
-            inflated = mapper.get_inflated_grid()
             grid_h, grid_w = prob.shape
+
+            # Split walls vs. dodgeable props (SLAM-only) so the 2D map paints
+            # them differently — same classification the planner uses.
+            if hasattr(mapper, "get_wall_obstacle_masks"):
+                wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks()
+                danger = mapper.get_planning_grid()
+            else:
+                wall_mask = (prob > 0.65).astype(np.uint8)
+                obstacle_mask = np.zeros_like(wall_mask)
+                danger = mapper.get_inflated_grid()
 
             # HD output (2× OpenCV) — PNG lossless for sharp walls/overlays
             map_w, map_h = 900, 1200
@@ -580,8 +629,9 @@ class LiveDroneTelemetry:
             canvas = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
             canvas[(prob >= 0.35) & (prob <= 0.65)] = [25, 18, 12]
             canvas[prob < 0.35]                      = [45, 38, 30]
-            canvas[inflated == 1]                    = [30, 20, 75]
-            canvas[prob > 0.65]                      = [255, 230, 80]
+            canvas[danger == 1]                      = [30, 20, 75]
+            canvas[obstacle_mask == 1]               = [140, 156, 31]   # teal — dodgeable props
+            canvas[wall_mask == 1]                   = [255, 230, 80]    # amber — structural walls
 
             # NEAREST keeps occupancy cells crisp before overlay drawing
             canvas_s = cv2.resize(canvas, (map_w, map_h), interpolation=cv2.INTER_NEAREST)
@@ -611,7 +661,10 @@ class LiveDroneTelemetry:
                     cv2.line(canvas_s, p0, p1, (0, 255, 0), 3, cv2.LINE_AA)
 
             if frontiers_raw is None:
-                frontiers_raw = self._collect_slam_frontiers(mapper)
+                _dxy = env._robot.data.root_pos_w[0]
+                frontiers_raw = self._collect_slam_frontiers(
+                    mapper, (float(_dxy[0]), float(_dxy[1])), getattr(env, "_brain", None)
+                )
             try:
                 for f in frontiers_raw:
                     if active_frontier is None or np.linalg.norm(
@@ -694,15 +747,28 @@ class LiveDroneTelemetry:
             # cell is ever thrown away (stride-sampling used to drop walls,
             # which is why the 3D map looked incomplete / "not the full map").
             prob     = mapper.get_occupancy_grid()   # (H, W) float32 in [0,1]
-            inflated = mapper.get_inflated_grid()    # (H, W) int/bool
             H_orig, W_orig = prob.shape
 
-            # Quantise full-res: 0=unknown, 1=free, 2=inflated(danger), 3=wall
+            # Split occupied cells into structural walls vs. dodgeable props so the
+            # 3D scene can paint them differently (props are not walls the drone
+            # must route around). Danger = inflation around WALLS only.
+            if hasattr(mapper, "get_wall_obstacle_masks"):
+                wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks()
+                danger = mapper.get_planning_grid()
+            else:
+                inflated = mapper.get_inflated_grid()
+                wall_mask = (prob > 0.65).astype(np.uint8)
+                obstacle_mask = np.zeros_like(wall_mask)
+                danger = inflated
+
+            # Quantise full-res: 0=unknown, 1=free, 2=danger(wall inflation),
+            # 3=dodgeable obstacle, 4=structural wall.
             # Ordering matters — higher value wins so max-pool preserves walls.
             full = np.zeros((H_orig, W_orig), dtype=np.uint8)
-            full[prob < 0.35]  = 1
-            full[inflated == 1] = 2
-            full[prob > 0.65]  = 3   # occupied (OccupancyGrid > 65)
+            full[prob < 0.35]     = 1
+            full[danger == 1]     = 2
+            full[obstacle_mask == 1] = 3
+            full[wall_mask == 1]  = 4
 
             # Downsample by block-MAX so every wall cell survives. Target a
             # larger max dimension (200) than before for a fuller, denser map.
@@ -722,7 +788,7 @@ class LiveDroneTelemetry:
             grid_b64 = base64.b64encode(grid_bytes).decode("ascii")
             # Monotonic version so the client rebuilds whenever the map changes
             # anywhere (previously it only compared the last few bytes → static).
-            occupied_count = int((grid == 3).sum())
+            occupied_count = int(((grid == 3) | (grid == 4)).sum())
             grid_ver = int(zlib.adler32(grid_bytes) & 0xFFFFFFFF)
 
             # ---- Drone pose ----
@@ -736,7 +802,10 @@ class LiveDroneTelemetry:
             frontiers_list: list = []
             active_frontier = getattr(env, "active_frontier", None)
             if frontiers_raw is None:
-                frontiers_raw = self._collect_slam_frontiers(mapper)
+                _dxy = env._robot.data.root_pos_w[0]
+                frontiers_raw = self._collect_slam_frontiers(
+                    mapper, (float(_dxy[0]), float(_dxy[1])), getattr(env, "_brain", None)
+                )
             for f in frontiers_raw:
                 try:
                     cw = f["centroid_world"]
@@ -997,6 +1066,10 @@ class LiveDroneTelemetry:
 
             ae_encoder = ae.encoder
             ae_fc_z    = ae.fc_z
+            # LayerNorm applied to the latent — the policy consumes ae.encode(x) =
+            # ln_z(fc_z(encoder(x))), so the saliency graph must include it too or
+            # the gradients won't reflect the real 64-dim latent the navigator sees.
+            ae_ln_z    = getattr(ae, "ln_z", None)
             actor_mlp  = actor.mlp
             actor_norm = actor.obs_normalizer
             actor_det  = None
@@ -1016,6 +1089,8 @@ class LiveDroneTelemetry:
 
                 h     = ae_encoder(depth_input)
                 z_img = ae_fc_z(h)
+                if ae_ln_z is not None:
+                    z_img = ae_ln_z(z_img)
                 obs   = torch.cat([z_img, state_features], dim=-1)
                 obs   = actor_norm(obs)
                 out   = actor_mlp(obs)

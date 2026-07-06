@@ -34,6 +34,13 @@ class OccupancyGridMapper:
         inflation_pixels = int(np.round(self.safety_margin / self.cell_size))
         self.inflation_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inflation_pixels + 1, 2 * inflation_pixels + 1))
 
+        # Walls are long thin structures; props are compact blobs. Using area alone
+        # caused merged prop clusters to flicker into "walls" as the map updated.
+        self.wall_min_cells = 35
+        self.wall_min_span_cells = 12      # ≥1.2 m long side → structural wall
+        self.wall_max_thickness_cells = 5  # ≤0.5 m short side for thin walls
+        self.wall_min_elongation = 2.5     # fallback for L-corners / longer blobs
+
     def world_to_grid(self, x, y):
         """Convert world coordinates (meters) to grid indices (row, col)."""
         col = int(np.floor((x - self.min_x) / self.cell_size))
@@ -131,7 +138,7 @@ class OccupancyGridMapper:
         return prob
 
     def get_inflated_grid(self):
-        """Generate binary grid with expanded obstacles for safety."""
+        """Generate binary grid with expanded obstacles for safety (all occupied)."""
         prob = self.get_occupancy_grid()
         # Binary occupied mask
         binary_occupied = (prob > 0.65).astype(np.uint8)
@@ -139,12 +146,181 @@ class OccupancyGridMapper:
         inflated = cv2.dilate(binary_occupied, self.inflation_kernel, iterations=1)
         return inflated
 
+    def _is_structural_wall_component(self, area: int, width: int, height: int) -> bool:
+        """True if a connected occupied blob looks like a wall, not a prop cluster."""
+        long_side = max(width, height)
+        short_side = max(1, min(width, height))
+        elongation = long_side / short_side
+        # Long thin segment (typical wall in top-down 2D projection). Checked FIRST
+        # and NOT gated by area, so thin walls (e.g. 12x2 cells) aren't wrongly
+        # dropped to teal just for having a small pixel count.
+        if long_side >= self.wall_min_span_cells and short_side <= self.wall_max_thickness_cells:
+            return True
+        # Elongated corner / longer wall run needs some bulk to avoid catching props.
+        if area >= self.wall_min_cells and elongation >= self.wall_min_elongation:
+            return True
+        return False
+
+    def get_wall_obstacle_masks(self):
+        """Split occupied cells into structural walls vs. dodgeable small obstacles.
+
+        Returns (wall_mask, obstacle_mask) as uint8 grids. Perimeter / house
+        boundary cells are always walls (yellow in the 3D view). Compact blobs
+        inside walkable rooms are props (teal). Shape heuristics handle the rest.
+        """
+        prob = self.get_occupancy_grid()
+        occ = (prob > 0.65).astype(np.uint8)
+        wall_mask = np.zeros_like(occ)
+        obstacle_mask = np.zeros_like(occ)
+        if not occ.any():
+            return wall_mask, obstacle_mask
+
+        # --- Signal 1: static floor boundary (only if the mask is trustworthy) ---
+        # Wall hits register AT the floor edge (still flagged walkable), so we erode
+        # the walkable floor to the true room INTERIOR; occupied cells at/outside
+        # that boundary are structural walls. Skip this if the mask is degenerate
+        # (all True / all False) so a bad mask can't paint everything one colour.
+        walkable = getattr(self, "walkable_mask", None)
+        if (
+            walkable is not None
+            and walkable.shape == occ.shape
+            and 0 < int(walkable.sum()) < walkable.size
+        ):
+            wk = walkable.astype(np.uint8)
+            erode_cells = max(2, int(round(0.25 / self.cell_size)))
+            erode_k = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (2 * erode_cells + 1, 2 * erode_cells + 1)
+            )
+            interior = cv2.erode(wk, erode_k, iterations=1)
+            wall_mask[(occ > 0) & (interior == 0)] = 1
+
+        # --- Signal 2: shape of the connected structure ---------------------
+        # A wall scanned from a distance comes in as a dashed line of separate hits;
+        # labelling those directly makes each dash a tiny "prop" (teal). CLOSE first
+        # to bridge the scan gaps so the whole wall is ONE long component, then
+        # classify by size/elongation. Props are compact and spaced apart, so they
+        # stay their own small components → teal.
+        remaining = ((occ > 0) & (wall_mask == 0)).astype(np.uint8)
+        if remaining.any():
+            close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            bridged = cv2.morphologyEx(remaining, cv2.MORPH_CLOSE, close_k)
+            num, labels, stats, _ = cv2.connectedComponentsWithStats(bridged, connectivity=8)
+            for i in range(1, num):
+                area = int(stats[i, cv2.CC_STAT_AREA])
+                width = int(stats[i, cv2.CC_STAT_WIDTH])
+                height = int(stats[i, cv2.CC_STAT_HEIGHT])
+                comp = (labels == i) & (occ > 0)
+                if not comp.any():
+                    continue
+                if self._is_structural_wall_component(area, width, height):
+                    wall_mask[comp] = 1
+                else:
+                    obstacle_mask[comp] = 1
+
+        unlabeled = (occ > 0) & (wall_mask == 0) & (obstacle_mask == 0)
+        obstacle_mask[unlabeled] = 1
+        return wall_mask, obstacle_mask
+
+    def get_planning_grid(self):
+        """Binary blocking grid for A*/BFS.
+
+        Walls get the full safety inflation. Dodgeable obstacles (poles/props) block
+        their own footprint plus a 1-cell drone-radius margin, so A* routes AROUND
+        each pole *through the gaps between them* instead of aiming straight at one
+        and relying on the policy to weave (the forced-yaw navigator can't). The
+        small margin still leaves narrow passages open.
+        """
+        wall_mask, obstacle_mask = self.get_wall_obstacle_masks()
+        inflated_walls = cv2.dilate(wall_mask, self.inflation_kernel, iterations=1)
+        small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        inflated_obs = cv2.dilate(obstacle_mask, small_k, iterations=1)
+        return ((inflated_walls > 0) | (inflated_obs > 0)).astype(np.uint8)
+
+    def compute_reachable_mask(self, start_row, start_col):
+        """Flood-fill the free cells reachable from a start cell (pure SLAM).
+
+        Uses only the drone's own occupancy grid — no ground-truth/USD map — to
+        answer "can the drone actually get there through known free space?".
+        A cell is traversable if it is observed free (prob < 0.35) and not inside
+        an inflated obstacle. Returns a bool mask the size of the grid.
+        """
+        from collections import deque
+
+        reachable = np.zeros((self.h, self.w), dtype=bool)
+        prob = self.get_occupancy_grid()
+        # Traversable = observed free AND not blocked in the planning grid (walls
+        # inflated, poles/props blocked with a small margin). The flood-fill threads
+        # between poles through the gaps, matching what A* will actually plan.
+        blocked = self.get_planning_grid()
+        free = (prob < 0.35) & (blocked == 0)
+
+        # The drone cell itself may be inflated/unknown; seed from the nearest free
+        # cell in a small neighborhood so we don't return an empty mask.
+        seed = None
+        for rad in range(0, 8):
+            for dr in range(-rad, rad + 1):
+                for dc in range(-rad, rad + 1):
+                    r, c = start_row + dr, start_col + dc
+                    if 0 <= r < self.h and 0 <= c < self.w and free[r, c]:
+                        seed = (r, c)
+                        break
+                if seed is not None:
+                    break
+            if seed is not None:
+                break
+        if seed is None:
+            return reachable
+
+        dq = deque([seed])
+        reachable[seed] = True
+        while dq:
+            r, c = dq.popleft()
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < self.h and 0 <= nc < self.w and free[nr, nc] and not reachable[nr, nc]:
+                    reachable[nr, nc] = True
+                    dq.append((nr, nc))
+        return reachable
+
+    def segment_hits_wall(self, x0, y0, x1, y1, blocked=None) -> bool:
+        """True if the straight world segment (x0,y0)->(x1,y1) crosses a blocked cell.
+
+        Used to reject straight-line fallbacks that would drive the drone through a
+        mapped wall toward a frontier sitting in a dead-end corridor behind it.
+        """
+        if blocked is None:
+            blocked = self.get_planning_grid()
+        r0, c0 = self.world_to_grid(x0, y0)
+        r1, c1 = self.world_to_grid(x1, y1)
+        n = int(max(abs(r1 - r0), abs(c1 - c0))) + 1
+        rs = np.linspace(r0, r1, n).round().astype(int)
+        cs = np.linspace(c0, c1, n).round().astype(int)
+        for r, c in zip(rs, cs):
+            if self.is_in_bounds(int(r), int(c)) and blocked[int(r), int(c)]:
+                return True
+        return False
+
+    def is_frontier_reachable(self, reachable_mask, centroid_grid) -> bool:
+        """True if a frontier centroid touches the reachable free region (3x3)."""
+        if reachable_mask is None:
+            return True
+        cr, cc = int(centroid_grid[0]), int(centroid_grid[1])
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                r, c = cr + dr, cc + dc
+                if 0 <= r < self.h and 0 <= c < self.w and reachable_mask[r, c]:
+                    return True
+        return False
+
     def detect_frontiers(self, min_size=5):
         """Detect boundaries between explored free space and unexplored space."""
         prob = self.get_occupancy_grid()
-        inflated = self.get_inflated_grid()
+        # Use the WALLS-only planning grid so cells next to dodgeable props still
+        # count as free — otherwise inflated prop fields hide the frontiers behind
+        # them and the drone never plans past a corridor full of boxes.
+        inflated = self.get_planning_grid()
         
-        # 1. Identify Free Space (prob < 0.35 and not inflated obstacle)
+        # 1. Identify Free Space (prob < 0.35 and not inflated wall)
         free_space = (prob < 0.35) & (inflated == 0)
         
         # 2. Identify Unknown Space (prob == 0.5, i.e., log-odds close to 0)

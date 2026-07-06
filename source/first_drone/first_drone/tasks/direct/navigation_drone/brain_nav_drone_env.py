@@ -33,7 +33,7 @@ from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
 import isaaclab.sim as sim_utils
 from isaaclab.sensors import TiledCamera, ContactSensor
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz
+from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, wrap_to_pi
 
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
@@ -358,19 +358,18 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
         self.scene.sensors["contact_sensor"] = self._contact_sensor
 
-        from isaaclab.sensors import Camera
-        self._view_camera = Camera(self.cfg.view_camera)
+        self._view_camera = TiledCamera(self.cfg.view_camera)
 
-        # Extra angle cameras for the live dashboard (play-mode only, no model impact)
-        self._chase_camera: "Camera | None" = None
-        self._left_camera:  "Camera | None" = None
-        self._top_camera:   "Camera | None" = None
+        self._view_left_camera:  "TiledCamera | None" = None
+        self._view_right_camera: "TiledCamera | None" = None
         try:
-            self._chase_camera = Camera(self.cfg.chase_camera)
-            self._left_camera  = Camera(self.cfg.left_camera)
-            self._top_camera   = Camera(self.cfg.top_camera)
-        except Exception as _cam_exc:
-            print(f"[BrainNavEnv] Angle cameras not created (play-mode only): {_cam_exc}")
+            self._view_left_camera  = TiledCamera(self.cfg.view_left_camera)
+            self._view_right_camera = TiledCamera(self.cfg.view_right_camera)
+            print("[BrainNavEnv] Dashboard view cameras created (rear/left/right TiledCamera).")
+        except Exception as _view_exc:
+            print(f"[BrainNavEnv] Side view cameras not created: {_view_exc}")
+            self._view_left_camera = None
+            self._view_right_camera = None
 
         # No LiDAR in Multilevel training — policy uses camera + state only
         self._lidar = None
@@ -387,13 +386,15 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         self.scene.sensors["tiled_camera"] = self._tiled_camera
 
-        # Register dashboard follow cameras so they render each step
-        if self._chase_camera is not None:
-            self.scene.sensors["dashcam_chase"] = self._chase_camera
-        if self._left_camera is not None:
-            self.scene.sensors["dashcam_left"] = self._left_camera
-        if self._top_camera is not None:
-            self.scene.sensors["dashcam_top"] = self._top_camera
+        # Register the rear/behind drone camera so the dashboard can read its RGB.
+        if self._view_camera is not None:
+            self.scene.sensors["view_camera"] = self._view_camera
+
+        # Register body-mounted left/right dashboard view cameras.
+        if self._view_left_camera is not None:
+            self.scene.sensors["view_left_camera"] = self._view_left_camera
+        if self._view_right_camera is not None:
+            self.scene.sensors["view_right_camera"] = self._view_right_camera
 
         # Behind-drone chase camera for the viewport (Multilevel_AE_PPO)
         try:
@@ -423,51 +424,6 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         self._cache_room_spawn_bounds()
         self._sync_dynamic_obstacle_registry()
-
-    def update_follow_cameras(self):
-        """Aim the 3 dashboard follow cameras at the drone every step.
-
-        Uses set_world_poses_from_view so each camera stands off from the drone
-        and looks directly at it: one trailing behind, one to the left, one above.
-        Play-mode only — has no effect on the policy or perception pipeline.
-        """
-        if self._chase_camera is None and self._left_camera is None and self._top_camera is None:
-            return
-        try:
-            pos_w  = self._robot.data.root_pos_w[0]      # (3,) world position
-            quat_w = self._robot.data.root_quat_w[0]     # (w, x, y, z)
-            qw, qx, qy, qz = (float(quat_w[0]), float(quat_w[1]),
-                              float(quat_w[2]), float(quat_w[3]))
-            yaw = math.atan2(2.0 * (qw * qz + qx * qy),
-                             1.0 - 2.0 * (qy * qy + qz * qz))
-            cy, sy = math.cos(yaw), math.sin(yaw)
-
-            dx, dy, dz = float(pos_w[0]), float(pos_w[1]), float(pos_w[2])
-            device = self._robot.data.root_pos_w.device
-            target = torch.tensor([[dx, dy, dz]], dtype=torch.float32, device=device)
-
-            def _place(cam, eye_xyz):
-                if cam is None:
-                    return
-                eye = torch.tensor([eye_xyz], dtype=torch.float32, device=device)
-                cam.set_world_poses_from_view(eye, target)
-
-            # Chase: 3.0 m behind along heading, 1.2 m above
-            back = 3.0
-            _place(self._chase_camera,
-                   [dx - back * cy, dy - back * sy, dz + 1.2])
-
-            # Left: 3.0 m to the drone's left (heading + 90°), 0.8 m above
-            side = 3.0
-            lx, ly = -sy, cy   # unit left vector in world XY
-            _place(self._left_camera,
-                   [dx + side * lx, dy + side * ly, dz + 0.8])
-
-            # Top: 5.0 m directly above, looking straight down
-            _place(self._top_camera,
-                   [dx, dy, dz + 5.0])
-        except Exception as exc:
-            print(f"[BrainNavEnv] update_follow_cameras() error: {exc}")
 
     def _build_sequential_spawn_sequence(self) -> tuple[tuple, list[str]]:
         """Build scan/nav waypoints: rooms 1–4, then corr1 → corr2 → Worker final room."""
@@ -1285,13 +1241,24 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         return min(max(int(self._brain.segment_idx), 0), 3)
 
     def _randomize_obstacles(self, env_ids: torch.Tensor):
-        """Randomize poles + room-3/room-4 obstacles based on current mission segment."""
+        """Randomize poles + room-3/room-4 obstacles based on current mission segment.
+
+        In real SLAM patrol the whole house is populated ONCE and then left static:
+        re-shuffling obstacles per room (or hiding them during a scan) left phantom
+        walls in the occupancy map at the old positions and made obstacles flicker.
+        """
+        real_slam = getattr(self.cfg, "brain_real_slam_mode", False)
+        if real_slam and getattr(self, "_real_slam_obstacles_placed", False):
+            # House already placed — keep it fixed so the SLAM map stays consistent.
+            return
+
         num_resets = env_ids.shape[0]
         env_origins = self._terrain.env_origins[env_ids]
         mission_level = self._get_mission_obstacle_level()
         levels = torch.full((num_resets,), mission_level, dtype=torch.long, device=self.device)
         hide_for_scan = (
-            getattr(self.cfg, "brain_hide_obstacles_during_scan", True)
+            not real_slam
+            and getattr(self.cfg, "brain_hide_obstacles_during_scan", True)
             and hasattr(self, "_brain")
             and self._brain.state == "SCAN"
         )
@@ -1361,15 +1328,28 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 keep_cells[i] = False
         grid_positions = grid_positions[keep_cells]
 
-        is_level3 = levels == 2
-        is_level4 = levels == 3
+        if real_slam:
+            # Static house: room-3 props only (room-4 corridor props appear when exploring).
+            is_level3 = torch.ones(num_resets, dtype=torch.bool, device=self.device)
+            is_level4 = torch.zeros(num_resets, dtype=torch.bool, device=self.device)
+            # Fixed, readable layout — four props near the room corners, away from the person.
+            slam_room3_slots = torch.tensor(
+                [[-1.2, -12.0], [1.2, -12.0], [-1.2, -13.5], [1.2, -13.5]],
+                device=self.device,
+                dtype=torch.float32,
+            )
+        else:
+            is_level3 = levels == 2
+            is_level4 = levels == 3
+            slam_room3_slots = None
         if hide_for_scan:
             is_level3 = torch.zeros_like(is_level3)
             is_level4 = torch.zeros_like(is_level4)
 
         num_level3_resets = torch.count_nonzero(is_level3).item()
+        slam_room3_cap = int(getattr(self.cfg, "brain_slam_room3_max_obstacles", 4)) if real_slam else len(self._room3_obstacles)
 
-        if num_level3_resets > 0:
+        if num_level3_resets > 0 and not real_slam:
             n_grid = grid_positions.shape[0]
             n_room3 = len(self._room3_obstacles)
             perms = torch.stack([torch.randperm(n_grid, device=self.device) for _ in range(num_level3_resets)])
@@ -1386,7 +1366,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             obs_qw = torch.ones(num_resets, device=self.device)
             obs_qz = torch.zeros(num_resets, device=self.device)
             
-            if num_level3_resets > 0 and j < grid_positions.shape[0]:
+            if real_slam and num_level3_resets > 0 and j < slam_room3_cap and slam_room3_slots is not None:
+                slot = slam_room3_slots[min(j, slam_room3_slots.shape[0] - 1)]
+                obs_x[is_level3] = slot[0]
+                obs_y[is_level3] = slot[1]
+                obs_z[is_level3] = 0.0
+            elif num_level3_resets > 0 and j < grid_positions.shape[0]:
                 # Get the assigned cell index for this obstacle in each Level 3 env
                 assigned_cell_indices = perms[:, j]  # (num_level3_resets,)
                 assigned_positions = grid_positions[assigned_cell_indices]  # (num_level3_resets, 2)
@@ -1491,6 +1476,10 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             state[:, 7:] = 0.0
             obstacle.write_root_pose_to_sim(state[:, :7], env_ids)
             obstacle.write_root_velocity_to_sim(state[:, 7:], env_ids)
+
+        if real_slam:
+            # Mark the house as placed so future resets/segment changes leave it static.
+            self._real_slam_obstacles_placed = True
 
     def _preprocess_depth(self) -> torch.Tensor:
         """Normalize depth for AE; downsample 512×288 brain-play camera to 72×128."""
@@ -1749,23 +1738,27 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                     self._snap_drone_to_local(snap_pos)
                     drone_pos = self._robot.data.root_pos_w.clone()
 
-            seg = int(self._brain.segment_idx)
-            if seg != self._last_obstacle_segment:
-                self._last_obstacle_segment = seg
-                self._randomize_obstacles(self._robot._ALL_INDICES)
-                print(
-                    f"[BrainNavEnv] Obstacles re-randomized for segment {seg} "
-                    f"({self._brain.get_segment_label(seg)}, level={self._get_mission_obstacle_level()}).\n"
-                )
+            # In real SLAM the house is placed once and stays static (no per-segment
+            # reshuffle, no hide-during-scan) so the occupancy map never picks up
+            # phantom walls from obstacles that teleported or vanished.
+            if not getattr(self.cfg, "brain_real_slam_mode", False):
+                seg = int(self._brain.segment_idx)
+                if seg != self._last_obstacle_segment:
+                    self._last_obstacle_segment = seg
+                    self._randomize_obstacles(self._robot._ALL_INDICES)
+                    print(
+                        f"[BrainNavEnv] Obstacles re-randomized for segment {seg} "
+                        f"({self._brain.get_segment_label(seg)}, level={self._get_mission_obstacle_level()}).\n"
+                    )
 
-            scan_mode = self._brain.state == "SCAN"
-            if scan_mode != self._last_obstacle_scan_mode:
-                self._last_obstacle_scan_mode = scan_mode
-                self._randomize_obstacles(self._robot._ALL_INDICES)
-                if scan_mode:
-                    print("[BrainNavEnv] Dynamic obstacles hidden during 360 SCAN (clear YOLO view).\n")
-                else:
-                    print("[BrainNavEnv] Dynamic obstacles restored for navigation.\n")
+                scan_mode = self._brain.state == "SCAN"
+                if scan_mode != self._last_obstacle_scan_mode:
+                    self._last_obstacle_scan_mode = scan_mode
+                    self._randomize_obstacles(self._robot._ALL_INDICES)
+                    if scan_mode:
+                        print("[BrainNavEnv] Dynamic obstacles hidden during 360 SCAN (clear YOLO view).\n")
+                    else:
+                        print("[BrainNavEnv] Dynamic obstacles restored for navigation.\n")
 
             slam_rescued = getattr(self._brain, "rescued_people", None)
             slam_found_anyone = (slam_rescued is not None and len(slam_rescued) > 0)
@@ -1889,6 +1882,19 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         if not is_scanning:
             self._scan_lock_z = None
+            ppo_actions = ppo_actions.clone()
+            
+            if getattr(self.cfg, "brain_force_yaw_to_target", True):
+                if isinstance(target_yaw, torch.Tensor):
+                    self._target_yaw = target_yaw.clone().to(self.device)
+                else:
+                    self._target_yaw = torch.tensor(target_yaw, device=self.device, dtype=torch.float32).repeat(self.num_envs)
+                ppo_actions[:, 3] = 0.0
+
+            # Proportional height-holding controller to prevent vertical drift
+            # Target height is specified in self._desired_pos_w[:, 2] (typically 1.0m)
+            z_err = self._desired_pos_w[:, 2] - self._robot.data.root_pos_w[:, 2]
+            ppo_actions[:, 2] = torch.clamp(1.8 * z_err, -0.45, 0.45)
 
         # 7. Step the parent environment with the PPO-generated actions
         obs, rewards, terminated, truncated, info = super().step(ppo_actions)

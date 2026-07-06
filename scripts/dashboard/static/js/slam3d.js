@@ -6,9 +6,12 @@
  * path, person) float inside the resulting 3D environment.
  *
  * Coordinate mapping:
- *   World X  →  Three.js X  (unchanged)
- *   World Y  →  Three.js Z  (depth)
- *   Altitude →  Three.js Y  (up)
+ *   World X  →  Three.js -X  (NEGATED so left/right matches the Isaac sim)
+ *   World Y  →  Three.js Z   (depth)
+ *   Altitude →  Three.js Y   (up)
+ *
+ * World X is negated so the scene's left/right turn direction syncs with the
+ * Isaac sim view (previously the drone appeared to turn the wrong way).
  */
 class SlamScene3D {
     constructor(containerId) {
@@ -76,6 +79,7 @@ class SlamScene3D {
 
         // ---- Occupancy walls (InstancedMesh, rebuilt when grid changes) ----
         this._wallMesh   = null;
+        this._obsMesh    = null;
         this._lastGridVer = -1;
         this._controlsCentered = false;
 
@@ -149,69 +153,74 @@ class SlamScene3D {
     _rebuildWalls(d) {
         const { grid, H, W, min_x, max_x, min_y, max_y, cell_w, cell_d } = d;
 
-        // Decode the base64 quantised grid (0=unknown 1=free 2=inflated 3=wall)
+        // Decode the base64 quantised grid
+        // (0=unknown 1=free 2=danger 3=dodgeable-obstacle 4=structural-wall)
         const binStr = atob(grid);
         const bytes  = new Uint8Array(binStr.length);
         for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
 
-        if (this._wallMesh) {
-            this._scene.remove(this._wallMesh);
-            this._wallMesh.geometry.dispose();
-            this._wallMesh.material.dispose();
-            this._wallMesh = null;
-        }
+        const disposeMesh = (m) => {
+            if (!m) return;
+            this._scene.remove(m);
+            m.geometry.dispose();
+            m.material.dispose();
+        };
+        disposeMesh(this._wallMesh); this._wallMesh = null;
+        disposeMesh(this._obsMesh);  this._obsMesh  = null;
 
-        // Count every occupied cell (value 3 == OccupancyGrid > 65).
-        let wallCount = 0;
-        for (let i = 0; i < bytes.length; i++) {
-            if (bytes[i] === 3) wallCount++;
-        }
-        wallCount = Math.min(wallCount, 60000);
-        if (wallCount === 0) return;
-
-        // ---- Single InstancedMesh (the Three.js equivalent of a CUBE_LIST) ----
-        // One draw call for the whole map instead of thousands of individual
-        // meshes (the "MarkerArray of CUBEs" anti-pattern that lags & drops
-        // detail). Footprint EXACTLY equals the cell resolution so neighbouring
-        // occupied cells tile edge-to-edge into solid, continuous walls.
-        const WALL_H = 2.5;                       // uniform scale.z (height)
-        const bGeo   = new THREE.BoxGeometry(cell_w, WALL_H, cell_d);
-        const bMat   = new THREE.MeshStandardMaterial({
-            color:    0x6b5a10,   // dark amber — matches nav scene yellow tones
-            emissive: 0x1a1400,
-            emissiveIntensity: 0.25,
-            roughness: 0.80,
-            metalness: 0.10,
-        });
-        this._wallMesh = new THREE.InstancedMesh(bGeo, bMat, wallCount);
-        this._wallMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-        // Every instance sits at the SAME height (y = WALL_H/2) so all boxes are
-        // flat-topped and anchored to the floor (y=0) — no more jumping/floating.
-        const groundY = WALL_H / 2;
-        const dummy = new THREE.Object3D();
-        let idx = 0;
-        for (let r = 0; r < H && idx < wallCount; r++) {
-            const rowOff = r * W;
-            for (let c = 0; c < W && idx < wallCount; c++) {
-                if (bytes[rowOff + c] === 3) {
-                    const wx = min_x + (c + 0.5) * cell_w;
-                    const wz = min_y + (r + 0.5) * cell_d;  // world Y → Three Z
-                    dummy.position.set(wx, groundY, wz);
-                    dummy.updateMatrix();
-                    this._wallMesh.setMatrixAt(idx, dummy.matrix);
-                    idx++;
+        // Build an InstancedMesh for all cells matching `value`.
+        const buildLayer = (value, material, height, yBase) => {
+            let count = 0;
+            for (let i = 0; i < bytes.length; i++) if (bytes[i] === value) count++;
+            count = Math.min(count, 60000);
+            if (count === 0) return null;
+            const geo  = new THREE.BoxGeometry(cell_w, height, cell_d);
+            const mesh = new THREE.InstancedMesh(geo, material, count);
+            mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            const dummy = new THREE.Object3D();
+            let idx = 0;
+            for (let r = 0; r < H && idx < count; r++) {
+                const rowOff = r * W;
+                for (let c = 0; c < W && idx < count; c++) {
+                    if (bytes[rowOff + c] === value) {
+                        const wx = -(min_x + (c + 0.5) * cell_w);  // world X → Three -X
+                        const wz = min_y + (r + 0.5) * cell_d;      // world Y → Three Z
+                        dummy.position.set(wx, yBase, wz);
+                        dummy.updateMatrix();
+                        mesh.setMatrixAt(idx, dummy.matrix);
+                        idx++;
+                    }
                 }
             }
-        }
-        this._wallMesh.count = idx;            // exact instance count used
-        this._wallMesh.instanceMatrix.needsUpdate = true;
-        this._wallMesh.frustumCulled = false;  // grid can straddle the frustum
-        this._scene.add(this._wallMesh);
+            mesh.count = idx;
+            mesh.instanceMatrix.needsUpdate = true;
+            mesh.frustumCulled = false;
+            this._scene.add(mesh);
+            return mesh;
+        };
+
+        // Structural walls — tall warm yellow/gold (outer house boundary).
+        const WALL_H = 2.5;
+        const wallMat = new THREE.MeshStandardMaterial({
+            color: 0xffcc33, emissive: 0x443300, emissiveIntensity: 0.35,
+            roughness: 0.75, metalness: 0.08,
+        });
+        this._wallMesh = buildLayer(4, wallMat, WALL_H, WALL_H / 2);
+
+        // Dodgeable obstacles (poles/props) — short teal blocks, clearly NOT walls.
+        // The drone is allowed to route through these; the PPO policy weaves around.
+        const OBS_H = 1.1;
+        const obsMat = new THREE.MeshStandardMaterial({
+            color: 0x1f9c8c, emissive: 0x073d36, emissiveIntensity: 0.35,
+            roughness: 0.55, metalness: 0.15, transparent: true, opacity: 0.85,
+        });
+        this._obsMesh = buildLayer(3, obsMat, OBS_H, OBS_H / 2);
+
+        if (!this._wallMesh && !this._obsMesh) return;
 
         // Re-centre orbit controls once when the first wall batch arrives
         if (this._controls && !this._controlsCentered) {
-            const ctrX = (min_x + max_x) / 2;
+            const ctrX = -(min_x + max_x) / 2;
             const ctrZ = (min_y + max_y) / 2;
             this._controls.target.set(ctrX, 1.5, ctrZ);
             this._controlsCentered = true;
@@ -225,8 +234,9 @@ class SlamScene3D {
     _updateDrone(drone) {
         if (!drone || !this._droneGroup) return;
         const flyH = Math.max(drone.z || 0, 0.4) + 0.6;
-        this._droneGroup.position.set(drone.x, flyH, drone.y);
-        // yaw=0 → face +X. Cone points +Z by default.  rotation.y = yaw - π/2
+        this._droneGroup.position.set(-drone.x, flyH, drone.y);
+        // World X → Three -X: heading (cos yaw, sin yaw) maps to Three (-cos yaw, sin yaw).
+        // Cone points +Z locally, giving rotation.y = yaw - π/2.
         this._droneGroup.rotation.y = drone.yaw - Math.PI / 2;
     }
 
@@ -265,7 +275,7 @@ class SlamScene3D {
             light.position.y = 0.5;
             group.add(light);
 
-            group.position.set(f[0], 0, f[1]);
+            group.position.set(-f[0], 0, f[1]);
             this._frontierGroup.add(group);
         }
     }
@@ -273,7 +283,7 @@ class SlamScene3D {
     _updateTarget(active) {
         if (!this._targetGroup) return;
         if (active) {
-            this._targetGroup.position.set(active[0], 0.0, active[1]);
+            this._targetGroup.position.set(-active[0], 0.0, active[1]);
             this._targetGroup.visible = true;
         } else {
             this._targetGroup.visible = false;
@@ -287,7 +297,7 @@ class SlamScene3D {
             this._pathLine = null;
         }
         if (!path || path.length < 2) return;
-        const pts = path.map(([x, y]) => new THREE.Vector3(x, 0.08, y));
+        const pts = path.map(([x, y]) => new THREE.Vector3(-x, 0.08, y));
         const geo = new THREE.BufferGeometry().setFromPoints(pts);
         const mat = new THREE.LineBasicMaterial({ color: 0x00e040, linewidth: 2 });
         this._pathLine = new THREE.Line(geo, mat);
@@ -297,7 +307,7 @@ class SlamScene3D {
     _updatePerson(person) {
         if (!this._personGroup) return;
         if (person) {
-            this._personGroup.position.set(person[0], 0, person[1]);
+            this._personGroup.position.set(-person[0], 0, person[1]);
             this._personGroup.visible = true;
         } else {
             this._personGroup.visible = false;

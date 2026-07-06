@@ -40,11 +40,13 @@ class SlamMap2D {
         this._cssH = 1;
         this._time = 0;
 
-        // Palette (glassmorphism / neon)
+        // Palette — must match live_telemetry grid encoding:
+        // 0=unknown 1=free 2=danger 3=dodgeable-obstacle 4=structural-wall
         this.COL = {
             free:     [34, 48, 70, 150],     // explored floor (cool slate)
-            inflated: [255, 176, 32, 70],    // amber danger halo
-            wall:     [120, 205, 255, 240],  // bright cyan walls
+            inflated: [255, 176, 32, 55],    // amber danger halo (walls only)
+            obstacle: [31, 156, 140, 200],   // teal — corridor props (not walls)
+            wall:     [255, 204, 51, 240],   // warm yellow — structural walls
         };
 
         // DOM overlays
@@ -115,13 +117,17 @@ class SlamMap2D {
 
         for (let i = 0; i < n; i++) {
             const v = bin.charCodeAt(i);
-            // Natural row order: grid row 0 (min_y) → top of image. Combined with
-            // the Y-down screen transform this makes the drone travel bottom→top.
-            const o = i * 4;
+            // Flip columns horizontally (mirror on X) so the map's left/right matches
+            // the Isaac sim view — a right turn shows as a right turn. Rows (world Y)
+            // keep their natural top→bottom order so up/down stays as before.
+            const r = (i / W) | 0;
+            const c = i - r * W;
+            const o = (r * W + (W - 1 - c)) * 4;
             let col = null;
             if (v === 1) col = C.free;
             else if (v === 2) col = C.inflated;
-            else if (v === 3) col = C.wall;
+            else if (v === 3) col = C.obstacle;
+            else if (v === 4) col = C.wall;
             if (col) {
                 px[o] = col[0]; px[o + 1] = col[1]; px[o + 2] = col[2]; px[o + 3] = col[3];
             } else {
@@ -150,11 +156,12 @@ class SlamMap2D {
         return { ok: true, scale, cxW, cyW, cx, cy, worldW, worldH };
     }
     _toScreen(t, wx, wy) {
-        // Y-down: larger world Y maps lower on screen (map flipped vertically).
-        return [t.cx + (wx - t.cxW) * t.scale, t.cy + (wy - t.cyW) * t.scale];
+        // Mirror on X (larger world X maps LEFT) so left/right matches the Isaac sim.
+        // World Y keeps its Y-down mapping (original up/down orientation preserved).
+        return [t.cx - (wx - t.cxW) * t.scale, t.cy + (wy - t.cyW) * t.scale];
     }
     _toWorld(t, sx, sy) {
-        return [t.cxW + (sx - t.cx) / t.scale, t.cyW + (sy - t.cy) / t.scale];
+        return [t.cxW - (sx - t.cx) / t.scale, t.cyW + (sy - t.cy) / t.scale];
     }
 
     // ---- Render loop ----
@@ -187,7 +194,8 @@ class SlamMap2D {
 
         // Occupancy bitmap
         if (this._grid.canvas && this._grid.w) {
-            const [x0, y0] = this._toScreen(t, d.min_x, d.min_y); // top-left = (min_x, min_y)
+            // X mirrored, Y-down → screen top-left corresponds to (max_x, min_y).
+            const [x0, y0] = this._toScreen(t, d.max_x, d.min_y);
             const dw = t.worldW * t.scale;
             const dh = t.worldH * t.scale;
             ctx.imageSmoothingEnabled = t.scale < 6;
@@ -301,8 +309,8 @@ class SlamMap2D {
         if (!drone) return;
         const [sx, sy] = this._toScreen(t, drone.x, drone.y);
         const yaw = drone.yaw || 0;
-        // Screen angle: Y-down transform, so heading vector maps directly.
-        const sdx = Math.cos(yaw), sdy = Math.sin(yaw);
+        // X mirrored, Y-down: world heading (cos yaw, sin yaw) → screen (-cos yaw, sin yaw).
+        const sdx = -Math.cos(yaw), sdy = Math.sin(yaw);
         const ang = Math.atan2(sdy, sdx);
 
         // FOV cone
