@@ -599,17 +599,25 @@ class LiveDroneTelemetry:
         if mapper is None:
             return []
         try:
+            import numpy as np
             # Match the drone's own selection: BFS-reachable frontiers only, then the
             # brain's direction-gated visited filter. Falls back to plain detection if
             # we don't have the drone position or the newer mapper method.
             if drone_xy is not None and hasattr(mapper, "find_reachable_frontiers"):
                 start_r, start_c = mapper.world_to_grid(float(drone_xy[0]), float(drone_xy[1]))
-                frontiers, _ = mapper.find_reachable_frontiers(start_r, start_c, min_size=6)
+                frontiers, came_from = mapper.find_reachable_frontiers(start_r, start_c, min_size=3)
                 # Match the picker: hide occlusion-shadow pockets (tiny unknown gain)
                 # so displayed blue targets are the ones the drone would actually chase.
                 substantial = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 40]
                 if substantial:
                     frontiers = substantial
+                explorable = getattr(brain, "is_explorable_frontier", None)
+                if callable(explorable) and drone_xy is not None:
+                    dxy = np.array(drone_xy[:2])
+                    frontiers = [
+                        f for f in frontiers
+                        if explorable(f, dxy, came_from=came_from)
+                    ]
                 return frontiers
             else:
                 frontiers = mapper.detect_frontiers()

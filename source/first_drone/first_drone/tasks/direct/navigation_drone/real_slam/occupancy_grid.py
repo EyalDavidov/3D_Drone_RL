@@ -515,6 +515,72 @@ class OccupancyGridMapper:
             })
         return frontiers, came_from
 
+    def deepen_frontier_goal(
+        self, goal_grid, came_from, drone_grid, visited_mask=None, max_depth=40
+    ):
+        """Push a corridor/room mouth goal deeper into the passage.
+
+        BFS frontiers cluster at the opening (where free meets unknown). The drone
+        was clearing those at 0.7 m while still outside the corridor, then switching
+        to a side target. This finds the farthest reachable cell that still borders
+        unknown so the committed goal sits inside the corridor.
+        """
+        from collections import deque
+
+        free = self.get_traversable_free()
+        unknown = (np.abs(self.grid_log_odds) < 0.1)
+        gr, gc = int(goal_grid[0]), int(goal_grid[1])
+
+        def touches_unknown(r, c):
+            if not self.is_in_bounds(r, c) or not free[r, c]:
+                return False
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if self.is_in_bounds(nr, nc) and unknown[nr, nc]:
+                    return True
+            return False
+
+        def cell_mostly_visited(r, c, radius=2, threshold=0.45):
+            if visited_mask is None:
+                return False
+            total, rev = 0, 0
+            for dr in range(-radius, radius + 1):
+                for dc in range(-radius, radius + 1):
+                    rr, cc = r + dr, c + dc
+                    if self.is_in_bounds(rr, cc):
+                        total += 1
+                        if visited_mask[rr, cc]:
+                            rev += 1
+            return total > 0 and (rev / total) >= threshold
+
+        best = None
+        best_path_len = 0
+        dq = deque([(gr, gc, 0)])
+        seen = {(gr, gc)}
+        while dq:
+            r, c, depth = dq.popleft()
+            if depth > max_depth:
+                continue
+            if not touches_unknown(r, c):
+                continue
+            if cell_mostly_visited(r, c):
+                continue
+            path = self.reconstruct_path(came_from, (r, c))
+            if not path or len(path) < 2:
+                continue
+            plen = len(path)
+            if plen > best_path_len:
+                best_path_len = plen
+                best = (r, c)
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if (nr, nc) not in seen and self.is_in_bounds(nr, nc) and free[nr, nc]:
+                    seen.add((nr, nc))
+                    dq.append((nr, nc, depth + 1))
+        if best is None or best == (gr, gc):
+            return None
+        return best
+
     def is_cell_frontier(self, centroid_grid, radius=2) -> bool:
         """True if a mapped cell is STILL a frontier: some observed-free, traversable
         cell within `radius` that is adjacent to UNKNOWN space.
@@ -539,7 +605,23 @@ class OccupancyGridMapper:
                             return True
         return False
 
-    def plan_path_centered(self, start_grid, goal_grid, clearance_cells=3, wall_weight=1.5):
+    def unknown_touch_count(self, row, col, radius=4) -> int:
+        """Count unknown cells near a grid cell — proxy for 'unexplored space ahead'.
+
+        Used to score probe directions at ANY angle: the ray ending nearest the most
+        unknown is the most worth exploring. Pure SLAM (occupancy grid only).
+        """
+        unknown = (np.abs(self.grid_log_odds) < 0.1)
+        r0, c0 = int(row), int(col)
+        count = 0
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                r, c = r0 + dr, c0 + dc
+                if self.is_in_bounds(r, c) and unknown[r, c]:
+                    count += 1
+        return count
+
+    def plan_path_centered(self, start_grid, goal_grid, clearance_cells=5, wall_weight=4.0):
         """A* that PREFERS the middle of free space (fixes wall-hugging paths).
 
         Blocking = get_traversable_free() (walls block only their raw cells, poles
@@ -558,8 +640,8 @@ class OccupancyGridMapper:
         if not (self.is_in_bounds(r0, c0) and self.is_in_bounds(r1, c1)):
             return None
 
-        # Distance (in cells) from every free cell to the nearest blocked cell.
-        dist = cv2.distanceTransform(free, cv2.DIST_L2, 3)
+        # Distance from each free cell to the nearest wall/obstacle (non-free cell).
+        dist = cv2.distanceTransform(free, cv2.DIST_L2, 5)
 
         # Seed from nearest free cell if the drone's own cell reads blocked.
         if free[r0, c0] == 0:
@@ -581,7 +663,11 @@ class OccupancyGridMapper:
 
         def clearance_penalty(r, c):
             d = float(dist[r, c])
-            return wall_weight * max(0.0, clearance_cells - d)
+            if d >= clearance_cells:
+                return 0.0
+            # Quadratic penalty — strongly avoids cells near walls.
+            t = (clearance_cells - d) / max(clearance_cells, 1e-6)
+            return wall_weight * t * t * clearance_cells
 
         def heuristic(r, c):
             return np.hypot(r - r1, c - c1)
@@ -589,7 +675,8 @@ class OccupancyGridMapper:
         open_set = [(heuristic(r0, c0), 0.0, (r0, c0))]
         came = {}
         g = {(r0, c0): 0.0}
-        neigh = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        # 4-connected only — diagonal steps cut corners and hug walls in L-turns.
+        neigh = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         it = 0
         while open_set and it < 20000:
             it += 1
@@ -610,7 +697,7 @@ class OccupancyGridMapper:
                 # goals sit at the edge of known-free space).
                 if free[nr, nc] == 0 and (nr, nc) != (r1, c1):
                     continue
-                step = 1.414 if (dr and dc) else 1.0
+                step = 1.0
                 tg = cg + step + clearance_penalty(nr, nc)
                 if (nr, nc) not in g or tg < g[(nr, nc)]:
                     g[(nr, nc)] = tg

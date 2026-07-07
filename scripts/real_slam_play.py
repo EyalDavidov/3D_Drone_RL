@@ -408,17 +408,24 @@ def main():
                 # the brain's direction-gated visited filter — so the OpenCV overlay
                 # matches exactly what the drone can target.
                 _brain = getattr(env, "_brain", None)
-                _ahead = getattr(_brain, "is_frontier_ahead", None)
+                _explorable = getattr(_brain, "is_explorable_frontier", None)
                 if hasattr(mapper, "find_reachable_frontiers"):
                     _sr, _sc = mapper.world_to_grid(float(d_pos[0]), float(d_pos[1]))
-                    frontiers, _ = mapper.find_reachable_frontiers(_sr, _sc, min_size=6)
+                    frontiers, _cf = mapper.find_reachable_frontiers(_sr, _sc, min_size=3)
                     # Hide occlusion-shadow pockets (tiny unknown gain) so the overlay
                     # matches the picker's actual candidates.
                     _subst = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 40]
                     if _subst:
                         frontiers = _subst
+                    if callable(_explorable):
+                        _dxy = np.array(d_pos[:2], dtype=np.float64)
+                        frontiers = [
+                            f for f in frontiers
+                            if _explorable(f, _dxy, came_from=_cf)
+                        ]
                 else:
                     frontiers = mapper.detect_frontiers()
+                    _ahead = getattr(_brain, "is_frontier_ahead", None)
                     if callable(_ahead):
                         frontiers = [f for f in frontiers if _ahead(f["centroid_world"])]
                 draw_slam_visualizer(
