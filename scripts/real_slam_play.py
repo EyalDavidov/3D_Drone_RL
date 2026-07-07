@@ -404,18 +404,23 @@ def main():
                     2.0 * (qw * qz + qx * qy),
                     1.0 - 2.0 * (qy * qy + qz * qz),
                 )
-                frontiers = mapper.detect_frontiers()
+                # Same robust BFS-reachable frontiers the brain selects from, then
+                # the brain's direction-gated visited filter — so the OpenCV overlay
+                # matches exactly what the drone can target.
                 _brain = getattr(env, "_brain", None)
                 _ahead = getattr(_brain, "is_frontier_ahead", None)
+                if hasattr(mapper, "find_reachable_frontiers"):
+                    _sr, _sc = mapper.world_to_grid(float(d_pos[0]), float(d_pos[1]))
+                    frontiers, _ = mapper.find_reachable_frontiers(_sr, _sc, min_size=6)
+                    # Hide occlusion-shadow pockets (tiny unknown gain) so the overlay
+                    # matches the picker's actual candidates.
+                    _subst = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 40]
+                    if _subst:
+                        frontiers = _subst
+                else:
+                    frontiers = mapper.detect_frontiers()
                 if callable(_ahead):
                     frontiers = [f for f in frontiers if _ahead(f["centroid_world"])]
-                if hasattr(mapper, "compute_reachable_mask"):
-                    _sr, _sc = mapper.world_to_grid(float(d_pos[0]), float(d_pos[1]))
-                    _reach = mapper.compute_reachable_mask(_sr, _sc)
-                    frontiers = [
-                        f for f in frontiers
-                        if mapper.is_frontier_reachable(_reach, f["centroid_grid"])
-                    ]
                 draw_slam_visualizer(
                     mapper, d_pos, drone_yaw, env.slam_state, frontiers,
                     env.active_frontier, env.astar_path_world, start_run_time,

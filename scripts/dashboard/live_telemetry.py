@@ -595,24 +595,27 @@ class LiveDroneTelemetry:
         Only frontiers the drone can actually reach through observed free space are
         shown. This drops "blue targets" that leaked outside the rooms or got walled
         off — using the drone's own occupancy grid, NOT the ground-truth/USD map.
-        Also drops frontiers in rooms the drone has already passed (forward-only),
-        so the dashboard matches the drone's no-backtracking behaviour.
         """
         if mapper is None:
             return []
         try:
-            frontiers = mapper.detect_frontiers()
+            # Match the drone's own selection: BFS-reachable frontiers only, then the
+            # brain's direction-gated visited filter. Falls back to plain detection if
+            # we don't have the drone position or the newer mapper method.
+            if drone_xy is not None and hasattr(mapper, "find_reachable_frontiers"):
+                start_r, start_c = mapper.world_to_grid(float(drone_xy[0]), float(drone_xy[1]))
+                frontiers, _ = mapper.find_reachable_frontiers(start_r, start_c, min_size=6)
+                # Match the picker: hide occlusion-shadow pockets (tiny unknown gain)
+                # so displayed blue targets are the ones the drone would actually chase.
+                substantial = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 40]
+                if substantial:
+                    frontiers = substantial
+            else:
+                frontiers = mapper.detect_frontiers()
             ahead = getattr(brain, "is_frontier_ahead", None)
             if callable(ahead):
                 frontiers = [f for f in frontiers if ahead(f["centroid_world"])]
-            if drone_xy is None or not hasattr(mapper, "compute_reachable_mask"):
-                return frontiers
-            start_r, start_c = mapper.world_to_grid(float(drone_xy[0]), float(drone_xy[1]))
-            reachable = mapper.compute_reachable_mask(start_r, start_c)
-            return [
-                f for f in frontiers
-                if mapper.is_frontier_reachable(reachable, f["centroid_grid"])
-            ]
+            return frontiers
         except Exception:
             return []
 

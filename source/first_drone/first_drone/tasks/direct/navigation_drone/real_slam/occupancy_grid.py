@@ -269,18 +269,19 @@ class OccupancyGridMapper:
     def get_planning_grid(self):
         """Binary blocking grid for A*/BFS.
 
-        Walls get the full safety inflation. Dodgeable obstacles (poles/props) block
-        their own footprint plus a 1-cell drone-radius margin, so A* routes AROUND
-        each pole *through the gaps between them* instead of aiming straight at one
-        and relying on the policy to weave (the forced-yaw navigator can't). The
-        small margin still leaves narrow passages open.
+        Walls AND dodgeable obstacles get only a thin 1-cell (~drone-radius) margin.
+        The full safety inflation (2 cells / 0.2 m each side) closed the MOUTH of
+        narrow side corridors/turns once one wall was mapped, so A* and frontier
+        reachability could never thread the opening — the drone flew straight past
+        the turn into the end wall. A 1-cell margin keeps those openings passable;
+        the trained PPO policy handles the fine wall-clearance itself.
 
         PURE SLAM: classification here never consults the USD walkable mask, so A*
         and frontier reachability depend only on what the drone has actually mapped.
         """
         wall_mask, obstacle_mask = self.get_wall_obstacle_masks(use_walkable=False)
-        inflated_walls = cv2.dilate(wall_mask, self.inflation_kernel, iterations=1)
         small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        inflated_walls = cv2.dilate(wall_mask, small_k, iterations=1)
         inflated_obs = cv2.dilate(obstacle_mask, small_k, iterations=1)
         return ((inflated_walls > 0) | (inflated_obs > 0)).astype(np.uint8)
 
@@ -387,16 +388,164 @@ class OccupancyGridMapper:
                     return True
         return False
 
+    def find_reachable_frontiers(self, start_row, start_col, min_size=6):
+        """Robust pure-SLAM frontier search: one BFS over the drone's OWN free space.
+
+        This replaces the fragile "detect frontiers -> separately test reachability
+        -> separately run A*" chain, where each stage could independently reject a
+        genuinely-reachable opening and leave the drone with no target even though
+        clear unexplored space sat right ahead.
+
+        Every frontier returned is reachable *by construction* (the BFS actually
+        walked to it through observed-free cells) and comes with a guaranteed path
+        via the returned parent field — no A* that can silently fail.
+
+        Returns (frontiers, came_from):
+          frontiers: list of {centroid_grid, centroid_world, size, goal_grid}
+          came_from: (h, w, 2) int32 parent array for reconstruct_path()
+        """
+        from collections import deque
+
+        prob = self.get_occupancy_grid()
+        blocked = self.get_planning_grid()
+        free = (prob < 0.35) & (blocked == 0)
+        unknown = (np.abs(self.grid_log_odds) < 0.1)
+        k = np.ones((3, 3), dtype=np.uint8)
+        unknown_adj = cv2.dilate(unknown.astype(np.uint8), k) > 0
+
+        h, w = self.h, self.w
+        came_from = -np.ones((h, w, 2), dtype=np.int32)
+        reached = np.zeros((h, w), dtype=bool)
+
+        # Seed from the nearest free cell to the drone (its own cell may be inflated).
+        seed = None
+        for rad in range(0, 12):
+            for dr in range(-rad, rad + 1):
+                for dc in range(-rad, rad + 1):
+                    r, c = start_row + dr, start_col + dc
+                    if 0 <= r < h and 0 <= c < w and free[r, c]:
+                        seed = (r, c)
+                        break
+                if seed is not None:
+                    break
+            if seed is not None:
+                break
+        if seed is None:
+            return [], came_from
+
+        dq = deque([seed])
+        reached[seed] = True
+        fmask = np.zeros((h, w), dtype=np.uint8)
+        while dq:
+            r, c = dq.popleft()
+            if unknown_adj[r, c]:
+                fmask[r, c] = 1  # reachable free cell touching unknown => frontier
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w and free[nr, nc] and not reached[nr, nc]:
+                    reached[nr, nc] = True
+                    came_from[nr, nc, 0] = r
+                    came_from[nr, nc, 1] = c
+                    dq.append((nr, nc))
+
+        if not fmask.any():
+            return [], came_from
+
+        # Label the UNKNOWN space into connected regions and record each region's
+        # area. A real opening (corridor/room) borders a LARGE unknown region; an
+        # occlusion shadow behind an obstacle borders a TINY one. This "unknown gain"
+        # is what lets the picker ignore useless pockets in an already-covered room
+        # and commit to the big corridor. Pure SLAM — only the drone's own grid.
+        u_num, u_labels, u_stats, _ = cv2.connectedComponentsWithStats(
+            unknown.astype(np.uint8)
+        )
+        u_area = u_stats[:, cv2.CC_STAT_AREA] if u_num > 0 else np.zeros(1)
+
+        num, labels_im, stats, centroids = cv2.connectedComponentsWithStats(fmask)
+        frontiers = []
+        for i in range(1, num):
+            size = int(stats[i, cv2.CC_STAT_AREA])
+            if size < min_size:
+                continue
+            cx, cy = centroids[i]
+            cgr, cgc = int(round(cy)), int(round(cx))
+            ys, xs = np.where(labels_im == i)
+            # Goal = the cluster cell nearest the centroid (guaranteed reached/reachable).
+            j = int(np.argmin((ys - cgr) ** 2 + (xs - cgc) ** 2))
+            goal = (int(ys[j]), int(xs[j]))
+            wx, wy = self.grid_to_world(goal[0], goal[1])
+
+            # Unknown gain: total area of the unknown regions this frontier touches.
+            u_ids = set()
+            for fr, fc in zip(ys, xs):
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nr, nc = fr + dr, fc + dc
+                    if 0 <= nr < h and 0 <= nc < w and unknown[nr, nc]:
+                        lbl = int(u_labels[nr, nc])
+                        if lbl > 0:
+                            u_ids.add(lbl)
+            unknown_gain = int(sum(int(u_area[l]) for l in u_ids))
+
+            frontiers.append({
+                "centroid_grid": (goal[0], goal[1]),
+                "centroid_world": (wx, wy),
+                "size": size,
+                "unknown_gain": unknown_gain,
+                "goal_grid": goal,
+            })
+        return frontiers, came_from
+
+    def is_cell_frontier(self, centroid_grid, radius=2) -> bool:
+        """True if a mapped cell is STILL a frontier: some observed-free, traversable
+        cell within `radius` that is adjacent to UNKNOWN space.
+
+        Used to invalidate the active target early. When the drone flies toward a
+        dead-end, the camera eventually maps the wall behind it — the unknown cells
+        become occupied, so this returns False and the brain can switch to a new
+        target BEFORE crawling all the way up to the wall.
+        """
+        prob = self.get_occupancy_grid()
+        blocked = self.get_planning_grid()
+        unknown = (np.abs(self.grid_log_odds) < 0.1)
+        r0, c0 = int(centroid_grid[0]), int(centroid_grid[1])
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                r, c = r0 + dr, c0 + dc
+                if not self.is_in_bounds(r, c):
+                    continue
+                if prob[r, c] < 0.35 and blocked[r, c] == 0:
+                    for ar, ac in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nr, nc = r + ar, c + ac
+                        if self.is_in_bounds(nr, nc) and unknown[nr, nc]:
+                            return True
+        return False
+
+    def reconstruct_path(self, came_from, goal_grid):
+        """Rebuild the BFS path (list of (row,col)) from the seed to goal_grid."""
+        path = []
+        r, c = int(goal_grid[0]), int(goal_grid[1])
+        guard = 0
+        limit = self.h * self.w
+        while r >= 0 and c >= 0 and guard < limit:
+            path.append((r, c))
+            pr = int(came_from[r, c, 0])
+            pc = int(came_from[r, c, 1])
+            if pr < 0 or pc < 0:
+                break
+            r, c = pr, pc
+            guard += 1
+        path.reverse()
+        return path
+
     def detect_frontiers(self, min_size=5):
         """Detect boundaries between explored free space and unexplored space."""
         prob = self.get_occupancy_grid()
-        # Use the WALLS-only planning grid so cells next to dodgeable props still
-        # count as free — otherwise inflated prop fields hide the frontiers behind
-        # them and the drone never plans past a corridor full of boxes.
-        inflated = self.get_planning_grid()
-        
-        # 1. Identify Free Space (prob < 0.35 and not inflated wall)
-        free_space = (prob < 0.35) & (inflated == 0)
+        # Use RAW observed-free space (prob < 0.35), NOT the inflated planning grid.
+        # Inflation erases free cells next to walls, which erased the free cells at
+        # the MOUTH of a side corridor/turn — so the opening never became a frontier
+        # and the drone flew past it into the end wall. We only require the cell to
+        # be genuinely observed-free; reachability + A* decide traversability later.
+        free_space = (prob < 0.35)
         
         # 2. Identify Unknown Space (prob == 0.5, i.e., log-odds close to 0)
         unknown_space = (np.abs(self.grid_log_odds) < 0.1)
