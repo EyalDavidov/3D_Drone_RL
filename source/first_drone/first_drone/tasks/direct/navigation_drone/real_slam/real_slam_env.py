@@ -618,30 +618,57 @@ class SlamBrainModule(BrainModule):
                 if substantial:
                     far_enough = substantial
 
-                # Forward (non-backtracking) frontiers only — the drone's own map,
-                # no USD.
-                forward = [f for f in far_enough if self.is_frontier_ahead(f["centroid_world"])]
-
                 heading = np.array([math.cos(drone_yaw), math.sin(drone_yaw)])
                 travel = getattr(self, "_travel_dir", None)
                 if travel is None:
                     travel = heading
 
+                # A behind-the-drone frontier is acceptable ONLY when it's either a
+                # nearby branch OR a genuinely BIG unexplored region (like the still-
+                # unfinished big corridor the drone entered room 3 from). A small
+                # pocket in an already-covered room stays rejected. This is the fix
+                # for "keeps targeting the covered room, never goes back to finish the
+                # big corridor". Uses unknown_gain only — pure SLAM, no USD.
+                BIG_GAIN = 250   # cells (~2.5 m²): worth returning to explore
+                vis = getattr(self, "visited_mask", None)
+
+                def _visited_centroid(f):
+                    r, c = self.mapper.world_to_grid(
+                        f["centroid_world"][0], f["centroid_world"][1]
+                    )
+                    return (vis is not None and self.mapper.is_in_bounds(r, c)
+                            and bool(vis[r, c]))
+
+                def _acceptable(f):
+                    to_f = np.array(f["centroid_world"]) - d_pos_w[:2]
+                    dist = float(np.linalg.norm(to_f))
+                    fwd = float(np.dot(to_f / dist, travel)) if dist > 1e-3 else 1.0
+                    if fwd > -0.2:
+                        return True  # ahead / to the side
+                    if dist <= self.BACKTRACK_MAX_M:
+                        return True  # nearby branch just off the current spot
+                    # Far behind: only go back for a large UNEXPLORED region, and not
+                    # into ground already flown over (a covered room).
+                    return (int(f.get("unknown_gain", 0)) >= BIG_GAIN
+                            and not _visited_centroid(f))
+
+                candidates = [f for f in far_enough if _acceptable(f)]
+
+                GAIN_CAP = 800.0  # cap so one huge region doesn't swamp distance ties
+
                 def _frontier_score(f):
                     cw = np.array(f["centroid_world"])
                     to_f = cw - d_pos_w[:2]
                     dist = float(np.linalg.norm(to_f))
-                    # Information gain = how much genuinely-unexplored space this
-                    # frontier opens onto (unknown_gain), NOT just the frontier line
-                    # length. Weighted strongly so the big corridor (huge unknown
-                    # behind it) beats a nearby small pocket in a covered room.
-                    info_gain = float(np.log1p(f.get("unknown_gain", f.get("size", 1))))
-                    # Forward preference along the smoothed travel direction: strongly
-                    # penalise frontiers behind the drone so it keeps pushing on and
-                    # doesn't peel off toward a corridor it came from.
+                    # INFORMATION-GAIN-FIRST: the frontier opening onto the most
+                    # unexplored space wins, with distance only as a mild tie-breaker.
+                    # A far big-corridor frontier (gain in the hundreds/thousands) now
+                    # beats a near covered-room pocket (gain ~tens), which linear
+                    # distance weighting could never achieve before.
+                    gain = min(float(f.get("unknown_gain", f.get("size", 1))), GAIN_CAP)
                     fwd = float(np.dot(to_f / dist, travel)) if dist > 1e-3 else 0.0
-                    back_penalty = 6.0 * max(0.0, -fwd)
-                    return dist - 3.0 * info_gain + back_penalty
+                    back_penalty = 40.0 * max(0.0, -fwd)  # gentle nudge, not a veto
+                    return 0.4 * dist - gain + back_penalty
 
                 def _commit(frontier, label):
                     # Center-biased A* for the flown path (keeps clearance from walls,
@@ -667,29 +694,19 @@ class SlamBrainModule(BrainModule):
                     return False
 
                 committed = False
-                if forward:
-                    # TIER 1 — a real opening ahead: go explore it.
-                    committed = _commit(min(forward, key=_frontier_score), "Target frontier")
+                # Try candidates best-first (highest info gain). Commit the first one
+                # the planner can actually reach.
+                for f in sorted(candidates, key=_frontier_score):
+                    if _commit(f, "Target frontier"):
+                        committed = True
+                        break
 
                 if not committed:
-                    # TIER 2 — no forward frontier yet. Before turning back, COMMIT to
-                    # the current corridor: fly to the end of the mapped free space so
-                    # the cameras can reveal a turn. Only if there's nothing to probe
-                    # (already at the end / dead-end) do we consider backtracking.
+                    # No routable frontier yet — COMMIT to the current corridor: fly to
+                    # the end of mapped free space so the cameras reveal a turn.
                     probe = self._forward_probe_target(d_pos_w, came_from)
                     if probe is not None:
                         committed = _commit(probe, "Probing to corridor end")
-
-                if not committed:
-                    # TIER 3 — corridor confirmed closed at its end: allow a
-                    # turn-around, but ONLY to a NEARBY frontier (within BACKTRACK_MAX_M).
-                    # Never fly back across the map to re-enter an explored room.
-                    near_back = [
-                        f for f in far_enough
-                        if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) <= self.BACKTRACK_MAX_M
-                    ]
-                    if near_back:
-                        committed = _commit(min(near_back, key=_frontier_score), "Backtrack target (nearby, corridor exhausted)")
 
                 if not committed:
                     visited, total = self.coverage_stats()

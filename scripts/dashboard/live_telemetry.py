@@ -610,6 +610,7 @@ class LiveDroneTelemetry:
                 substantial = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 40]
                 if substantial:
                     frontiers = substantial
+                return frontiers
             else:
                 frontiers = mapper.detect_frontiers()
             ahead = getattr(brain, "is_frontier_ahead", None)

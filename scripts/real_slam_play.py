@@ -419,8 +419,8 @@ def main():
                         frontiers = _subst
                 else:
                     frontiers = mapper.detect_frontiers()
-                if callable(_ahead):
-                    frontiers = [f for f in frontiers if _ahead(f["centroid_world"])]
+                    if callable(_ahead):
+                        frontiers = [f for f in frontiers if _ahead(f["centroid_world"])]
                 draw_slam_visualizer(
                     mapper, d_pos, drone_yaw, env.slam_state, frontiers,
                     env.active_frontier, env.astar_path_world, start_run_time,
