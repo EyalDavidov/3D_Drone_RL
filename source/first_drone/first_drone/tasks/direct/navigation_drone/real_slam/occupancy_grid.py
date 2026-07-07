@@ -285,6 +285,26 @@ class OccupancyGridMapper:
         inflated_obs = cv2.dilate(obstacle_mask, small_k, iterations=1)
         return ((inflated_walls > 0) | (inflated_obs > 0)).astype(np.uint8)
 
+    def get_traversable_free(self):
+        """Free-space mask for frontier BFS / reachability / probing.
+
+        Unlike get_planning_grid(), walls are NOT inflated here — only their actual
+        mapped-occupied cells block. Even a 1-cell wall inflation seals the free
+        cells at the END of a narrow corridor (front wall + side wall inflate over
+        exactly where a turn opening would be), so the turn frontier vanished and the
+        drone just hovered ("No reachable frontier"). Raw wall cells are already
+        excluded by the free threshold, and the 4-connected BFS can't slip diagonally
+        through a wall corner, so corridors + their turns stay open. Dodgeable
+        obstacles (poles) DO get a thin inflation so paths still route around them.
+
+        Pure SLAM — occupancy grid only, no USD.
+        """
+        prob = self.get_occupancy_grid()
+        _, obstacle_mask = self.get_wall_obstacle_masks(use_walkable=False)
+        small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        inflated_obs = cv2.dilate(obstacle_mask, small_k, iterations=1)
+        return (prob < 0.35) & (inflated_obs == 0)
+
     def compute_reachable_mask(self, start_row, start_col):
         """Flood-fill the free cells reachable from a start cell (pure SLAM).
 
@@ -406,9 +426,9 @@ class OccupancyGridMapper:
         """
         from collections import deque
 
-        prob = self.get_occupancy_grid()
-        blocked = self.get_planning_grid()
-        free = (prob < 0.35) & (blocked == 0)
+        # Walls NOT inflated (see get_traversable_free) so narrow corridor-end turns
+        # stay open and their frontiers are detectable/reachable.
+        free = self.get_traversable_free()
         unknown = (np.abs(self.grid_log_odds) < 0.1)
         k = np.ones((3, 3), dtype=np.uint8)
         unknown_adj = cv2.dilate(unknown.astype(np.uint8), k) > 0
@@ -504,8 +524,7 @@ class OccupancyGridMapper:
         become occupied, so this returns False and the brain can switch to a new
         target BEFORE crawling all the way up to the wall.
         """
-        prob = self.get_occupancy_grid()
-        blocked = self.get_planning_grid()
+        free = self.get_traversable_free()
         unknown = (np.abs(self.grid_log_odds) < 0.1)
         r0, c0 = int(centroid_grid[0]), int(centroid_grid[1])
         for dr in range(-radius, radius + 1):
@@ -513,12 +532,91 @@ class OccupancyGridMapper:
                 r, c = r0 + dr, c0 + dc
                 if not self.is_in_bounds(r, c):
                     continue
-                if prob[r, c] < 0.35 and blocked[r, c] == 0:
+                if free[r, c]:
                     for ar, ac in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                         nr, nc = r + ar, c + ac
                         if self.is_in_bounds(nr, nc) and unknown[nr, nc]:
                             return True
         return False
+
+    def plan_path_centered(self, start_grid, goal_grid, clearance_cells=3, wall_weight=1.5):
+        """A* that PREFERS the middle of free space (fixes wall-hugging paths).
+
+        Blocking = get_traversable_free() (walls block only their raw cells, poles
+        inflated) so narrow corridors are still passable. On top of the normal step
+        cost, cells close to a wall get a penalty proportional to how far inside
+        `clearance_cells` they are — so in open areas the path runs down the centre,
+        while in a genuinely narrow corridor (every cell is near a wall) the penalty
+        is ~uniform and it still finds the route. Returns a world-coord path or None.
+        """
+        import heapq
+
+        free = self.get_traversable_free().astype(np.uint8)
+        h, w = free.shape
+        r0, c0 = int(start_grid[0]), int(start_grid[1])
+        r1, c1 = int(goal_grid[0]), int(goal_grid[1])
+        if not (self.is_in_bounds(r0, c0) and self.is_in_bounds(r1, c1)):
+            return None
+
+        # Distance (in cells) from every free cell to the nearest blocked cell.
+        dist = cv2.distanceTransform(free, cv2.DIST_L2, 3)
+
+        # Seed from nearest free cell if the drone's own cell reads blocked.
+        if free[r0, c0] == 0:
+            found = None
+            for rad in range(1, 8):
+                for dr in range(-rad, rad + 1):
+                    for dc in range(-rad, rad + 1):
+                        rr, cc = r0 + dr, c0 + dc
+                        if self.is_in_bounds(rr, cc) and free[rr, cc]:
+                            found = (rr, cc)
+                            break
+                    if found:
+                        break
+                if found:
+                    break
+            if found is None:
+                return None
+            r0, c0 = found
+
+        def clearance_penalty(r, c):
+            d = float(dist[r, c])
+            return wall_weight * max(0.0, clearance_cells - d)
+
+        def heuristic(r, c):
+            return np.hypot(r - r1, c - c1)
+
+        open_set = [(heuristic(r0, c0), 0.0, (r0, c0))]
+        came = {}
+        g = {(r0, c0): 0.0}
+        neigh = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        it = 0
+        while open_set and it < 20000:
+            it += 1
+            _, cg, cur = heapq.heappop(open_set)
+            if cur == (r1, c1):
+                path = [cur]
+                while cur in came:
+                    cur = came[cur]
+                    path.append(cur)
+                path.reverse()
+                return [self.grid_to_world(r, c) for r, c in path]
+            r, c = cur
+            for dr, dc in neigh:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < h and 0 <= nc < w):
+                    continue
+                # Allow the goal cell even if it sits on a non-free cell (frontier
+                # goals sit at the edge of known-free space).
+                if free[nr, nc] == 0 and (nr, nc) != (r1, c1):
+                    continue
+                step = 1.414 if (dr and dc) else 1.0
+                tg = cg + step + clearance_penalty(nr, nc)
+                if (nr, nc) not in g or tg < g[(nr, nc)]:
+                    g[(nr, nc)] = tg
+                    came[(nr, nc)] = cur
+                    heapq.heappush(open_set, (tg + heuristic(nr, nc), tg, (nr, nc)))
+        return None
 
     def reconstruct_path(self, came_from, goal_grid):
         """Rebuild the BFS path (list of (row,col)) from the seed to goal_grid."""

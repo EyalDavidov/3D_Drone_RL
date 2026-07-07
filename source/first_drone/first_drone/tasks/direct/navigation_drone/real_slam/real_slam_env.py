@@ -242,9 +242,8 @@ class SlamBrainModule(BrainModule):
             travel = getattr(self, "_last_heading", None)
         if travel is None:
             return None
-        prob = self.mapper.get_occupancy_grid()
-        blocked = self.mapper.get_planning_grid()
-        known_free = (prob < 0.35) & (blocked == 0)
+        # Walls not inflated → narrow corridors stay probeable to their very end.
+        known_free = self.mapper.get_traversable_free()
         vis = getattr(self, "visited_mask", None)
 
         cell = self.mapper.cell_size
@@ -554,8 +553,12 @@ class SlamBrainModule(BrainModule):
             )
 
             if self.active_frontier is not None:
-                is_close = dist_to_f < 1.3
-                is_near_and_blocked = (dist_to_f < 1.6 and self.active_frontier_ticks > 40)
+                # Clear the target a bit earlier so it advances to the NEXT opening
+                # (e.g. the next corridor) instead of lingering right on top of the
+                # current frontier — the unknown behind it is already being mapped as
+                # the drone approaches.
+                is_close = dist_to_f < 1.6
+                is_near_and_blocked = (dist_to_f < 2.2 and self.active_frontier_ticks > 25)
                 if is_close or is_near_and_blocked:
                     reason = "direct arrival" if is_close else "proximity timeout (blocked/dead-end)"
                     print(f"[SLAM Brain] Cleared frontier at distance {dist_to_f:.2f}m via {reason}.")
@@ -564,11 +567,10 @@ class SlamBrainModule(BrainModule):
                     # Fall through to planning block to plan new path in this very frame!
 
             need_target = self.active_frontier is None
-            # Replan every ~100 steps (was 150): keeps the A* path fresh as the map
-            # fills in, so the drone re-routes around newly seen walls sooner and
-            # cuts corners less on long legs.
+            # Replan more often (every ~60 steps) so the center-biased path stays
+            # fresh as the map fills in and the drone re-routes around new walls sooner.
             periodic_replan = (
-                self.active_frontier is not None and self.explore_step_count >= 100
+                self.active_frontier is not None and self.explore_step_count >= 60
             )
 
             if need_target:
@@ -642,15 +644,24 @@ class SlamBrainModule(BrainModule):
                     return dist - 3.0 * info_gain + back_penalty
 
                 def _commit(frontier, label):
-                    grid_path = self.mapper.reconstruct_path(came_from, frontier["goal_grid"])
-                    if grid_path and len(grid_path) >= 2:
+                    # Center-biased A* for the flown path (keeps clearance from walls,
+                    # no more wall-hugging). Fall back to the guaranteed BFS path if
+                    # the planner can't converge for some reason.
+                    world_path = self.mapper.plan_path_centered(
+                        (start_r, start_c), frontier["goal_grid"]
+                    )
+                    if not world_path or len(world_path) < 2:
+                        grid_path = self.mapper.reconstruct_path(came_from, frontier["goal_grid"])
+                        world_path = (
+                            [self.mapper.grid_to_world(r, c) for r, c in grid_path]
+                            if grid_path else None
+                        )
+                    if world_path and len(world_path) >= 2:
                         self.active_frontier = frontier
-                        self.astar_path_world = [
-                            self.mapper.grid_to_world(r, c) for r, c in grid_path
-                        ]
+                        self.astar_path_world = world_path
                         print(
                             f"[SLAM Brain] {label}: {frontier['centroid_world']} "
-                            f"(size {frontier.get('size', 0)}, {len(grid_path)} waypoints)"
+                            f"(gain {frontier.get('unknown_gain', 0)}, {len(world_path)} waypoints)"
                         )
                         return True
                     return False
@@ -699,8 +710,9 @@ class SlamBrainModule(BrainModule):
                         self.astar_path_world = []
 
             elif periodic_replan:
-                # Refresh the path to the committed frontier as the map fills in,
-                # using the same BFS field (guaranteed-reachable, no A* failures).
+                # Refresh the (center-biased) path to the committed frontier as the
+                # map fills in, so it re-routes around newly-seen walls and stays off
+                # the walls.
                 self.explore_step_count = 0
                 start_r, start_c = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
                 goal = self.active_frontier.get("goal_grid")
@@ -710,14 +722,9 @@ class SlamBrainModule(BrainModule):
                         self.active_frontier["centroid_world"][1],
                     )
                     goal = (gr, gc)
-                _, came_from = self.mapper.find_reachable_frontiers(
-                    start_r, start_c, min_size=6
-                )
-                path = self.mapper.reconstruct_path(came_from, goal)
-                if path and len(path) >= 2:
-                    self.astar_path_world = [
-                        self.mapper.grid_to_world(r, c) for r, c in path
-                    ]
+                world_path = self.mapper.plan_path_centered((start_r, start_c), goal)
+                if world_path and len(world_path) >= 2:
+                    self.astar_path_world = world_path
 
             if self.astar_path_world:
                 # Find closest index on the A* path to the drone's current 2D position
