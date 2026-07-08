@@ -299,9 +299,11 @@ class OccupancyGridMapper:
 
         Pure SLAM — occupancy grid only, no USD.
         """
-        # Pure SLAM: only raw occupied cells block. No inflation of obstacles or walls
-        # for BFS/reachability, so narrow turns and prop-filled openings stay passable.
-        return (prob < 0.35)
+        prob = self.get_occupancy_grid()
+        wall_mask, _ = self.get_wall_obstacle_masks(use_walkable=False)
+        # Observed-free space OR small/dodgeable obstacles (props/poles) are passable.
+        # This keeps BFS reachability from getting blocked by scattered props in corridors.
+        return (prob < 0.35) | ((prob > 0.65) & (wall_mask == 0))
 
     def compute_reachable_mask(self, start_row, start_col):
         """Flood-fill the free cells reachable from a start cell (pure SLAM).
@@ -406,7 +408,7 @@ class OccupancyGridMapper:
                     return True
         return False
 
-    def find_reachable_frontiers(self, start_row, start_col, min_size=6):
+    def find_reachable_frontiers(self, start_row, start_col, min_size=1):
         """Robust pure-SLAM frontier search: one BFS over the drone's OWN free space.
 
         This replaces the fragile "detect frontiers -> separately test reachability
@@ -594,7 +596,7 @@ class OccupancyGridMapper:
                 n_free += 1
         return n_free <= 2
 
-    def is_cell_frontier(self, centroid_grid, radius=2) -> bool:
+    def is_cell_frontier(self, centroid_grid, radius=1) -> bool:
         """True if a mapped cell is STILL a frontier: some observed-free, traversable
         cell within `radius` that is adjacent to UNKNOWN space.
 
@@ -609,10 +611,14 @@ class OccupancyGridMapper:
         for dr in range(-radius, radius + 1):
             for dc in range(-radius, radius + 1):
                 r, c = r0 + dr, c0 + dc
-                if not self.is_in_bounds(r, c):
+                if not self.is_in_bounds(r, c) or not free[r, c]:
                     continue
-                if free[r, c]:
-                    for ar, ac in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                # Check 8-connected neighbors to handle diagonal frontiers correctly
+                # while keeping the search tight so we don't look past mapped walls.
+                for ar in (-1, 0, 1):
+                    for ac in (-1, 0, 1):
+                        if ar == 0 and ac == 0:
+                            continue
                         nr, nc = r + ar, c + ac
                         if self.is_in_bounds(nr, nc) and unknown[nr, nc]:
                             return True
@@ -634,6 +640,16 @@ class OccupancyGridMapper:
                     count += 1
         return count
 
+    def get_clearance_at_grid(self, row, col) -> float:
+        """Return the distance (in meters) to the nearest occupied wall/obstacle cell."""
+        prob = self.get_occupancy_grid()
+        free_or_unknown = (prob < 0.65).astype(np.uint8)
+        dist = cv2.distanceTransform(free_or_unknown, cv2.DIST_L2, 5)
+        r, c = int(row), int(col)
+        if not self.is_in_bounds(r, c):
+            return 0.0
+        return float(dist[r, c]) * self.cell_size
+
     def plan_path_centered(self, start_grid, goal_grid, clearance_cells=5, wall_weight=4.0):
         """A* that PREFERS the middle of free space (fixes wall-hugging paths).
 
@@ -646,7 +662,13 @@ class OccupancyGridMapper:
         """
         import heapq
 
-        free = self.get_traversable_free().astype(np.uint8)
+        # Inflate structural walls (to close noise gaps) but do NOT inflate small obstacles
+        # so that narrow corridor passages around poles/obstacles remain passable.
+        wall_mask, obstacle_mask = self.get_wall_obstacle_masks(use_walkable=False)
+        small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        inflated_walls = cv2.dilate(wall_mask, small_k, iterations=1)
+        prob = self.get_occupancy_grid()
+        free = ((inflated_walls == 0) & ((prob < 0.35) | (obstacle_mask > 0))).astype(np.uint8)
         h, w = free.shape
         r0, c0 = int(start_grid[0]), int(start_grid[1])
         r1, c1 = int(goal_grid[0]), int(goal_grid[1])
@@ -735,7 +757,7 @@ class OccupancyGridMapper:
         path.reverse()
         return path
 
-    def detect_frontiers(self, min_size=5):
+    def detect_frontiers(self, min_size=1):
         """Detect boundaries between explored free space and unexplored space."""
         prob = self.get_occupancy_grid()
         # Use RAW observed-free space (prob < 0.35), NOT the inflated planning grid.

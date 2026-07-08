@@ -1128,6 +1128,10 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 sx, sy, sz = self._get_safe_checkpoint_local(seg)
                 crash_local = (sx, sy, sz)
 
+        if mission_snapshot is None:
+            if hasattr(self, "_brain") and getattr(self.cfg, "brain_use_sequential_spawns", False):
+                self._brain.reset_mission_from_start()
+
         spawn_x, spawn_y, spawn_z = self._sample_brain_spawn_xyz(
             env_count, crash_local=crash_local, force_checkpoint=force_checkpoint
         )
@@ -1156,8 +1160,6 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 ):
                     self._brain.resync_nav_target_from_sequence()
                 self._brain.prepare_crash_respawn()
-            elif getattr(self.cfg, "brain_use_sequential_spawns", False):
-                self._brain.reset_mission_from_start()
             elif not hasattr(self, "_brain_spawn_initialized"):
                 self._brain_spawn_initialized = True
 

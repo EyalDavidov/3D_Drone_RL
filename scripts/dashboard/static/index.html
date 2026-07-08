@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,17 +9,20 @@
     <link rel="stylesheet" href="css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
 </head>
+
 <body>
     <!-- ===== TOP BAR ===== -->
     <header id="dashboard-header">
         <div class="header-left">
             <div class="logo">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-                    <path d="M2 17l10 5 10-5"/>
-                    <path d="M2 12l10 5 10-5"/>
+                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                    <path d="M2 17l10 5 10-5" />
+                    <path d="M2 12l10 5 10-5" />
                 </svg>
                 <h1>Drone Dashboard</h1>
             </div>
@@ -186,10 +190,14 @@
                         <canvas id="canvas-3d"></canvas>
                         <!-- Metrics overlay -->
                         <div class="map-overlay" id="map-metrics">
-                            <div class="ov-item"><span class="ov-label">VEL</span><span class="ov-val mono" id="metric-speed">0.00</span><span class="ov-unit">m/s</span></div>
-                            <div class="ov-item"><span class="ov-label">ALT</span><span class="ov-val mono" id="metric-alt">0.00</span><span class="ov-unit">m</span></div>
-                            <div class="ov-item"><span class="ov-label">DIST</span><span class="ov-val mono" id="metric-dist">0.00</span><span class="ov-unit">m</span></div>
-                            <div class="ov-item"><span class="ov-label">THR</span><span class="ov-val mono" id="metric-thrust">0.00</span><span class="ov-unit">N</span></div>
+                            <div class="ov-item"><span class="ov-label">VEL</span><span class="ov-val mono"
+                                    id="metric-speed">0.00</span><span class="ov-unit">m/s</span></div>
+                            <div class="ov-item"><span class="ov-label">ALT</span><span class="ov-val mono"
+                                    id="metric-alt">0.00</span><span class="ov-unit">m</span></div>
+                            <div class="ov-item"><span class="ov-label">DIST</span><span class="ov-val mono"
+                                    id="metric-dist">0.00</span><span class="ov-unit">m</span></div>
+                            <div class="ov-item"><span class="ov-label">THR</span><span class="ov-val mono"
+                                    id="metric-thrust">0.00</span><span class="ov-unit">N</span></div>
                         </div>
                     </div>
                 </div>
@@ -222,23 +230,37 @@
                             <div class="slam-stats-grid">
                                 <div class="slam-stats-block">
                                     <div class="slam-stats-heading">Telemetry</div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">State</span><span class="mono slam-stat-val" id="slam-state-val">—</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">X-POS</span><span class="mono slam-stat-val" id="slam-x-val">0.00 m</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Y-POS</span><span class="mono slam-stat-val" id="slam-y-val">0.00 m</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Altitude</span><span class="mono slam-stat-val" id="slam-alt-val">0.00 m</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Heading</span><span class="mono slam-stat-val" id="slam-hdg-val">0.0°</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Speed</span><span class="mono slam-stat-val" id="slam-spd-val">0.00 m/s</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Time</span><span class="mono slam-stat-val" id="slam-time-val">0s</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">State</span><span
+                                            class="mono slam-stat-val" id="slam-state-val">—</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">X-POS</span><span
+                                            class="mono slam-stat-val" id="slam-x-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Y-POS</span><span
+                                            class="mono slam-stat-val" id="slam-y-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Altitude</span><span
+                                            class="mono slam-stat-val" id="slam-alt-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Heading</span><span
+                                            class="mono slam-stat-val" id="slam-hdg-val">0.0°</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Speed</span><span
+                                            class="mono slam-stat-val" id="slam-spd-val">0.00 m/s</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Time</span><span
+                                            class="mono slam-stat-val" id="slam-time-val">0s</span></div>
                                 </div>
                                 <div class="slam-stats-block">
                                     <div class="slam-stats-heading">Mapped Targets</div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Explored</span><span class="mono slam-stat-val" id="slam-explored-val">0%</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Frontiers</span><span class="mono slam-stat-val" id="slam-frontiers-val">0</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Person</span><span class="mono slam-stat-val" id="slam-person-val">Not found</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Goal</span><span class="mono slam-stat-val" id="slam-goal-val">None</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">A* Nodes</span><span class="mono slam-stat-val" id="slam-astar-val">0</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Dist Goal</span><span class="mono slam-stat-val" id="slam-dist-val">0.00 m</span></div>
-                                    <div class="slam-stat-row"><span class="slam-stat-label">Level</span><span class="mono slam-stat-val" id="slam-level-val">1</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Explored</span><span
+                                            class="mono slam-stat-val" id="slam-explored-val">0%</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Frontiers</span><span
+                                            class="mono slam-stat-val" id="slam-frontiers-val">0</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Person</span><span
+                                            class="mono slam-stat-val" id="slam-person-val">Not found</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Goal</span><span
+                                            class="mono slam-stat-val" id="slam-goal-val">None</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">A* Nodes</span><span
+                                            class="mono slam-stat-val" id="slam-astar-val">0</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Dist Goal</span><span
+                                            class="mono slam-stat-val" id="slam-dist-val">0.00 m</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Level</span><span
+                                            class="mono slam-stat-val" id="slam-level-val">1</span></div>
                                 </div>
                             </div>
                         </div>
@@ -266,7 +288,7 @@
                             </div>
 
                             <div class="smap-hud">
-                                <span class="mono" id="slam2d-coord">X 0.00  Y 0.00</span>
+                                <span class="mono" id="slam2d-coord">X 0.00 Y 0.00</span>
                                 <span class="mono smap-hud-zoom" id="slam2d-zoom">1.0×</span>
                             </div>
                             <div class="smap-hint">Scroll zoom · Drag pan · Double-click reset</div>
@@ -295,86 +317,97 @@
 
                     <!-- Multi-Camera Stages Row -->
                     <div class="yhud-stages-row">
-                        <!-- Left Camera Stage -->
-                        <div class="yhud-stage" id="yolo-stage-left">
-                            <canvas id="yolo-canvas-left" class="yhud-canvas"></canvas>
-                            <div class="yhud-grid"></div>
-                            <div class="yhud-scanline"></div>
-                            <div class="yhud-vignette"></div>
-                            <span class="yhud-bracket tl"></span>
-                            <span class="yhud-bracket tr"></span>
-                            <span class="yhud-bracket bl"></span>
-                            <span class="yhud-bracket br"></span>
-                            <div class="yhud-stage-badge">LEFT</div>
-                        </div>
+                        <!-- Top Row (Front main camera) -->
+                        <div class="yhud-stages-top">
+                            <!-- Front Camera Stage -->
+                            <div class="yhud-stage" id="yolo-stage-front">
+                                <canvas id="yolo-canvas" class="yhud-canvas"></canvas>
+                                <div class="yhud-grid"></div>
+                                <div class="yhud-scanline" id="yolo-scanline"></div>
+                                <div class="yhud-vignette"></div>
 
-                        <!-- Front Camera Stage -->
-                        <div class="yhud-stage" id="yolo-stage-front">
-                            <canvas id="yolo-canvas" class="yhud-canvas"></canvas>
-                            <div class="yhud-grid"></div>
-                            <div class="yhud-scanline" id="yolo-scanline"></div>
-                            <div class="yhud-vignette"></div>
+                                <!-- Corner frame brackets -->
+                                <span class="yhud-bracket tl"></span>
+                                <span class="yhud-bracket tr"></span>
+                                <span class="yhud-bracket bl"></span>
+                                <span class="yhud-bracket br"></span>
 
-                            <!-- Corner frame brackets -->
-                            <span class="yhud-bracket tl"></span>
-                            <span class="yhud-bracket tr"></span>
-                            <span class="yhud-bracket bl"></span>
-                            <span class="yhud-bracket br"></span>
-
-                            <!-- Scan label chip (top-left) -->
-                            <div class="yhud-chip" id="yolo-scan-chip" hidden>
-                                <span class="yhud-chip-icon">◎</span>
-                                <span id="yolo-scan-label">ROOM</span>
-                            </div>
-
-                            <!-- Intel card (bottom-left, appears on detection) -->
-                            <div class="yhud-intel" id="yolo-intel" hidden>
-                                <div class="yhud-intel-head">
-                                    <span class="yhud-intel-dot"></span>
-                                    <span id="yolo-intel-label">TARGET</span>
-                                    <span class="yhud-intel-conf" id="yolo-intel-conf">0%</span>
+                                <!-- Scan label chip (top-left) -->
+                                <div class="yhud-chip" id="yolo-scan-chip" hidden>
+                                    <span class="yhud-chip-icon">◎</span>
+                                    <span id="yolo-scan-label">ROOM</span>
                                 </div>
-                                <div class="yhud-intel-grid">
-                                    <span class="yhud-intel-k">LAT</span><span class="mono" id="yolo-intel-lat">—</span>
-                                    <span class="yhud-intel-k">LON</span><span class="mono" id="yolo-intel-lon">—</span>
-                                    <span class="yhud-intel-k">DIST</span><span class="mono" id="yolo-intel-dist">—</span>
-                                </div>
-                            </div>
 
-                            <!-- Detection alert (bottom-center HUD notification) -->
-                            <div class="hud-alert" id="yolo-hud-alert" data-state="idle">
-                                <div class="hud-alert-scan"></div>
-                                <div class="hud-alert-icon" id="yolo-alert-icon">◎</div>
-                                <div class="hud-alert-body">
-                                    <div class="hud-alert-label" id="yolo-alert-label">SCANNING FOR HUMANS</div>
-                                    <div class="hud-alert-meter">
-                                        <div class="hud-alert-meter-fill" id="yolo-alert-meter"></div>
-                                        <div class="hud-alert-meter-thresh" id="yolo-alert-thresh"></div>
+                                <!-- Intel card (bottom-left, appears on detection) -->
+                                <div class="yhud-intel" id="yolo-intel" hidden>
+                                    <div class="yhud-intel-head">
+                                        <span class="yhud-intel-dot"></span>
+                                        <span id="yolo-intel-label">TARGET</span>
+                                        <span class="yhud-intel-conf" id="yolo-intel-conf">0%</span>
+                                    </div>
+                                    <div class="yhud-intel-grid">
+                                        <span class="yhud-intel-k">LAT</span><span class="mono"
+                                            id="yolo-intel-lat">—</span>
+                                        <span class="yhud-intel-k">LON</span><span class="mono"
+                                            id="yolo-intel-lon">—</span>
+                                        <span class="yhud-intel-k">DIST</span><span class="mono"
+                                            id="yolo-intel-dist">—</span>
                                     </div>
                                 </div>
-                                <div class="hud-alert-conf" id="yolo-alert-conf">0.0<span class="hud-alert-pct">%</span></div>
+
+                                <!-- Detection alert (bottom-center HUD notification) -->
+                                <div class="hud-alert" id="yolo-hud-alert" data-state="idle">
+                                    <div class="hud-alert-scan"></div>
+                                    <div class="hud-alert-icon" id="yolo-alert-icon">◎</div>
+                                    <div class="hud-alert-body">
+                                        <div class="hud-alert-label" id="yolo-alert-label">SCANNING FOR HUMANS</div>
+                                        <div class="hud-alert-meter">
+                                            <div class="hud-alert-meter-fill" id="yolo-alert-meter"></div>
+                                            <div class="hud-alert-meter-thresh" id="yolo-alert-thresh"></div>
+                                        </div>
+                                    </div>
+                                    <div class="hud-alert-conf" id="yolo-alert-conf">0.0<span
+                                            class="hud-alert-pct">%</span></div>
+                                </div>
+                                <div class="yhud-stage-badge">FRONT</div>
                             </div>
-                            <div class="yhud-stage-badge">FRONT</div>
                         </div>
 
-                        <!-- Right Camera Stage -->
-                        <div class="yhud-stage" id="yolo-stage-right">
-                            <canvas id="yolo-canvas-right" class="yhud-canvas"></canvas>
-                            <div class="yhud-grid"></div>
-                            <div class="yhud-scanline"></div>
-                            <div class="yhud-vignette"></div>
-                            <span class="yhud-bracket tl"></span>
-                            <span class="yhud-bracket tr"></span>
-                            <span class="yhud-bracket bl"></span>
-                            <span class="yhud-bracket br"></span>
-                            <div class="yhud-stage-badge">RIGHT</div>
+                        <!-- Bottom Row (Left and Right wing cameras) -->
+                        <div class="yhud-stages-bottom">
+                            <!-- Left Camera Stage -->
+                            <div class="yhud-stage" id="yolo-stage-left">
+                                <canvas id="yolo-canvas-left" class="yhud-canvas"></canvas>
+                                <div class="yhud-grid"></div>
+                                <div class="yhud-scanline"></div>
+                                <div class="yhud-vignette"></div>
+                                <span class="yhud-bracket tl"></span>
+                                <span class="yhud-bracket tr"></span>
+                                <span class="yhud-bracket bl"></span>
+                                <span class="yhud-bracket br"></span>
+                                <div class="yhud-stage-badge">LEFT</div>
+                            </div>
+
+                            <!-- Right Camera Stage -->
+                            <div class="yhud-stage" id="yolo-stage-right">
+                                <canvas id="yolo-canvas-right" class="yhud-canvas"></canvas>
+                                <div class="yhud-grid"></div>
+                                <div class="yhud-scanline"></div>
+                                <div class="yhud-vignette"></div>
+                                <span class="yhud-bracket tl"></span>
+                                <span class="yhud-bracket tr"></span>
+                                <span class="yhud-bracket bl"></span>
+                                <span class="yhud-bracket br"></span>
+                                <div class="yhud-stage-badge">RIGHT</div>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Bottom readout bar -->
                     <div class="yhud-footer">
                         <div class="yhud-readout">
-                            <span class="yhud-readout-num" id="yolo-conf-big">0<span class="yhud-readout-pct">%</span></span>
+                            <span class="yhud-readout-num" id="yolo-conf-big">0<span
+                                    class="yhud-readout-pct">%</span></span>
                             <span class="yhud-readout-cap">CONFIDENCE</span>
                         </div>
                         <div class="yhud-meter">
@@ -415,11 +448,16 @@
                             <span class="glass-title"><span class="glass-title-icon">📊</span> Telemetry</span>
                         </div>
                         <div class="glass-body glass-stats">
-                            <div class="glass-stat-row"><span class="glass-stat-label">Best Conf</span><span class="mono glass-stat-val" id="yolo-conf-val">0.0%</span></div>
-                            <div class="glass-stat-row"><span class="glass-stat-label">Live Conf</span><span class="mono glass-stat-val" id="yolo-live-val">0.0%</span></div>
-                            <div class="glass-stat-row"><span class="glass-stat-label">Threshold</span><span class="mono glass-stat-val" id="yolo-thresh-val">70%</span></div>
-                            <div class="glass-stat-row"><span class="glass-stat-label">Detections</span><span class="mono glass-stat-val" id="yolo-boxes-val">0</span></div>
-                            <div class="glass-stat-row"><span class="glass-stat-label">Person</span><span class="mono glass-stat-val" id="yolo-person-val">Not found</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Best Conf</span><span
+                                    class="mono glass-stat-val" id="yolo-conf-val">0.0%</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Live Conf</span><span
+                                    class="mono glass-stat-val" id="yolo-live-val">0.0%</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Threshold</span><span
+                                    class="mono glass-stat-val" id="yolo-thresh-val">70%</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Detections</span><span
+                                    class="mono glass-stat-val" id="yolo-boxes-val">0</span></div>
+                            <div class="glass-stat-row"><span class="glass-stat-label">Person</span><span
+                                    class="mono glass-stat-val" id="yolo-person-val">Not found</span></div>
                         </div>
                     </div>
                 </div>
@@ -441,4 +479,5 @@
     <script src="js/yolo_hud.js"></script>
     <script src="js/app.js"></script>
 </body>
+
 </html>
