@@ -76,28 +76,12 @@ class SlamBrainModule(BrainModule):
             safety_margin=0.15,
         )
 
-        # Precompute walkable mask for coverage statistics matching the house boundaries
-        h, w = self.mapper.h, self.mapper.w
-        r_indices, c_indices = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-        
-        # Convert all grid indices to world coordinates
-        wx_grid = self.mapper.min_x + (c_indices + 0.5) * self.mapper.cell_size
-        wy_grid = self.mapper.min_y + (r_indices + 0.5) * self.mapper.cell_size
-        
-        tx = torch.tensor(wx_grid.flatten(), device=env.device, dtype=torch.float32)
-        ty = torch.tensor(wy_grid.flatten(), device=env.device, dtype=torch.float32)
-        
-        if hasattr(env, "_is_on_navigable_floor"):
-            # Query the navigable floor and map obstacles with small margins to identify exactly what is in the rooms
-            on_floor = env._is_on_navigable_floor(tx, ty, margin=0.1)
-            if hasattr(env, "_is_inside_map_obstacle"):
-                inside_obstacle = env._is_inside_map_obstacle(tx, ty, margin=0.05)
-                walkable = on_floor & (~inside_obstacle)
-            else:
-                walkable = on_floor
-            self.mapper.walkable_mask = walkable.cpu().numpy().reshape((h, w))
-        else:
-            self.mapper.walkable_mask = np.ones((h, w), dtype=bool)
+        # PURE SLAM: never load USD / ground-truth walkable geometry into the mapper.
+        self.mapper.walkable_mask = None
+        print(
+            "[SLAM Brain] Pure-SLAM mode: frontiers, paths, and targets use the "
+            "depth-built occupancy grid only (no USD walkable / ground-truth map)."
+        )
 
         self.state = "EXPLORE"
         self.segment_idx = 0
@@ -127,6 +111,8 @@ class SlamBrainModule(BrainModule):
         # this range (a branch right off the current spot). Prevents the drone from
         # flying all the way back across the map into rooms it already explored.
         self.BACKTRACK_MAX_M = 5.0
+        # Minimum unknown-region area touching a frontier (filters shadow pockets).
+        self.MIN_UNKNOWN_GAIN = 20
         self._hold_log_ticks = 0
         self._frontier_lock_ticks = 0
 
@@ -239,30 +225,6 @@ class SlamBrainModule(BrainModule):
     def get_segment_label(self, idx=0):
         return f"SLAM {self.state}"
 
-    def _is_world_xy_walkable(self, wx: float, wy: float) -> bool:
-        """True if a world point falls inside the precomputed walkable house mask.
-
-        Used to reject frontiers/targets that land outside the rooms (e.g. cells
-        the depth rays leaked through a window/door gap into unreachable space).
-        """
-        mask = getattr(self.mapper, "walkable_mask", None)
-        if mask is None:
-            return True
-        row, col = self.mapper.world_to_grid(wx, wy)
-        if not self.mapper.is_in_bounds(row, col):
-            return False
-        return bool(mask[row, col])
-
-    def _frontier_room_idx(self, centroid_world) -> int | None:
-        """Nearest spawn-sequence checkpoint (room index) for a world-XY frontier."""
-        seq = getattr(self.env.cfg, "brain_spawn_sequence", None)
-        if not seq or len(seq) == 0:
-            return None
-        origin = getattr(self, "_env_origin_xy", np.zeros(2))
-        cw_local = np.array(centroid_world[:2], dtype=np.float64) - np.array(origin[:2])
-        dists = [np.linalg.norm(cw_local - np.array(pt[:2])) for pt in seq]
-        return int(np.argmin(dists))
-
     def _ray_probe_in_direction(self, d_pos_w, came_from, direction_xy, max_dist=6.0):
         """Ray-march through known-free space along any unit direction (pure SLAM).
 
@@ -294,10 +256,14 @@ class SlamBrainModule(BrainModule):
         wx, wy, r, c = best
         if float(np.hypot(wx - d_pos_w[0], wy - d_pos_w[1])) < 1.0:
             return None
+        if not self.mapper.is_cell_frontier((r, c), radius=1):
+            return None
         path = self.mapper.reconstruct_path(came_from, (r, c))
         if not path or len(path) < 2:
             return None
         unk = self.mapper.unknown_touch_count(r, c)
+        if unk < self.MIN_UNKNOWN_GAIN:
+            return None
         probe = {
             "centroid_world": (wx, wy),
             "centroid_grid": (r, c),
@@ -312,72 +278,34 @@ class SlamBrainModule(BrainModule):
         return probe
 
     def _discover_opening_probes(self, d_pos_w, came_from, bfs_frontiers):
-        """Find probe targets toward ANY unexplored opening the SLAM map shows.
+        """Last-resort probes toward bearings of known frontiers that failed commit.
 
-        Direction candidates come from two generic sources (no fixed ±90°):
-          1. Bearings toward every reachable BFS frontier centroid (any angle).
-          2. A full 360° fan (every ``fan_step_deg``) for openings not yet clustered
-             as frontiers — catches new hallways at arbitrary angles.
-
-        Each direction is ray-marched; endpoints are scored by unknown_touch_count
-        so the drone researches whichever direction has the most unexplored space.
+        No 360° fan — that overfit arbitrary angles and spawned targets outside the
+        mapped envelope. Only march along directions where BFS already found frontier
+        clusters but path planning could not commit (e.g. tight turns).
         """
-        dirs = []  # (unit_xy, priority_hint)
+        if not bfs_frontiers:
+            return []
 
-        # Bearings toward detected frontiers — naturally includes side turns, forks,
-        # diagonal branches, whatever angle the map actually has.
-        for f in bfs_frontiers or []:
+        ranked = sorted(
+            bfs_frontiers,
+            key=lambda f: -int(f.get("unknown_gain", 0)),
+        )[:6]
+        probes = []
+        seen_goals = set()
+        for f in ranked:
             to_f = np.array(f["centroid_world"][:2], dtype=np.float64) - d_pos_w[:2]
             dist = float(np.linalg.norm(to_f))
             if dist < 1.0:
                 continue
-            hint = float(f.get("unknown_gain", 0))
-            dirs.append((to_f / dist, hint))
-
-        # Current travel bearing as a soft tie-break (not a hard forward-only lock).
-        travel = getattr(self, "_travel_dir", None)
-        if travel is None:
-            travel = getattr(self, "_last_heading", None)
-        if travel is not None:
-            tn = float(np.linalg.norm(travel))
-            if tn > 1e-6:
-                dirs.append((travel / tn, 10.0))
-
-        # Full fan so a brand-new hallway that isn't a frontier cluster yet still
-        # gets a probe direction (any angle, not just cardinal/lateral).
-        fan_step_deg = 20
-        for deg in range(0, 360, fan_step_deg):
-            rad = math.radians(float(deg))
-            dirs.append((np.array([math.cos(rad), math.sin(rad)], dtype=np.float64), 0.0))
-
-        # Merge directions within ~18° of each other (keep highest hint).
-        merged = []
-        for d, hint in dirs:
-            n = float(np.linalg.norm(d))
-            if n < 1e-6:
-                continue
-            d = d / n
-            dup = False
-            for i, (md, mh) in enumerate(merged):
-                if float(np.dot(d, md)) > math.cos(math.radians(18.0)):
-                    if hint > mh:
-                        merged[i] = (d, hint)
-                    dup = True
-                    break
-            if not dup:
-                merged.append((d, hint))
-
-        probes = []
-        seen_goals = set()
-        for d, hint in merged:
-            probe = self._ray_probe_in_direction(d_pos_w, came_from, d)
+            probe = self._ray_probe_in_direction(d_pos_w, came_from, to_f / dist)
             if probe is None:
                 continue
             g = probe["goal_grid"]
             if g in seen_goals:
                 continue
             seen_goals.add(g)
-            probe["probe_score"] = float(probe.get("probe_score", 0)) + hint
+            probe["probe_score"] = float(probe.get("unknown_gain", 0))
             probes.append(probe)
 
         probes.sort(key=lambda p: -float(p.get("probe_score", 0)))
@@ -510,12 +438,20 @@ class SlamBrainModule(BrainModule):
             goal = self.mapper.world_to_grid(cw[0], cw[1])
         return self.mapper.is_cell_frontier(goal, radius=1)
 
+    def _unknown_ahead(self, frontier, radius=6) -> int:
+        """Unknown cells near the goal — high means real new space, not a shadow pocket."""
+        goal = frontier.get("goal_grid")
+        if goal is None:
+            cw = frontier.get("centroid_world")
+            if cw is None:
+                return 0
+            goal = self.mapper.world_to_grid(cw[0], cw[1])
+        return int(self.mapper.unknown_touch_count(int(goal[0]), int(goal[1]), radius=radius))
+
     def _path_ends_in_visited(self, came_from, goal, tail_frac=0.30, threshold=0.50) -> bool:
         """True if the last portion of the BFS route ends in explored territory."""
         vis = getattr(self, "visited_mask", None)
         if vis is None or came_from is None or goal is None:
-            return False
-        if self.mapper.is_cell_frontier(goal, radius=1):
             return False
         path = self.mapper.reconstruct_path(came_from, goal)
         if not path or len(path) < 3:
@@ -528,30 +464,36 @@ class SlamBrainModule(BrainModule):
         )
         return (rev / len(tail)) >= threshold
 
+    def _is_corridor_frontier(self, frontier) -> bool:
+        """True if this frontier goal sits in a narrow corridor passage."""
+        goal = frontier.get("goal_grid")
+        if goal is None:
+            return False
+        return self.mapper.is_narrow_frontier(goal)
+
     def _is_backtrack_target(self, frontier, d_pos_w, came_from=None) -> bool:
         """True if committing to this frontier means revisiting explored ground."""
         goal = frontier.get("goal_grid")
+        fwd_h, dist = self._frontier_fwd_dot_heading(frontier, d_pos_w)
+        unk = self._unknown_ahead(frontier)
 
-        if self._is_live_opening(frontier):
-            fwd_h, _ = self._frontier_fwd_dot_heading(frontier, d_pos_w)
-            if fwd_h > -0.20:
-                return False
+        is_visited_region = self._goal_region_mostly_visited(frontier)
+        if came_from is not None and goal is not None:
+            is_visited_region = is_visited_region or self._path_ends_in_visited(came_from, goal)
 
-        if self._goal_region_mostly_visited(frontier):
-            fwd_h, dist = self._frontier_fwd_dot_heading(frontier, d_pos_w)
-            if fwd_h > 0.25 and dist < 2.5:
-                return False
-            if self._is_live_opening(frontier) and fwd_h > -0.20:
+        # Only block targets clearly behind the drone (not lateral corridor openings) in visited territory.
+        if fwd_h < -0.35 and dist > 2.0 and is_visited_region:
+            return True
+        if fwd_h < -0.50 and dist > 1.0 and is_visited_region:
+            return True
+
+        if is_visited_region:
+            if unk >= 20 and fwd_h > -0.20:
                 return False
             return True
 
-        if came_from is not None and goal is not None:
-            if self._path_ends_in_visited(came_from, goal):
-                return True
-
-        fwd_t, dist = self._frontier_fwd_dot(frontier, d_pos_w)
-        fwd_h, _ = self._frontier_fwd_dot_heading(frontier, d_pos_w)
-        if fwd_t < -0.15 and fwd_h < -0.15 and dist > self.BACKTRACK_MAX_M:
+        fwd_t, _ = self._frontier_fwd_dot(frontier, d_pos_w)
+        if fwd_t < -0.15 and fwd_h < -0.15 and dist > self.BACKTRACK_MAX_M and is_visited_region:
             return True
         return False
 
@@ -560,14 +502,14 @@ class SlamBrainModule(BrainModule):
         return not self._is_backtrack_target(frontier, d_pos_w, came_from=came_from)
 
     def _prepare_commit_frontier(self, frontier, came_from, start_grid):
-        """Copy frontier dict and deepen high-gain corridor mouths before commit."""
+        """Copy frontier dict and push the goal to the deepest corridor dead-end."""
         f = dict(frontier)
         goal = f.get("goal_grid")
         if goal is None:
             cw = f["centroid_world"]
             goal = self.mapper.world_to_grid(cw[0], cw[1])
             f["goal_grid"] = goal
-        if int(f.get("unknown_gain", 0)) >= 40:
+        if self.mapper.is_cell_frontier(goal, radius=1):
             vis = getattr(self, "visited_mask", None)
             deeper = self.mapper.deepen_frontier_goal(
                 goal, came_from, start_grid, visited_mask=vis
@@ -577,11 +519,6 @@ class SlamBrainModule(BrainModule):
                 wx, wy = self.mapper.grid_to_world(deeper[0], deeper[1])
                 f["centroid_world"] = (wx, wy)
                 f["centroid_grid"] = deeper
-                if self._goal_region_mostly_visited(f):
-                    f["goal_grid"] = goal
-                    cw = frontier["centroid_world"]
-                    f["centroid_world"] = cw
-                    f["centroid_grid"] = frontier.get("centroid_grid", goal)
         return f
 
     def _has_arrived_at_frontier(self, d_pos_w, frontier, dist_to_f) -> bool:
@@ -596,14 +533,14 @@ class SlamBrainModule(BrainModule):
         goal = frontier.get("goal_grid")
         if goal is not None and self.mapper.is_cell_frontier(goal):
             return False
+        if self._is_live_opening(frontier) and self._unknown_ahead(frontier) >= 15:
+            return False
         return True
 
     def _try_extend_active_goal(self, d_pos_w, came_from) -> bool:
         """Push the active corridor target deeper as the drone maps forward."""
         af = self.active_frontier
         if af is None:
-            return False
-        if int(af.get("unknown_gain", 0)) < 40:
             return False
         goal = af.get("goal_grid")
         if goal is None or not self.mapper.is_cell_frontier(goal):
@@ -894,6 +831,29 @@ class SlamBrainModule(BrainModule):
                 self._stuck_ref_pos = None
                 self._stuck_ticks = 0
 
+            if self.active_frontier is not None:
+                # If the goal is no longer a frontier (fully mapped) or is occupied (blocked by wall), clear it
+                # immediately to prevent the drone from flying into closed/mapped walls.
+                goal = self.active_frontier.get("goal_grid")
+                if goal is not None:
+                    prob = self.mapper.get_occupancy_grid()
+                    r, c = int(goal[0]), int(goal[1])
+                    is_occupied = False
+                    if self.mapper.is_in_bounds(r, c):
+                        is_occupied = (prob[r, c] > 0.65)
+                    
+                    if is_occupied or not self.mapper.is_cell_frontier(goal, radius=2):
+                        why = "occupied (wall/obstacle)" if is_occupied else "no longer a frontier (fully mapped)"
+                        print(
+                            f"[SLAM Brain] Active target {self.active_frontier['centroid_world']} "
+                            f"is {why}. Clearing it."
+                        )
+                        self.active_frontier = None
+                        self.astar_path_world = []
+                        self.active_frontier_ticks = 0
+                        self._frontier_lock_ticks = 0
+                        self.explore_step_count = 50  # force replan
+
             dist_to_f = (
                 float(np.linalg.norm(d_pos_w[:2] - np.array(self.active_frontier["centroid_world"])))
                 if self.active_frontier is not None
@@ -908,8 +868,8 @@ class SlamBrainModule(BrainModule):
 
                 # While chasing a corridor, push the goal deeper as the map grows.
                 if (
-                    int(self.active_frontier.get("unknown_gain", 0)) >= 40
-                    and self.explore_step_count % 20 == 0
+                    self._is_live_opening(self.active_frontier)
+                    and self.explore_step_count % 10 == 0
                 ):
                     sr, sc = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
                     _, cf_extend = self.mapper.find_reachable_frontiers(
@@ -929,11 +889,28 @@ class SlamBrainModule(BrainModule):
                     and dist_to_f > 2.0
                 )
                 if is_close or is_stuck_far:
-                    reason = "arrived" if is_close else "hard-stuck (no progress)"
-                    print(f"[SLAM Brain] Cleared frontier at {dist_to_f:.2f}m ({reason}).")
-                    self.active_frontier = None
-                    self.active_frontier_ticks = 0
-                    self._frontier_lock_ticks = 0
+                    if is_close:
+                        sr, sc = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
+                        _, cf_arrive = self.mapper.find_reachable_frontiers(
+                            sr, sc, min_size=3
+                        )
+                        if self._try_extend_active_goal(d_pos_w, cf_arrive):
+                            is_close = False
+                    if is_close or is_stuck_far:
+                        reason = "arrived" if is_close else "hard-stuck (no progress)"
+                        print(
+                            f"[SLAM Brain] Cleared frontier at {dist_to_f:.2f}m ({reason})."
+                        )
+                        c = self.active_frontier["centroid_world"]
+                        if reason == "arrived" or self._goal_region_mostly_visited(
+                            self.active_frontier
+                        ):
+                            self.blacklisted_frontiers.append(
+                                np.array(c, dtype=np.float64)
+                            )
+                        self.active_frontier = None
+                        self.active_frontier_ticks = 0
+                        self._frontier_lock_ticks = 0
                     # Fall through to pick the NEXT unvisited frontier (not a revisit).
                 elif lock <= 0 and self._is_backtrack_target(
                     self.active_frontier, d_pos_w, came_from=None
@@ -973,83 +950,53 @@ class SlamBrainModule(BrainModule):
                         for b in self.blacklisted_frontiers
                     )
 
-                far_enough = [
+                def _substantial(f):
+                    return int(f.get("unknown_gain", 0)) >= self.MIN_UNKNOWN_GAIN
+
+                def _is_real_frontier(f):
+                    goal = f.get("goal_grid")
+                    if goal is None:
+                        cw = f["centroid_world"]
+                        goal = self.mapper.world_to_grid(cw[0], cw[1])
+                    return self.mapper.is_cell_frontier(goal, radius=2)
+
+                candidates = [
                     f for f in bfs_frontiers
                     if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) > 1.0
                     and _not_blacklisted(f)
+                    and _substantial(f)
+                    and _is_real_frontier(f)
+                    and not self._is_backtrack_target(
+                        f, d_pos_w, came_from=came_from
+                    )
                 ]
-
-                MIN_UNKNOWN_GAIN = 40
-                substantial = [
-                    f for f in far_enough
-                    if int(f.get("unknown_gain", 0)) >= MIN_UNKNOWN_GAIN
-                ]
-                if substantial:
-                    far_enough = substantial
-
-                heading = np.array([math.cos(drone_yaw), math.sin(drone_yaw)])
-                travel = getattr(self, "_travel_dir", None)
-                if travel is None:
-                    travel = heading
-
-                def _fwd_dot(f):
-                    to_f = np.array(f["centroid_world"]) - d_pos_w[:2]
-                    dist = float(np.linalg.norm(to_f))
-                    return float(np.dot(to_f / dist, travel)) if dist > 1e-3 else 1.0
-
-                def _fwd_dot_hdg(f):
-                    hdg = getattr(self, "_last_heading", None)
-                    if hdg is None:
-                        hdg = travel
-                    to_f = np.array(f["centroid_world"]) - d_pos_w[:2]
-                    dist = float(np.linalg.norm(to_f))
-                    return float(np.dot(to_f / dist, hdg)) if dist > 1e-3 else 1.0
-
-                def _not_revisiting(f):
-                    return self.is_explorable_frontier(f, d_pos_w, came_from=came_from)
-
-                def _acceptable(f):
-                    if self._is_live_opening(f) and _fwd_dot_hdg(f) > -0.20:
-                        return True
-                    if not _not_revisiting(f):
-                        return False
-                    if self._goal_region_mostly_visited(f):
-                        return False
-                    to_f = np.array(f["centroid_world"]) - d_pos_w[:2]
-                    dist = float(np.linalg.norm(to_f))
-                    fwd = _fwd_dot_hdg(f)
-                    if fwd > -0.15:
-                        return True
-                    return dist <= self.BACKTRACK_MAX_M
-
-                far_enough = [f for f in far_enough if _not_revisiting(f)]
-                candidates = [f for f in far_enough if _acceptable(f)]
-                forward_only = [f for f in candidates if _fwd_dot_hdg(f) > 0.15]
-
-                GAIN_CAP = 800.0
 
                 def _frontier_score(f):
-                    cw = np.array(f["centroid_world"])
-                    to_f = cw - d_pos_w[:2]
-                    dist = float(np.linalg.norm(to_f))
-                    gain = min(float(f.get("unknown_gain", f.get("size", 1))), GAIN_CAP)
-                    fwd = _fwd_dot_hdg(f)
-                    back_penalty = 40.0 * max(0.0, -fwd)
-                    forward_bonus = -80.0 * max(0.0, fwd)
-                    return 0.4 * dist - gain + back_penalty + forward_bonus
+                    """Yamauchi-style: lower = better (high unknown gain, short path)."""
+                    dist = float(
+                        np.linalg.norm(
+                            np.array(f["centroid_world"]) - d_pos_w[:2]
+                        )
+                    )
+                    gain = max(float(f.get("unknown_gain", 1)), 1.0)
+                    return dist / gain
 
                 def _commit(frontier, label):
                     frontier = self._prepare_commit_frontier(
                         frontier, came_from, (start_r, start_c)
                     )
+                    goal = frontier["goal_grid"]
+                    if not self.mapper.is_cell_frontier(goal, radius=2):
+                        return False
+                    if int(frontier.get("unknown_gain", 0)) < self.MIN_UNKNOWN_GAIN:
+                        return False
                     if not self.is_explorable_frontier(
                         frontier, d_pos_w, came_from=came_from
                     ):
                         return False
-                    goal = frontier["goal_grid"]
                     if (
                         self._path_ends_in_visited(came_from, goal)
-                        and not self._is_live_opening(frontier)
+                        and self._unknown_ahead(frontier) < 30
                     ):
                         return False
                     is_back = self._is_backtrack_target(
@@ -1090,50 +1037,57 @@ class SlamBrainModule(BrainModule):
                     return False
 
                 committed = False
-                # 1) Forward frontiers first (stay in the corridor / reach orange dots).
-                for f in sorted(forward_only, key=_frontier_score):
-                    if _commit(f, "Target frontier (forward)"):
+                for f in sorted(candidates, key=_frontier_score):
+                    if _commit(f, "Target frontier"):
                         committed = True
                         break
 
-                # 2) Any other acceptable frontier (side branches, not covered rooms).
-                if not committed:
-                    for f in sorted(candidates, key=_frontier_score):
-                        if _commit(f, "Target frontier"):
-                            committed = True
-                            break
-
-                # 3) Newly discovered openings: forward live frontiers (corridor mouths
-                # the drone just mapped — path crosses visited cells but goal is new).
-                if not committed:
-                    live_fwd = [
-                        f for f in bfs_frontiers
-                        if np.linalg.norm(
-                            d_pos_w[:2] - np.array(f["centroid_world"])
-                        ) > 1.0
-                        and _not_blacklisted(f)
-                        and self._is_live_opening(f)
-                        and _fwd_dot_hdg(f) > 0.05
-                    ]
-                    for f in sorted(live_fwd, key=_frontier_score):
-                        if _commit(f, "Target frontier (new opening)"):
-                            committed = True
-                            break
-
-                # 4) Ray probes — last resort when BFS commit fails or only small pockets.
-                if not committed:
+                # Last resort: ray-march toward high-gain frontiers path planning missed.
+                if not committed and candidates:
                     for probe in self._discover_opening_probes(
-                        d_pos_w, came_from, bfs_frontiers
+                        d_pos_w, came_from, candidates
                     ):
-                        score = float(probe.get("probe_score", 0))
-                        if _commit(probe, f"Probing opening (score {score:.0f})"):
+                        if _commit(probe, "Target frontier (corridor probe)"):
                             committed = True
                             break
+
+                if not committed and self.blacklisted_frontiers:
+                    # If we couldn't commit to any candidate, but we have blacklisted frontiers,
+                    # clear the blacklist and retry selection once. This prevents the drone
+                    # from getting permanently locked out of corridors after a crash reset.
+                    print("[SLAM Brain] No candidates found but blacklist is active. Clearing blacklist to retry.")
+                    self.blacklisted_frontiers = []
+                    candidates = [
+                        f for f in bfs_frontiers
+                        if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) > 1.0
+                        and _substantial(f)
+                        and _is_real_frontier(f)
+                        and not self._is_backtrack_target(
+                            f, d_pos_w, came_from=came_from
+                        )
+                    ]
+                    for f in sorted(candidates, key=_frontier_score):
+                        if _commit(f, "Target frontier (blacklist recovery)"):
+                            committed = True
+                            break
+                    if not committed and candidates:
+                        for probe in self._discover_opening_probes(
+                            d_pos_w, came_from, candidates
+                        ):
+                            if _commit(probe, "Target frontier (corridor probe recovery)"):
+                                committed = True
+                                break
 
                 if not committed:
                     visited, total = self.coverage_stats()
                     coverage_pct = visited / max(total, 1) * 100.0
-                    if coverage_pct > 70.0:
+                    
+                    has_substantial_frontiers = any(
+                        int(f.get("unknown_gain", 0)) >= self.MIN_UNKNOWN_GAIN
+                        for f in bfs_frontiers
+                    )
+                    
+                    if coverage_pct > 70.0 and not has_substantial_frontiers:
                         print(
                             f"[SLAM Brain] All frontiers cleared. "
                             f"Exploration COMPLETE ({visited}/{total} cells = {coverage_pct:.1f}%)."
@@ -1185,7 +1139,7 @@ class SlamBrainModule(BrainModule):
                 )
                 if path_ok:
                     self.astar_path_world = world_path
-                elif is_back:
+                elif is_back and not self._is_live_opening(self.active_frontier):
                     print(
                         "[SLAM Brain] Replan dropped stale frontier "
                         "(target is in visited/backtrack territory)."
@@ -1218,6 +1172,8 @@ class SlamBrainModule(BrainModule):
                 desired_pos_w[:] = d_pos_w
                 if need_target and self.state != "COMPLETE":
                     self.active_frontier = None
+                    # Spin slowly in place to scan and map the room when holding/mapping
+                    target_yaw = drone_yaw + 0.08
 
         elif self.state == "COMPLETE":
             desired_pos_w[:] = d_pos_w

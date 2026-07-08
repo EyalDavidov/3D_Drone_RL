@@ -299,11 +299,9 @@ class OccupancyGridMapper:
 
         Pure SLAM — occupancy grid only, no USD.
         """
-        prob = self.get_occupancy_grid()
-        _, obstacle_mask = self.get_wall_obstacle_masks(use_walkable=False)
-        small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        inflated_obs = cv2.dilate(obstacle_mask, small_k, iterations=1)
-        return (prob < 0.35) & (inflated_obs == 0)
+        # Pure SLAM: only raw occupied cells block. No inflation of obstacles or walls
+        # for BFS/reachability, so narrow turns and prop-filled openings stay passable.
+        return (prob < 0.35)
 
     def compute_reachable_mask(self, start_row, start_col):
         """Flood-fill the free cells reachable from a start cell (pure SLAM).
@@ -554,7 +552,7 @@ class OccupancyGridMapper:
             return total > 0 and (rev / total) >= threshold
 
         best = None
-        best_path_len = 0
+        best_score = (-1, -1)  # (unknown_ahead, path_len)
         dq = deque([(gr, gc, 0)])
         seen = {(gr, gc)}
         while dq:
@@ -569,8 +567,10 @@ class OccupancyGridMapper:
             if not path or len(path) < 2:
                 continue
             plen = len(path)
-            if plen > best_path_len:
-                best_path_len = plen
+            unk_ahead = self.unknown_touch_count(r, c, radius=5)
+            score = (unk_ahead, plen)
+            if score > best_score:
+                best_score = score
                 best = (r, c)
             for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 nr, nc = r + dr, c + dc
@@ -580,6 +580,19 @@ class OccupancyGridMapper:
         if best is None or best == (gr, gc):
             return None
         return best
+
+    def is_narrow_frontier(self, goal_grid) -> bool:
+        """True if the goal cell sits in a corridor-like narrow passage (≤2 free neighbors)."""
+        free = self.get_traversable_free()
+        r, c = int(goal_grid[0]), int(goal_grid[1])
+        if not self.is_in_bounds(r, c) or not free[r, c]:
+            return False
+        n_free = 0
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if self.is_in_bounds(nr, nc) and free[nr, nc]:
+                n_free += 1
+        return n_free <= 2
 
     def is_cell_frontier(self, centroid_grid, radius=2) -> bool:
         """True if a mapped cell is STILL a frontier: some observed-free, traversable

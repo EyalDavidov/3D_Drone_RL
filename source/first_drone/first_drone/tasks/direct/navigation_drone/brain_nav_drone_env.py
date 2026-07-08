@@ -1685,6 +1685,29 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             # Replace infinity values in depth
             depth_image[depth_image == float("inf")] = 10.0
 
+            # Side view cameras for YOLO
+            rgb_left = None
+            depth_left = None
+            if self._view_left_camera is not None and self._view_left_camera.data.output is not None:
+                rgb_left = self._view_left_camera.data.output.get("rgb")
+                depth_left = self._view_left_camera.data.output.get("depth")
+                if rgb_left is not None:
+                    rgb_left = rgb_left.clone()
+                if depth_left is not None:
+                    depth_left = depth_left.clone()
+                    depth_left[depth_left == float("inf")] = 10.0
+
+            rgb_right = None
+            depth_right = None
+            if self._view_right_camera is not None and self._view_right_camera.data.output is not None:
+                rgb_right = self._view_right_camera.data.output.get("rgb")
+                depth_right = self._view_right_camera.data.output.get("depth")
+                if rgb_right is not None:
+                    rgb_right = rgb_right.clone()
+                if depth_right is not None:
+                    depth_right = depth_right.clone()
+                    depth_right[depth_right == float("inf")] = 10.0
+
             # 2. Run Perception (YOLO + de-projection) — always run during SCAN spin so we don't miss a person
             run_yolo = (self._timestep % max(1, self.cfg.brain_yolo_interval)) == 0
             if run_yolo:
@@ -1707,6 +1730,10 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                         if self._brain.state == "SCAN"
                         else None
                     ),
+                    rgb_left=rgb_left,
+                    depth_left=depth_left,
+                    rgb_right=rgb_right,
+                    depth_right=depth_right,
                 )
                 self._last_person_found = person_found
                 self._last_person_world_xyz = person_world_xyz

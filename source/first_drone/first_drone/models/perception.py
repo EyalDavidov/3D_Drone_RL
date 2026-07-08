@@ -105,7 +105,11 @@ class PerceptionModule:
         # Published every YOLO pass so the dashboard's native component can draw
         # a fully synced HUD: same frame the boxes were computed on.
         self._web_frame_bgr: np.ndarray | None = None
+        self._web_frame_left_bgr: np.ndarray | None = None
+        self._web_frame_right_bgr: np.ndarray | None = None
         self._web_boxes: list[dict] = []
+        self._web_boxes_left: list[dict] = []
+        self._web_boxes_right: list[dict] = []
         self._web_state: dict | None = None
 
         if not self.use_mock:
@@ -946,8 +950,12 @@ class PerceptionModule:
         drone_quat=None,
         rescue_armed: bool = True,
         scan_label: str | None = None,
+        rgb_left=None,
+        depth_left=None,
+        rgb_right=None,
+        depth_right=None,
     ):
-        """Run YOLO detection and depth-based 3D localization.
+        """Run YOLO detection and depth-based 3D localization across front and side cameras.
 
         Only class-0 (person) detections above ``person_conf_threshold`` are accepted.
 
@@ -970,116 +978,194 @@ class PerceptionModule:
         elif scan_label is None and self._active_scan_label is not None:
             self._active_scan_label = None
 
-        rgb_array = rgb_image.detach().cpu().numpy() if isinstance(rgb_image, torch.Tensor) else rgb_image
-        if rgb_array.shape[-1] == 4:
-            rgb_array = rgb_array[..., :3]
-        if rgb_array.dtype in (np.float32, np.float64) and rgb_array.max() <= 1.0:
-            rgb_array = (rgb_array * 255.0).astype(np.uint8)
-
-        single_env_image_bgr = rgb_array[0][:, :, ::-1]
-        img_h, img_w = single_env_image_bgr.shape[:2]
-        img_area = float(img_h * img_w)
-
         import cv2
 
         up = self.yolo_camera_upscale
-        yolo_bgr = single_env_image_bgr
-        if up > 1:
-            yolo_bgr = cv2.resize(
-                single_env_image_bgr,
-                (img_w * up, img_h * up),
-                interpolation=cv2.INTER_LINEAR,
-            )
-        if self.yolo_sharpen:
-            blur = cv2.GaussianBlur(yolo_bgr, (0, 0), sigmaX=1.0)
-            yolo_bgr = cv2.addWeighted(yolo_bgr, 1.4, blur, -0.4, 0)
-
-        # Boost local contrast if enabled (defaults to False since we now colorize models)
-        if self.yolo_clahe:
-            lab = cv2.cvtColor(yolo_bgr, cv2.COLOR_BGR2LAB)
-            l_ch, a_ch, b_ch = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-            l_ch = clahe.apply(l_ch)
-            yolo_bgr = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
-
-        results = self.yolo_model(
-            yolo_bgr,
-            verbose=False,
-            conf=0.15,
-            classes=[0],
-            imgsz=self.yolo_imgsz,
-            device=getattr(self, "_yolo_device", "cpu"),
-            half=str(getattr(self, "_yolo_device", "cpu")).startswith("cuda"),
-        )
-        filtered_results = results[0]
-
-        custom_texts = []
-        has_confirmed_person = False
-        best_person = None
-        best_bbox = None
-        best_person_conf = 0.0
-        raw_yolo_best = 0.0
         accept_threshold = (
             self.person_conf_threshold if rescue_armed else self.noted_conf_threshold
         )
 
-        coord_back = 1.0 / float(up) if up > 1 else 1.0
+        # Helper to process a single camera stream
+        def process_single_cam(rgb_img, depth_img, yaw_offset_deg):
+            if rgb_img is None or depth_img is None:
+                return None, None, 0.0, 0.0, [], None, None, None
 
-        for box in filtered_results.boxes:
-            if int(box.cls[0]) != 0:
-                continue
-            conf = float(box.conf[0].item())
-            raw_yolo_best = max(raw_yolo_best, conf)
-            x1, y1, x2, y2 = self._box_xyxy_scaled(box, coord_back)
-            if not self._bbox_passes_person_shape_xy(x1, y1, x2, y2, img_w, img_h):
-                continue
+            rgb_arr = rgb_img.detach().cpu().numpy() if isinstance(rgb_img, torch.Tensor) else rgb_img
+            if rgb_arr.shape[-1] == 4:
+                rgb_arr = rgb_arr[..., :3]
+            if rgb_arr.dtype in (np.float32, np.float64) and rgb_arr.max() <= 1.0:
+                rgb_arr = (rgb_arr * 255.0).astype(np.uint8)
 
-            best_person_conf = max(best_person_conf, conf)
+            img_bgr = rgb_arr[0][:, :, ::-1]
+            img_h, img_w = img_bgr.shape[:2]
+            img_area = float(img_h * img_w)
 
-            bbox_area_frac = max(0.0, (x2 - x1) * (y2 - y1)) / img_area
-            if conf >= self.noted_conf_threshold:
-                if best_bbox is None or conf > best_bbox[0]:
-                    best_bbox = (conf, box, x1, y1, x2, y2)
+            yolo_bgr = img_bgr
+            if up > 1:
+                yolo_bgr = cv2.resize(
+                    img_bgr,
+                    (img_w * up, img_h * up),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+            if self.yolo_sharpen:
+                blur = cv2.GaussianBlur(yolo_bgr, (0, 0), sigmaX=1.0)
+                yolo_bgr = cv2.addWeighted(yolo_bgr, 1.4, blur, -0.4, 0)
 
-            if conf < accept_threshold:
-                continue
+            if self.yolo_clahe:
+                lab = cv2.cvtColor(yolo_bgr, cv2.COLOR_BGR2LAB)
+                l_ch, a_ch, b_ch = cv2.split(lab)
+                clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+                l_ch = clahe.apply(l_ch)
+                yolo_bgr = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
 
-            deproj = self._deproject_bbox_center(
-                x1, y1, x2, y2, img_w, img_h, depth_image, drone_pos, drone_quat,
+            results = self.yolo_model(
+                yolo_bgr,
+                verbose=False,
+                conf=0.15,
+                classes=[0],
+                imgsz=self.yolo_imgsz,
+                device=getattr(self, "_yolo_device", "cpu"),
+                half=str(getattr(self, "_yolo_device", "cpu")).startswith("cuda"),
             )
-            if deproj is None:
-                continue
-            (t_x, t_y, t_z), z_depth, local_x, local_y = deproj
+            filtered_results = results[0]
 
-            candidate = (conf, (x1, y1, x2, y2), (t_x, t_y, t_z), z_depth, local_x, local_y)
-            if best_person is None or conf > best_person[0]:
-                best_person = candidate
+            best_person = None
+            best_bbox = None
+            best_person_conf = 0.0
+            raw_yolo_best = 0.0
 
-        display_conf = best_person_conf
-        if best_bbox is not None:
-            display_conf = max(display_conf, best_bbox[0])
-        if display_conf <= 0.0 and raw_yolo_best > 0.0:
-            display_conf = raw_yolo_best
+            coord_back = 1.0 / float(up) if up > 1 else 1.0
+
+            # Compute effective quaternion for this camera's yaw offset
+            eff_quat = drone_quat
+            if yaw_offset_deg != 0.0 and drone_quat is not None:
+                from scipy.spatial.transform import Rotation as R
+                qw_d = float(drone_quat[0, 0].item())
+                qx_d = float(drone_quat[0, 1].item())
+                qy_d = float(drone_quat[0, 2].item())
+                qz_d = float(drone_quat[0, 3].item())
+                rot_drone = R.from_quat([qx_d, qy_d, qz_d, qw_d])
+                rot_offset = R.from_euler('z', yaw_offset_deg, degrees=True)
+                rot_eff = rot_drone * rot_offset
+                q_eff = rot_eff.as_quat()  # [x, y, z, w]
+                eff_quat = torch.tensor([[q_eff[3], q_eff[0], q_eff[1], q_eff[2]]], device=drone_quat.device, dtype=drone_quat.dtype)
+
+            for box in filtered_results.boxes:
+                if int(box.cls[0]) != 0:
+                    continue
+                conf = float(box.conf[0].item())
+                raw_yolo_best = max(raw_yolo_best, conf)
+                x1, y1, x2, y2 = self._box_xyxy_scaled(box, coord_back)
+                if not self._bbox_passes_person_shape_xy(x1, y1, x2, y2, img_w, img_h):
+                    continue
+
+                best_person_conf = max(best_person_conf, conf)
+
+                if conf >= self.noted_conf_threshold:
+                    if best_bbox is None or conf > best_bbox[0]:
+                        best_bbox = (conf, box, x1, y1, x2, y2)
+
+                if conf < accept_threshold:
+                    continue
+
+                deproj = self._deproject_bbox_center(
+                    x1, y1, x2, y2, img_w, img_h, depth_img, drone_pos, eff_quat,
+                )
+                if deproj is None:
+                    continue
+                (t_x, t_y, t_z), z_depth, local_x, local_y = deproj
+
+                candidate = (conf, (x1, y1, x2, y2), (t_x, t_y, t_z), z_depth, local_x, local_y)
+                if best_person is None or conf > best_person[0]:
+                    best_person = candidate
+
+            # Build annotated frame
+            display_bgr = img_bgr.copy()
+            if self.yolo_sharpen:
+                blur = cv2.GaussianBlur(display_bgr, (0, 0), sigmaX=0.8)
+                display_bgr = cv2.addWeighted(display_bgr, 1.35, blur, -0.35, 0)
+
+            annotated_frame = self._annotate_detections(
+                display_bgr,
+                filtered_results,
+                draw_threshold=0.15,
+                coord_scale=coord_back,
+            )
+
+            web_boxes = self._collect_web_boxes(filtered_results, coord_back, img_w, img_h)
+
+            # Compute log_xyz for noted/detected candidates if needed
+            log_xyz_local = None
+            if best_person is not None:
+                log_xyz_local = (float(best_person[2][0]), float(best_person[2][1]), float(best_person[2][2]))
+            elif best_bbox is not None:
+                _, _, bx1, by1, bx2, by2 = best_bbox
+                noted_deproj = self._deproject_bbox_center(
+                    bx1, by1, bx2, by2, img_w, img_h, depth_img, drone_pos, eff_quat,
+                    relax_depth=True,
+                )
+                if noted_deproj is not None:
+                    log_xyz_local = noted_deproj[0]
+
+            return best_person, best_bbox, best_person_conf, raw_yolo_best, web_boxes, annotated_frame, img_bgr, log_xyz_local
+
+        # 1. Process Front
+        res_f = process_single_cam(rgb_image, depth_image, 0.0)
+        best_person, best_bbox, best_person_conf, raw_yolo_best, web_boxes, annotated_frame, front_bgr, log_xyz_f = res_f
+        self._web_frame_bgr = front_bgr
+        self._web_boxes = web_boxes
+
+        # 2. Process Left
+        res_l = process_single_cam(rgb_left, depth_left, 90.0)
+        best_person_l, best_bbox_l, best_person_conf_l, raw_yolo_best_l, web_boxes_l, annotated_frame_l, left_bgr, log_xyz_l = res_l
+        self._web_frame_left_bgr = left_bgr
+        self._web_boxes_left = web_boxes_l
+
+        # 3. Process Right
+        res_r = process_single_cam(rgb_right, depth_right, -90.0)
+        best_person_r, best_bbox_r, best_person_conf_r, raw_yolo_best_r, web_boxes_r, annotated_frame_r, right_bgr, log_xyz_r = res_r
+        self._web_frame_right_bgr = right_bgr
+        self._web_boxes_right = web_boxes_r
+
+        # Find best noted / confirmed person across all cameras
+        detected_persons = [p for p in (best_person, best_person_l, best_person_r) if p is not None]
+        overall_best_person = None
+        if detected_persons:
+            detected_persons.sort(key=lambda p: -p[0])
+            overall_best_person = detected_persons[0]
+
+        noted_candidates = [b for b in (best_bbox, best_bbox_l, best_bbox_r) if b is not None]
+        overall_best_bbox = None
+        if noted_candidates:
+            noted_candidates.sort(key=lambda b: -b[0])
+            overall_best_bbox = noted_candidates[0]
+
+        overall_best_person_conf = max(best_person_conf, best_person_conf_l, best_person_conf_r)
+        overall_raw_yolo_best = max(raw_yolo_best, raw_yolo_best_l, raw_yolo_best_r)
+
+        display_conf = overall_best_person_conf
+        if overall_best_bbox is not None:
+            display_conf = max(display_conf, overall_best_bbox[0])
+        if display_conf <= 0.0 and overall_raw_yolo_best > 0.0:
+            display_conf = overall_raw_yolo_best
 
         has_noted = False
-        candidate_conf = best_bbox[0] if best_bbox is not None else 0.0
-        if best_bbox is not None and candidate_conf >= self.noted_conf_threshold:
+        candidate_conf = overall_best_bbox[0] if overall_best_bbox is not None else 0.0
+        if overall_best_bbox is not None and candidate_conf >= self.noted_conf_threshold:
             self._noted_streak += 1
         else:
-            # Soft decay — don't reset on one missed frame during 360° scan spin
             self._noted_streak = max(0, self._noted_streak - 1)
 
-        if self._noted_streak >= self.noted_confirm_frames and best_bbox is not None:
+        if self._noted_streak >= self.noted_confirm_frames and overall_best_bbox is not None:
             has_noted = True
             display_conf = max(display_conf, candidate_conf)
 
-        prev_noted = False  # legacy flag — per-person tracking uses _person_best_conf
-
-        if best_person is None:
+        has_confirmed_person = False
+        if overall_best_person is None:
             self._last_intel = None
 
-        if best_person is not None:
-            conf, (bx1, by1, bx2, by2), (t_x, t_y, t_z), z_depth, local_x, local_y = best_person
+        if overall_best_person is not None:
+            conf, (bx1, by1, bx2, by2), (t_x, t_y, t_z), z_depth, local_x, local_y = overall_best_person
             has_confirmed_person = True
             person_found[0] = True
             person_world_xyz[0, 0] = t_x
@@ -1104,7 +1190,6 @@ class PerceptionModule:
             )
 
         self.detection_count += 1
-        # Slow decay so HUD doesn't flicker to 0% between intermittent scan hits
         if display_conf > 0.0:
             self.last_best_person_conf = max(self.last_best_person_conf * 0.995, display_conf)
         else:
@@ -1112,43 +1197,41 @@ class PerceptionModule:
         alert_conf = candidate_conf if has_noted else display_conf
 
         log_xyz = None
-        if best_person is not None:
-            log_xyz = (float(best_person[2][0]), float(best_person[2][1]), float(best_person[2][2]))
-        elif best_bbox is not None:
-            _, _, bx1, by1, bx2, by2 = best_bbox
-            noted_deproj = self._deproject_bbox_center(
-                bx1, by1, bx2, by2, img_w, img_h, depth_image, drone_pos, drone_quat,
-                relax_depth=True,
-            )
-            if noted_deproj is not None:
-                log_xyz = noted_deproj[0]
-                if self._last_intel is None and (has_noted or candidate_conf >= self.noted_conf_threshold):
-                    t_x, t_y, t_z = log_xyz
-                    target_lat, target_lon = self._local_xyz_to_gps(t_x, t_y)
-                    slot = self._match_rescue_person_slot(log_xyz)
-                    self._last_intel = {
-                        "conf": candidate_conf,
-                        "label": slot["label"] if slot else (scan_label or "person detected"),
-                        "gps_lat": target_lat,
-                        "gps_lon": target_lon,
-                        "dist": noted_deproj[1],
-                    }
+        if overall_best_person is not None:
+            log_xyz = (float(overall_best_person[2][0]), float(overall_best_person[2][1]), float(overall_best_person[2][2]))
+        elif overall_best_bbox is not None:
+            if best_bbox is not None and overall_best_bbox[0] == best_bbox[0]:
+                log_xyz = log_xyz_f
+            elif best_bbox_l is not None and overall_best_bbox[0] == best_bbox_l[0]:
+                log_xyz = log_xyz_l
+            elif best_bbox_r is not None and overall_best_bbox[0] == best_bbox_r[0]:
+                log_xyz = log_xyz_r
+
+            if log_xyz is not None and self._last_intel is None and (has_noted or candidate_conf >= self.noted_conf_threshold):
+                t_x, t_y, t_z = log_xyz
+                target_lat, target_lon = self._local_xyz_to_gps(t_x, t_y)
+                slot = self._match_rescue_person_slot(log_xyz)
+                # Find corresponding depth of detection
+                z_depth = 5.0
+                if best_bbox is not None and overall_best_bbox[0] == best_bbox[0] and res_f[0] is not None:
+                    z_depth = res_f[0][3]
+                elif best_bbox_l is not None and overall_best_bbox[0] == best_bbox_l[0] and res_l[0] is not None:
+                    z_depth = res_l[0][3]
+                elif best_bbox_r is not None and overall_best_bbox[0] == best_bbox_r[0] and res_r[0] is not None:
+                    z_depth = res_r[0][3]
+
+                self._last_intel = {
+                    "conf": candidate_conf,
+                    "label": slot["label"] if slot else (scan_label or "person detected"),
+                    "gps_lat": target_lat,
+                    "gps_lon": target_lon,
+                    "dist": z_depth,
+                }
+
         person_key = self._person_log_key(scan_label, log_xyz)
         person_seen = has_noted or has_confirmed_person
         should_log = person_seen and float(alert_conf) > self._person_best_conf.get(person_key, 0.0) + 1e-6
-        new_detection_event = should_log
 
-        display_bgr = single_env_image_bgr
-        if self.yolo_sharpen:
-            blur = cv2.GaussianBlur(display_bgr, (0, 0), sigmaX=0.8)
-            display_bgr = cv2.addWeighted(display_bgr, 1.35, blur, -0.35, 0)
-
-        annotated_frame = self._annotate_detections(
-            display_bgr,
-            filtered_results,
-            draw_threshold=0.15,
-            coord_scale=coord_back,
-        )
         if should_log:
             saved_new = self._append_detection_log(
                 alert_conf, log_xyz, scan_label, frame_idx=self.detection_count
@@ -1197,11 +1280,6 @@ class PerceptionModule:
             else:
                 print(f"[YOLO] No person in view (threshold {self.person_conf_threshold:.0%})")
 
-        # ── Publish native web-HUD payload (synced: same frame as the boxes) ──
-        self._web_frame_bgr = display_bgr
-        self._web_boxes = self._collect_web_boxes(
-            filtered_results, coord_back, img_w, img_h,
-        )
         self._web_state = {
             "has_confirmed":  bool(has_confirmed_person),
             "has_noted":      bool(has_noted and not has_confirmed_person),

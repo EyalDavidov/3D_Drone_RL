@@ -10,21 +10,38 @@ class YoloHud {
     constructor(rootId) {
         this.root = document.getElementById(rootId);
         this.canvas = document.getElementById('yolo-canvas');
-        if (!this.root || !this.canvas) {
-            console.warn('[YoloHud] root/canvas not found');
+        this.canvasLeft = document.getElementById('yolo-canvas-left');
+        this.canvasRight = document.getElementById('yolo-canvas-right');
+        if (!this.root || !this.canvas || !this.canvasLeft || !this.canvasRight) {
+            console.warn('[YoloHud] root/canvas(es) not found');
             return;
         }
         this.ctx = this.canvas.getContext('2d');
-        this.stage = this.canvas.parentElement;
+        this.ctxLeft = this.canvasLeft.getContext('2d');
+        this.ctxRight = this.canvasRight.getContext('2d');
 
-        // Backdrop image (clean camera frame)
+        this.stage = this.canvas.parentElement;
+        this.stageLeft = this.canvasLeft.parentElement;
+        this.stageRight = this.canvasRight.parentElement;
+
+        // Backdrop images (clean camera frames)
         this._img = new Image();
         this._imgReady = false;
         this._img.onload = () => { this._imgReady = true; };
 
+        this._imgLeft = new Image();
+        this._imgLeftReady = false;
+        this._imgLeft.onload = () => { this._imgLeftReady = true; };
+
+        this._imgRight = new Image();
+        this._imgRightReady = false;
+        this._imgRight.onload = () => { this._imgRightReady = true; };
+
         // Latest telemetry
         this._stats = null;
         this._boxes = [];
+        this._boxesLeft = [];
+        this._boxesRight = [];
         this._state = 'idle';
         this._threshold = 0.7;
 
@@ -35,6 +52,10 @@ class YoloHud {
         this._dpr = 1;
         this._cssW = 1;
         this._cssH = 1;
+        this._cssWLeft = 1;
+        this._cssHLeft = 1;
+        this._cssWRight = 1;
+        this._cssHRight = 1;
 
         // Cached DOM
         this.el = {
@@ -97,10 +118,27 @@ class YoloHud {
         this._img.src = `data:${mime};base64,` + b64;
     }
 
+    updateFrames(frontB64, leftB64, rightB64) {
+        if (frontB64) {
+            const mime = frontB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+            this._img.src = `data:${mime};base64,` + frontB64;
+        }
+        if (leftB64) {
+            const mime = leftB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+            this._imgLeft.src = `data:${mime};base64,` + leftB64;
+        }
+        if (rightB64) {
+            const mime = rightB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+            this._imgRight.src = `data:${mime};base64,` + rightB64;
+        }
+    }
+
     update(stats) {
         if (!stats) return;
         this._stats = stats;
         this._boxes = Array.isArray(stats.boxes) ? stats.boxes : [];
+        this._boxesLeft = Array.isArray(stats.boxes_left) ? stats.boxes_left : [];
+        this._boxesRight = Array.isArray(stats.boxes_right) ? stats.boxes_right : [];
         this._threshold = (typeof stats.conf_threshold === 'number') ? stats.conf_threshold : 0.7;
 
         const best = (typeof stats.best_conf === 'number') ? stats.best_conf : 0;
@@ -142,7 +180,7 @@ class YoloHud {
         if (this.el.confVal)  this.el.confVal.textContent = bestPct.toFixed(1) + '%';
         if (this.el.liveVal)  this.el.liveVal.textContent = (live * 100).toFixed(1) + '%';
         if (this.el.threshVal) this.el.threshVal.textContent = (this._threshold * 100).toFixed(0) + '%';
-        if (this.el.boxesVal) this.el.boxesVal.textContent = this._boxes.length;
+        if (this.el.boxesVal) this.el.boxesVal.textContent = this._boxes.length + this._boxesLeft.length + this._boxesRight.length;
         const personActive = stats.person_found || stats.person_seen
             || state === 'detected' || state === 'confirmed' || state === 'seen';
         if (this.el.personVal) {
@@ -259,9 +297,14 @@ class YoloHud {
     }
 
     _draw() {
-        const ctx = this.ctx;
+        this._drawSingle(this.ctxLeft, this._imgLeft, this._imgLeftReady, this._boxesLeft, this._cssWLeft, this._cssHLeft);
+        this._drawSingle(this.ctx, this._img, this._imgReady, this._boxes, this._cssW, this._cssH);
+        this._drawSingle(this.ctxRight, this._imgRight, this._imgRightReady, this._boxesRight, this._cssWRight, this._cssHRight);
+    }
+
+    _drawSingle(ctx, img, imgReady, boxes, cssW, cssH) {
         if (!ctx) return;
-        const w = this._cssW, h = this._cssH, dpr = this._dpr;
+        const w = cssW, h = cssH, dpr = this._dpr;
 
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, w, h);
@@ -270,14 +313,14 @@ class YoloHud {
 
         // Fit camera frame (contain)
         let ox = 0, oy = 0, dw = w, dh = h;
-        if (this._imgReady && this._img.naturalWidth) {
-            const iw = this._img.naturalWidth, ih = this._img.naturalHeight;
+        if (imgReady && img.naturalWidth) {
+            const iw = img.naturalWidth, ih = img.naturalHeight;
             const fit = Math.min(w / iw, h / ih);
             dw = iw * fit; dh = ih * fit;
             ox = (w - dw) / 2; oy = (h - dh) / 2;
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(this._img, ox, oy, dw, dh);
+            ctx.drawImage(img, ox, oy, dw, dh);
         } else {
             ctx.fillStyle = 'rgba(120,150,190,0.5)';
             ctx.font = '13px Inter, sans-serif';
@@ -285,12 +328,10 @@ class YoloHud {
             ctx.fillText('Waiting for camera feed…', w / 2, h / 2);
         }
 
-        this._drawBoxes(ox, oy, dw, dh);
+        this._drawBoxesSingle(ctx, boxes, ox, oy, dw, dh);
     }
 
-    _drawBoxes(ox, oy, dw, dh) {
-        const ctx = this.ctx;
-        const boxes = this._boxes;
+    _drawBoxesSingle(ctx, boxes, ox, oy, dw, dh) {
         if (!boxes || !boxes.length) return;
 
         const pulse = 0.5 + 0.5 * Math.sin(this._time * 4.0);
@@ -374,14 +415,30 @@ class YoloHud {
 
     // ---- helpers ----
     _onResize() {
-        if (!this.stage) return;
+        if (!this.stage || !this.stageLeft || !this.stageRight) return;
         this._dpr = Math.min(window.devicePixelRatio || 1, 2);
-        this._cssW = Math.max(1, this.stage.clientWidth);
-        this._cssH = Math.max(1, this.stage.clientHeight);
-        this.canvas.width = Math.round(this._cssW * this._dpr);
-        this.canvas.height = Math.round(this._cssH * this._dpr);
-        this.canvas.style.width = this._cssW + 'px';
-        this.canvas.style.height = this._cssH + 'px';
+
+        const resizeCanvas = (canvas, stage) => {
+            const cssW = Math.max(1, stage.clientWidth);
+            const cssH = Math.max(1, stage.clientHeight);
+            canvas.width = Math.round(cssW * this._dpr);
+            canvas.height = Math.round(cssH * this._dpr);
+            canvas.style.width = cssW + 'px';
+            canvas.style.height = cssH + 'px';
+            return { w: cssW, h: cssH };
+        };
+
+        const sizeF = resizeCanvas(this.canvas, this.stage);
+        this._cssW = sizeF.w;
+        this._cssH = sizeF.h;
+
+        const sizeL = resizeCanvas(this.canvasLeft, this.stageLeft);
+        this._cssWLeft = sizeL.w;
+        this._cssHLeft = sizeL.h;
+
+        const sizeR = resizeCanvas(this.canvasRight, this.stageRight);
+        this._cssWRight = sizeR.w;
+        this._cssHRight = sizeR.h;
     }
 
     _deriveState(best, thresh, personFound) {

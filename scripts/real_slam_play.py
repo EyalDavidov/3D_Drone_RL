@@ -121,7 +121,7 @@ def draw_slam_visualizer(
     grid_h, grid_w = prob.shape
 
     if hasattr(mapper, "get_wall_obstacle_masks"):
-        wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks()
+        wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks(use_walkable=False)
         danger = mapper.get_planning_grid()
     else:
         wall_mask = (prob > 0.65).astype(np.uint8)
@@ -358,7 +358,7 @@ def main():
     _telemetry = None
     if _web_dashboard:
         try:
-            _telemetry = LiveDroneTelemetry(tick_rate=10.0, perf_mode=True)
+            _telemetry = LiveDroneTelemetry(tick_rate=24.0, perf_mode=False)
             start_dashboard_server(
                 http_port=8000, ws_port=8001,
                 telemetry_source=_telemetry,
@@ -414,7 +414,7 @@ def main():
                     frontiers, _cf = mapper.find_reachable_frontiers(_sr, _sc, min_size=3)
                     # Hide occlusion-shadow pockets (tiny unknown gain) so the overlay
                     # matches the picker's actual candidates.
-                    _subst = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 40]
+                    _subst = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 20]
                     if _subst:
                         frontiers = _subst
                     if callable(_explorable):

@@ -778,13 +778,42 @@ body { display: flex; flex-direction: column; }
 .yhud-status[data-state="confirmed"] { color: var(--neon-lime);    border-color: var(--neon-lime);      background: rgba(182,255,60,0.10); }
 
 /* ---- Camera stage ---- */
+.yhud-stages-row {
+    display: flex;
+    flex: 1;
+    gap: 12px;
+    min-height: 0;
+    padding: 12px;
+    background: #070b14;
+    align-items: center;
+    justify-content: center;
+}
+.yhud-stage-badge {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    padding: 4px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    border-radius: 6px;
+    background: rgba(8, 14, 24, 0.75);
+    border: 1px solid var(--glass-stroke);
+    color: var(--neon-cyan);
+    z-index: 4;
+    text-transform: uppercase;
+}
 .yhud-stage {
     position: relative;
-    flex: 1; min-height: 0;
+    flex: 1;
+    aspect-ratio: 16 / 9;
+    max-height: 100%;
     overflow: hidden;
     background:
         repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 3px),
         #070b14;
+    border-radius: 8px;
+    border: 1px solid var(--glass-stroke);
 }
 .yhud-canvas { position: absolute; inset: 0; display: block; }
 .yhud-grid {

@@ -219,16 +219,18 @@ class LiveDroneTelemetry:
         self._image_cache: dict = {}
         self._slam3d_cache: dict = {}
         self._yolo_hud_cache: str = ""
+        self._yolo_hud_left_cache: str = ""
+        self._yolo_hud_right_cache: str = ""
         self._img_push_counter = 0
         self._img_regen_serial = 0
         self._slam3d_push_counter = 0
-        self._img_regen_interval = 10 if perf_mode else 4
+        self._img_regen_interval = 10 if perf_mode else 1
         self._slam3d_regen_interval = 3 if perf_mode else 1
         # Saliency is expensive (15 backprop samples); throttle in perf mode but
         # keep it live (every ~4th image regen) rather than disabling it entirely.
-        self._saliency_regen_interval = 4 if perf_mode else 1
-        self._yolo_upscale = 1 if perf_mode else 2
-        self._yolo_jpeg_quality = 78 if perf_mode else 92
+        self._saliency_regen_interval = 1
+        self._yolo_upscale = 1 if perf_mode else 3
+        self._yolo_jpeg_quality = 78 if perf_mode else 90
         # Always read body-mounted rear/left/right cameras — skipping them made every
         # dashboard panel show the front-camera fallback (all four views identical).
         self._skip_angle_cams = False
@@ -408,9 +410,15 @@ class LiveDroneTelemetry:
                     or not self._image_cache.get("depth_saliency")
                 )
                 self._image_cache = self._grab_images(env, compute_saliency=compute_saliency)
-                yolo_img = self._grab_yolo_frame(env)
+                yolo_img = self._grab_yolo_frame_by_key(env, "_web_frame_bgr", "_yolo_hud_cache")
                 if yolo_img:
                     self._image_cache["yolo_frame"] = yolo_img
+                yolo_left = self._grab_yolo_frame_by_key(env, "_web_frame_left_bgr", "_yolo_hud_left_cache")
+                if yolo_left:
+                    self._image_cache["yolo_frame_left"] = yolo_left
+                yolo_right = self._grab_yolo_frame_by_key(env, "_web_frame_right_bgr", "_yolo_hud_right_cache")
+                if yolo_right:
+                    self._image_cache["yolo_frame_right"] = yolo_right
 
             # SLAM 3D grid for native 2D/3D browser maps (rate-limited in perf mode)
             self._slam3d_push_counter += 1
@@ -608,7 +616,7 @@ class LiveDroneTelemetry:
                 frontiers, came_from = mapper.find_reachable_frontiers(start_r, start_c, min_size=3)
                 # Match the picker: hide occlusion-shadow pockets (tiny unknown gain)
                 # so displayed blue targets are the ones the drone would actually chase.
-                substantial = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 40]
+                substantial = [f for f in frontiers if int(f.get("unknown_gain", 0)) >= 20]
                 if substantial:
                     frontiers = substantial
                 explorable = getattr(brain, "is_explorable_frontier", None)
@@ -659,7 +667,7 @@ class LiveDroneTelemetry:
             # Split walls vs. dodgeable props (SLAM-only) so the 2D map paints
             # them differently — same classification the planner uses.
             if hasattr(mapper, "get_wall_obstacle_masks"):
-                wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks()
+                wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks(use_walkable=False)
                 danger = mapper.get_planning_grid()
             else:
                 wall_mask = (prob > 0.65).astype(np.uint8)
@@ -796,7 +804,7 @@ class LiveDroneTelemetry:
             # 3D scene can paint them differently (props are not walls the drone
             # must route around). Danger = inflation around WALLS only.
             if hasattr(mapper, "get_wall_obstacle_masks"):
-                wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks()
+                wall_mask, obstacle_mask = mapper.get_wall_obstacle_masks(use_walkable=True)
                 danger = mapper.get_planning_grid()
             else:
                 inflated = mapper.get_inflated_grid()
@@ -871,8 +879,17 @@ class LiveDroneTelemetry:
                           for p in astar_path[::4]]
 
             # ---- Person ----
-            person_found = bool(getattr(brain, "found_person", False)) if brain else False
-            person_pos   = getattr(brain, "target_person_pos", None) if brain else None
+            person_found = False
+            person_pos = None
+            if brain is not None:
+                rescued = getattr(brain, "rescued_people", None)
+                if rescued and len(rescued) > 0:
+                    person_found = True
+                    person_pos = rescued[0]
+                elif getattr(brain, "found_person", False):
+                    person_found = True
+                    person_pos = getattr(brain, "target_person_pos", None)
+
             person_data  = None
             if person_found and person_pos is not None:
                 try:
@@ -910,34 +927,41 @@ class LiveDroneTelemetry:
             return {}
 
     def _grab_yolo_frame(self, env) -> str:
+        return self._grab_yolo_frame_by_key(env, "_web_frame_bgr", "_yolo_hud_cache")
+
+    def _grab_yolo_frame_by_key(self, env, key: str, cache_attr: str) -> str:
         """Return base64 JPEG of the *clean* camera frame perception ran YOLO on.
 
         This is the exact frame the normalized boxes in ``yolo_stats`` were
         computed from, so the native web HUD overlays them in perfect sync.
-        Upscaled 2× (Lanczos) for a crisp HD backdrop.
+        Upscaled 2x (Lanczos) for a crisp HD backdrop, and auto-brightened.
         """
         try:
             import cv2
 
             perception = getattr(env, "_perception", None)
             if perception is None:
-                return self._yolo_hud_cache
+                return getattr(self, cache_attr, "")
 
-            frame = getattr(perception, "_web_frame_bgr", None)
+            frame = getattr(perception, key, None)
             if frame is None:
-                return self._yolo_hud_cache
+                return getattr(self, cache_attr, "")
 
             h, w = frame.shape[:2]
             scale = max(1, int(getattr(self, "_yolo_upscale", 2)))
             if scale > 1:
                 frame = cv2.resize(frame, (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
+            
+            # Always apply the auto-brightener so it matches the Cameras page light level
+            frame = _auto_brighten(frame)
+
             quality = int(getattr(self, "_yolo_jpeg_quality", 92))
             b64 = _ndarray_to_jpeg_b64(frame, quality=quality)
-            self._yolo_hud_cache = b64
+            setattr(self, cache_attr, b64)
             return b64
         except Exception as exc:
-            print(f"[LiveTelemetry] _grab_yolo_frame() error: {exc}")
-            return self._yolo_hud_cache
+            print(f"[LiveTelemetry] _grab_yolo_frame_by_key({key}) error: {exc}")
+            return getattr(self, cache_attr, "")
 
     @staticmethod
     def _is_generic_camera_view(label: str | None = None, person_key: str | None = None) -> bool:
@@ -1053,6 +1077,8 @@ class LiveDroneTelemetry:
             "operator_alert":  bool(state.get("operator_alert", False)),
             "alert_conf":      round(float(state.get("alert_conf", 0.0)), 4),
             "boxes":           list(getattr(perception, "_web_boxes", []) or []),
+            "boxes_left":      list(getattr(perception, "_web_boxes_left", []) or []),
+            "boxes_right":     list(getattr(perception, "_web_boxes_right", []) or []),
             "intel":           intel_out,
             "rescue_log":      rescue_log,
         }

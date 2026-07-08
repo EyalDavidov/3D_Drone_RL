@@ -293,51 +293,81 @@
                         </div>
                     </div>
 
-                    <!-- Camera stage: canvas backdrop + vector box overlay + scan grid -->
-                    <div class="yhud-stage">
-                        <canvas id="yolo-canvas" class="yhud-canvas"></canvas>
-                        <div class="yhud-grid"></div>
-                        <div class="yhud-scanline" id="yolo-scanline"></div>
-                        <div class="yhud-vignette"></div>
-
-                        <!-- Corner frame brackets -->
-                        <span class="yhud-bracket tl"></span>
-                        <span class="yhud-bracket tr"></span>
-                        <span class="yhud-bracket bl"></span>
-                        <span class="yhud-bracket br"></span>
-
-                        <!-- Scan label chip (top-left) -->
-                        <div class="yhud-chip" id="yolo-scan-chip" hidden>
-                            <span class="yhud-chip-icon">◎</span>
-                            <span id="yolo-scan-label">ROOM</span>
+                    <!-- Multi-Camera Stages Row -->
+                    <div class="yhud-stages-row">
+                        <!-- Left Camera Stage -->
+                        <div class="yhud-stage" id="yolo-stage-left">
+                            <canvas id="yolo-canvas-left" class="yhud-canvas"></canvas>
+                            <div class="yhud-grid"></div>
+                            <div class="yhud-scanline"></div>
+                            <div class="yhud-vignette"></div>
+                            <span class="yhud-bracket tl"></span>
+                            <span class="yhud-bracket tr"></span>
+                            <span class="yhud-bracket bl"></span>
+                            <span class="yhud-bracket br"></span>
+                            <div class="yhud-stage-badge">LEFT</div>
                         </div>
 
-                        <!-- Intel card (bottom-left, appears on detection) -->
-                        <div class="yhud-intel" id="yolo-intel" hidden>
-                            <div class="yhud-intel-head">
-                                <span class="yhud-intel-dot"></span>
-                                <span id="yolo-intel-label">TARGET</span>
-                                <span class="yhud-intel-conf" id="yolo-intel-conf">0%</span>
-                            </div>
-                            <div class="yhud-intel-grid">
-                                <span class="yhud-intel-k">LAT</span><span class="mono" id="yolo-intel-lat">—</span>
-                                <span class="yhud-intel-k">LON</span><span class="mono" id="yolo-intel-lon">—</span>
-                                <span class="yhud-intel-k">DIST</span><span class="mono" id="yolo-intel-dist">—</span>
-                            </div>
-                        </div>
+                        <!-- Front Camera Stage -->
+                        <div class="yhud-stage" id="yolo-stage-front">
+                            <canvas id="yolo-canvas" class="yhud-canvas"></canvas>
+                            <div class="yhud-grid"></div>
+                            <div class="yhud-scanline" id="yolo-scanline"></div>
+                            <div class="yhud-vignette"></div>
 
-                        <!-- Detection alert (bottom-center HUD notification) -->
-                        <div class="hud-alert" id="yolo-hud-alert" data-state="idle">
-                            <div class="hud-alert-scan"></div>
-                            <div class="hud-alert-icon" id="yolo-alert-icon">◎</div>
-                            <div class="hud-alert-body">
-                                <div class="hud-alert-label" id="yolo-alert-label">SCANNING FOR HUMANS</div>
-                                <div class="hud-alert-meter">
-                                    <div class="hud-alert-meter-fill" id="yolo-alert-meter"></div>
-                                    <div class="hud-alert-meter-thresh" id="yolo-alert-thresh"></div>
+                            <!-- Corner frame brackets -->
+                            <span class="yhud-bracket tl"></span>
+                            <span class="yhud-bracket tr"></span>
+                            <span class="yhud-bracket bl"></span>
+                            <span class="yhud-bracket br"></span>
+
+                            <!-- Scan label chip (top-left) -->
+                            <div class="yhud-chip" id="yolo-scan-chip" hidden>
+                                <span class="yhud-chip-icon">◎</span>
+                                <span id="yolo-scan-label">ROOM</span>
+                            </div>
+
+                            <!-- Intel card (bottom-left, appears on detection) -->
+                            <div class="yhud-intel" id="yolo-intel" hidden>
+                                <div class="yhud-intel-head">
+                                    <span class="yhud-intel-dot"></span>
+                                    <span id="yolo-intel-label">TARGET</span>
+                                    <span class="yhud-intel-conf" id="yolo-intel-conf">0%</span>
+                                </div>
+                                <div class="yhud-intel-grid">
+                                    <span class="yhud-intel-k">LAT</span><span class="mono" id="yolo-intel-lat">—</span>
+                                    <span class="yhud-intel-k">LON</span><span class="mono" id="yolo-intel-lon">—</span>
+                                    <span class="yhud-intel-k">DIST</span><span class="mono" id="yolo-intel-dist">—</span>
                                 </div>
                             </div>
-                            <div class="hud-alert-conf" id="yolo-alert-conf">0.0<span class="hud-alert-pct">%</span></div>
+
+                            <!-- Detection alert (bottom-center HUD notification) -->
+                            <div class="hud-alert" id="yolo-hud-alert" data-state="idle">
+                                <div class="hud-alert-scan"></div>
+                                <div class="hud-alert-icon" id="yolo-alert-icon">◎</div>
+                                <div class="hud-alert-body">
+                                    <div class="hud-alert-label" id="yolo-alert-label">SCANNING FOR HUMANS</div>
+                                    <div class="hud-alert-meter">
+                                        <div class="hud-alert-meter-fill" id="yolo-alert-meter"></div>
+                                        <div class="hud-alert-meter-thresh" id="yolo-alert-thresh"></div>
+                                    </div>
+                                </div>
+                                <div class="hud-alert-conf" id="yolo-alert-conf">0.0<span class="hud-alert-pct">%</span></div>
+                            </div>
+                            <div class="yhud-stage-badge">FRONT</div>
+                        </div>
+
+                        <!-- Right Camera Stage -->
+                        <div class="yhud-stage" id="yolo-stage-right">
+                            <canvas id="yolo-canvas-right" class="yhud-canvas"></canvas>
+                            <div class="yhud-grid"></div>
+                            <div class="yhud-scanline"></div>
+                            <div class="yhud-vignette"></div>
+                            <span class="yhud-bracket tl"></span>
+                            <span class="yhud-bracket tr"></span>
+                            <span class="yhud-bracket bl"></span>
+                            <span class="yhud-bracket br"></span>
+                            <div class="yhud-stage-badge">RIGHT</div>
                         </div>
                     </div>
 

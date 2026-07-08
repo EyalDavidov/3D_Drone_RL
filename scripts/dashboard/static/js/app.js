@@ -206,8 +206,12 @@
             updateYoloStats(data);
             slam3dScene.update(data.slam_3d || null, data.room_bounds || null);
             if (slam2dMap) slam2dMap.update(data.slam_3d || null);
-            if (yoloHud && data.images && data.images.yolo_frame) {
-                yoloHud.updateFrame(data.images.yolo_frame);
+            if (yoloHud && data.images) {
+                yoloHud.updateFrames(
+                    data.images.yolo_frame || null,
+                    data.images.yolo_frame_left || null,
+                    data.images.yolo_frame_right || null
+                );
             }
         } catch (e) {
             console.error('[Dashboard] Parse error:', e);
