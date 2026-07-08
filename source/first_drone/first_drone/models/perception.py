@@ -129,13 +129,9 @@ class PerceptionModule:
             self._yolo_device = "cpu"
 
     def _bbox_passes_person_shape(self, box, img_w: int, img_h: int) -> bool:
-        """Always return True to bypass geometric checks, matching feature/perception-module."""
+        """Verify that the detected bbox matches standing human proportions."""
         x1, y1, x2, y2 = box.xyxy[0].tolist()
-        bw = max(0.0, x2 - x1)
-        bh = max(0.0, y2 - y1)
-        if bw < 2.0 or bh < 2.0:
-            return False
-        return True
+        return self._bbox_passes_person_shape_xy(x1, y1, x2, y2, img_w, img_h)
 
     @staticmethod
     def _box_xyxy_scaled(box, scale: float) -> tuple[float, float, float, float]:
@@ -148,8 +144,24 @@ class PerceptionModule:
     ) -> bool:
         bw = max(0.0, x2 - x1)
         bh = max(0.0, y2 - y1)
-        if bw < 2.0 or bh < 2.0:
+        if bw < 5.0 or bh < 5.0:
             return False
+
+        # 1. Height fraction check (must not be a tiny sliver)
+        h_frac = bh / img_h
+        if h_frac < self.min_bbox_height_frac:
+            return False
+
+        # 2. Area fraction check
+        area_frac = (bw * bh) / (img_w * img_h)
+        if area_frac < self.min_bbox_area_frac:
+            return False
+
+        # 3. Aspect ratio check (standing human is vertical: width/height <= threshold)
+        aspect = bw / bh
+        if aspect > self.min_person_aspect:
+            return False
+
         return True
 
     def _init_alert_window(self) -> None:

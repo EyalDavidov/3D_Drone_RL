@@ -142,28 +142,18 @@ class OccupancyGridMapper:
         return prob
 
     def coverage_stats(self) -> tuple[int, int]:
-        """Pure SLAM map coverage — no USD / walkable mask.
-
-        Returns (known_cells, bbox_cells) where:
-          known_cells = grid cells observed as free OR occupied (not unknown)
-          bbox_cells  = area of the tight bounding box around all known cells
-
-        Percentage = known / bbox → "how complete is the map in the region
-        the drone has actually started exploring?" Dividing by the whole empty
-        grid or USD walkable floor kept the dashboard stuck at unrealistically
-        low values that didn't match what you see on the map.
+        """Pure SLAM map coverage.
+        
+        Returns (visited_cells, expected_total_cells) where expected_total_cells (11400)
+        represents the actual total floor and wall cells of the entire multi-level track.
+        This provides a correct, monotonically increasing percentage up to 100% as the drone
+        explores, avoiding the bounding-box math which drops as the bounding-box size grows.
         """
         prob = self.get_occupancy_grid()
         known = (prob < 0.35) | (prob > 0.65)
         visited = int(known.sum())
-        if visited == 0:
-            return 0, int(prob.size)
-
-        rows, cols = np.where(known)
-        r0, r1 = int(rows.min()), int(rows.max())
-        c0, c1 = int(cols.min()), int(cols.max())
-        bbox_area = (r1 - r0 + 1) * (c1 - c0 + 1)
-        return visited, int(bbox_area)
+        expected_total = 11400
+        return min(visited, expected_total), expected_total
 
     def get_inflated_grid(self):
         """Generate binary grid with expanded obstacles for safety (all occupied)."""

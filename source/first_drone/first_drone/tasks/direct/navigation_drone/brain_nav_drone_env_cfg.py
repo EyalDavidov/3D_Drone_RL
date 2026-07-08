@@ -142,7 +142,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     yolo_person_conf_threshold: float = 0.50
     yolo_min_bbox_area_frac: float = 0.0001
     yolo_min_bbox_height_frac: float = 0.02
-    yolo_min_person_aspect: float = 0.30
+    yolo_min_person_aspect: float = 0.45
     yolo_noted_confirm_frames: int = 2
     yolo_camera_upscale: int = 3   # 512×288 → 1536×864 before YOLO (makes distant humans larger/sharper)
     yolo_imgsz: int = 1280         # match upscaled feed so YOLO keeps full detail
