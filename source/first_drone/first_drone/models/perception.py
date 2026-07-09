@@ -157,8 +157,15 @@ class PerceptionModule:
         if area_frac < self.min_bbox_area_frac:
             return False
 
-        # 3. Aspect ratio check (standing human is vertical: width/height <= threshold)
         aspect = bw / bh
+
+        # 3. Min aspect ratio — reject thin poles/pillars (aspect << 0.12)
+        # A real human standing: aspect ~ 0.25–0.80 (width/height)
+        # A cylindrical pole from drone view: aspect ~ 0.03–0.10
+        if aspect < 0.12:
+            return False
+
+        # 4. Max aspect ratio — reject very wide/horizontal shapes
         if aspect > self.min_person_aspect:
             return False
 
@@ -229,9 +236,12 @@ class PerceptionModule:
 
         if isinstance(depth_image, torch.Tensor):
             depth_array = depth_image[0].detach().cpu().numpy()
-        else:
+            z_depth = float(np.squeeze(depth_array[py, px]))
+        elif depth_image is not None:
             depth_array = depth_image[0]
-        z_depth = float(np.squeeze(depth_array[py, px]))
+            z_depth = float(np.squeeze(depth_array[py, px]))
+        else:
+            z_depth = 5.0  # fallback when side camera has no depth
         if np.isinf(z_depth) or z_depth <= 0.0:
             z_depth = 10.0
         if relax_depth:
@@ -999,8 +1009,10 @@ class PerceptionModule:
 
         # Helper to process a single camera stream
         def process_single_cam(rgb_img, depth_img, yaw_offset_deg):
-            if rgb_img is None or depth_img is None:
+            if rgb_img is None:
                 return None, None, 0.0, 0.0, [], None, None, None
+            # depth_img can be None for side cameras — 3D localisation will use a
+            # conservative fallback depth (5 m) via relax_depth=True in _deproject_bbox_center
 
             rgb_arr = rgb_img.detach().cpu().numpy() if isinstance(rgb_img, torch.Tensor) else rgb_img
             if rgb_arr.shape[-1] == 4:
@@ -1152,12 +1164,16 @@ class PerceptionModule:
         self._web_boxes = web_boxes
 
         # 2. Process Left
+        if self.detection_count % 200 == 0:
+            print(f"[YOLO Diag] Left cam: rgb={'OK '+str(rgb_left.shape) if rgb_left is not None else 'None'}, depth={'OK' if depth_left is not None else 'None'}")
         res_l = process_single_cam(rgb_left, depth_left, 90.0)
         best_person_l, best_bbox_l, best_person_conf_l, raw_yolo_best_l, web_boxes_l, annotated_frame_l, left_bgr, log_xyz_l = res_l
         self._web_frame_left_bgr = left_bgr
         self._web_boxes_left = web_boxes_l
 
         # 3. Process Right
+        if self.detection_count % 200 == 0:
+            print(f"[YOLO Diag] Right cam: rgb={'OK '+str(rgb_right.shape) if rgb_right is not None else 'None'}, depth={'OK' if depth_right is not None else 'None'}")
         res_r = process_single_cam(rgb_right, depth_right, -90.0)
         best_person_r, best_bbox_r, best_person_conf_r, raw_yolo_best_r, web_boxes_r, annotated_frame_r, right_bgr, log_xyz_r = res_r
         self._web_frame_right_bgr = right_bgr
