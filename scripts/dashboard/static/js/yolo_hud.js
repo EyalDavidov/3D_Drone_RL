@@ -193,6 +193,9 @@ class YoloHud {
 
         // Rescue log
         this._updateLog(stats.rescue_log || []);
+
+        // Captured frames gallery
+        this._updateGallery(stats.captured_frames || []);
     }
 
     // ---- Alert overlay ----
@@ -286,6 +289,79 @@ class YoloHud {
                     ${coordsHtml}
                 </div>`;
             host.appendChild(card);
+        }
+    }
+
+    // ---- Captured frames gallery ----
+    _updateGallery(frames) {
+        const host = document.getElementById('yolo-gallery');
+        const emptyNode = document.getElementById('yolo-gallery-empty');
+        if (!host) return;
+
+        const sig = (frames || []).join('|');
+        if (sig === this._gallerySig) return;
+        this._gallerySig = sig;
+
+        // Clear all thumbnails except the empty label
+        host.querySelectorAll('.yhud-gallery-thumb').forEach(n => n.remove());
+
+        if (!frames || frames.length === 0) {
+            if (emptyNode) emptyNode.style.display = 'block';
+            return;
+        }
+
+        if (emptyNode) emptyNode.style.display = 'none';
+
+        for (const frame of frames) {
+            const isConfirmed = frame.startsWith('detection');
+            const label = isConfirmed ? 'CONFIRMED' : 'NOTED';
+            
+            const thumb = document.createElement('div');
+            thumb.className = 'yhud-gallery-thumb';
+            thumb.style.cssText = `
+                position: relative;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                overflow: hidden;
+                background: rgba(0, 0, 0, 0.3);
+                aspect-ratio: 16/9;
+                transition: transform 0.2s ease, border-color 0.2s ease;
+                cursor: pointer;
+            `;
+            thumb.onmouseenter = () => {
+                thumb.style.transform = 'scale(1.03)';
+                thumb.style.borderColor = isConfirmed ? 'rgba(182, 255, 60, 0.6)' : 'rgba(255, 176, 32, 0.6)';
+            };
+            thumb.onmouseleave = () => {
+                thumb.style.transform = 'scale(1)';
+                thumb.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+            };
+            
+            const imgPath = `yolo_saves/${frame}`;
+            
+            thumb.innerHTML = `
+                <img src="${imgPath}" style="width: 100%; height: 100%; object-fit: cover;" />
+                <div style="
+                    position: absolute;
+                    bottom: 0; left: 0; right: 0;
+                    background: rgba(0, 0, 0, 0.7);
+                    color: ${isConfirmed ? '#b6ff3c' : '#ffb020'};
+                    font-family: monospace;
+                    font-size: 0.65rem;
+                    padding: 2px 4px;
+                    display: flex;
+                    justify-content: space-between;
+                ">
+                    <span>${label}</span>
+                    <span>#${frame.split('_')[1]?.split('.')[0] || ''}</span>
+                </div>
+            `;
+            
+            thumb.onclick = () => {
+                window.open(imgPath, '_blank');
+            };
+            
+            host.appendChild(thumb);
         }
     }
 

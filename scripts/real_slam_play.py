@@ -302,6 +302,20 @@ def draw_slam_visualizer(
 # ---------------------------------------------------------------------------
 
 def main():
+    # Clear and recreate dashboard static saves folder on startup
+    try:
+        import shutil
+        saves_dir = Path(r"D:\isaac\3D_Drone_RL\scripts\dashboard\static\yolo_saves")
+        if saves_dir.exists():
+            try:
+                shutil.rmtree(saves_dir)
+            except Exception as e_rm:
+                print(f"[SLAM Launcher] Warning: could not delete old saves: {e_rm}")
+        saves_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[SLAM Launcher] Cleared and initialized dashboard YOLO saves: {saves_dir}")
+    except Exception as e:
+        print(f"[SLAM Launcher] Failed to clear dashboard saves folder: {e}")
+
     # 1. Parse config
     env_cfg = parse_env_cfg(
         "Brain-Nav-Drone-Direct-v0",

@@ -158,7 +158,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     # ---------- Brain Module Parameters ----------
     brain_step_size: float = 10.0       # Lawnmower corridor spacing in meters
     brain_safety_margin: float = 0.7    # Wall clearance for waypoint generation in meters
-    brain_yolo_interval: int = 1        # Run YOLO every N steps (1 = every step, needed during SCAN spin)
+    brain_yolo_interval: int = 2        # Run YOLO every N steps (2 = every 2 frames, reduces GPU load)
     brain_scan_yaw_rate: float = 0.05   # SCAN spin action (slower = better YOLO frames)
     brain_room_entry_scan: bool = True  # do one slow 360 the first time the drone reaches each room checkpoint
     brain_scan_trigger_radius: float = 2.0  # distance (m) to a room checkpoint that arms its entry scan

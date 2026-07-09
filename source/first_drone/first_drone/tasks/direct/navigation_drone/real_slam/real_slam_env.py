@@ -1144,7 +1144,7 @@ class SlamBrainModule(BrainModule):
                         for f in candidates
                     )
                     
-                    if total >= 10000 and coverage_pct > 70.0 and not has_substantial_frontiers:
+                    if total >= 10000 and coverage_pct >= 95.0 and not has_substantial_frontiers:
                         print(
                             f"[SLAM Brain] All frontiers cleared. "
                             f"Exploration COMPLETE ({visited}/{total} cells = {coverage_pct:.1f}%)."

@@ -1063,6 +1063,16 @@ class LiveDroneTelemetry:
         else:
             status, status_label = "idle", "SCANNING"
 
+        # Get list of captured yolo frames in static/yolo_saves directory (newest first)
+        captured_frames = []
+        try:
+            from pathlib import Path
+            dash_saves = Path(r"D:\isaac\3D_Drone_RL\scripts\dashboard\static\yolo_saves")
+            if dash_saves.exists():
+                captured_frames = [f.name for f in sorted(dash_saves.glob("*.jpg"), reverse=True)]
+        except Exception:
+            pass
+
         return {
             "conf_threshold":  round(thresh, 3),
             "best_conf":       round(peak_conf, 4),
@@ -1081,6 +1091,7 @@ class LiveDroneTelemetry:
             "boxes_right":     list(getattr(perception, "_web_boxes_right", []) or []),
             "intel":           intel_out,
             "rescue_log":      rescue_log,
+            "captured_frames":  captured_frames,
         }
 
     def _grab_ae_recon(self, env, depth_t) -> str:

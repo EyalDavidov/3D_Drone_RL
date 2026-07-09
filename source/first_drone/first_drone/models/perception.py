@@ -953,14 +953,24 @@ class PerceptionModule:
                 self._display_error_logged = True
 
     def _save_detection_frame(self, frame_bgr: np.ndarray, prefix: str) -> None:
-        """Save an annotated or HUD frame to debug_yolo_detections/."""
+        """Save an annotated or HUD frame to debug_yolo_detections/ and yolo_saves/."""
         tag = f"{prefix}_{self.detection_count:06d}.jpg"
         output_path = self.output_dir / tag
         try:
             from PIL import Image
 
-            Image.fromarray(frame_bgr[:, :, ::-1]).save(str(output_path))
+            img = Image.fromarray(frame_bgr[:, :, ::-1])
+            img.save(str(output_path))
             print(f"[YOLO] Saved {prefix} detection: {output_path}")
+
+            # Also save to dashboard saves folder for real-time telemetry
+            try:
+                dash_dir = Path(r"D:\isaac\3D_Drone_RL\scripts\dashboard\static\yolo_saves")
+                dash_dir.mkdir(parents=True, exist_ok=True)  # ensure it always exists
+                dash_path = dash_dir / tag
+                img.save(str(dash_path))
+            except Exception as e_dash:
+                print(f"[YOLO] Warning: failed to copy detection to dashboard: {e_dash}")
         except Exception as exc:
             print(f"[YOLO] Failed to save {prefix} image: {exc}")
 
@@ -1038,7 +1048,7 @@ class PerceptionModule:
                 yolo_bgr = cv2.resize(
                     img_bgr,
                     (img_w * up, img_h * up),
-                    interpolation=cv2.INTER_LINEAR,
+                    interpolation=cv2.INTER_CUBIC,
                 )
             if self.yolo_sharpen:
                 blur = cv2.GaussianBlur(yolo_bgr, (0, 0), sigmaX=1.0)
@@ -1051,16 +1061,37 @@ class PerceptionModule:
                 l_ch = clahe.apply(l_ch)
                 yolo_bgr = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
 
-            results = self.yolo_model(
-                yolo_bgr,
-                verbose=False,
-                conf=0.15,
-                classes=[0],
-                imgsz=self.yolo_imgsz,
-                device=getattr(self, "_yolo_device", "cpu"),
-                half=str(getattr(self, "_yolo_device", "cpu")).startswith("cuda"),
+            _yolo_dev = getattr(self, "_yolo_device", "cpu")
+            _yolo_half = str(_yolo_dev).startswith("cuda")
+
+            # --- Dual-scale YOLO: run at BOTH 640 (close) and 1280 (far) ---
+            # A single imgsz cannot optimally detect both close and distant
+            # targets — close persons overflow at 1280, distant ones vanish at 640.
+            results_hi = self.yolo_model(
+                yolo_bgr, verbose=False, conf=0.15, classes=[0],
+                imgsz=self.yolo_imgsz, device=_yolo_dev, half=_yolo_half,
             )
-            filtered_results = results[0]
+            # Second pass at native scale for close-up targets
+            results_lo = self.yolo_model(
+                img_bgr, verbose=False, conf=0.15, classes=[0],
+                imgsz=640, device=_yolo_dev, half=_yolo_half,
+            )
+
+            # Merge: for each pass, collect all person boxes with their
+            # confidences; use the pass that produced the higher best conf.
+            confs_hi = [float(b.conf[0].item()) for b in results_hi[0].boxes if int(b.cls[0]) == 0]
+            confs_lo = [float(b.conf[0].item()) for b in results_lo[0].boxes if int(b.cls[0]) == 0]
+            best_hi = max(confs_hi) if confs_hi else 0.0
+            best_lo = max(confs_lo) if confs_lo else 0.0
+
+            if best_lo > best_hi:
+                # Native-scale pass won — use its results (coord_back = 1.0)
+                filtered_results = results_lo[0]
+                coord_back_override = 1.0
+            else:
+                filtered_results = results_hi[0]
+                coord_back_override = None  # use normal coord_back
+
 
             raw_confs = [float(box.conf[0].item()) for box in filtered_results.boxes if int(box.cls[0]) == 0]
             if raw_confs:
@@ -1075,6 +1106,8 @@ class PerceptionModule:
             raw_yolo_best = 0.0
 
             coord_back = 1.0 / float(up) if up > 1 else 1.0
+            if coord_back_override is not None:
+                coord_back = coord_back_override
 
             # Compute effective quaternion for this camera's yaw offset
             eff_quat = drone_quat
