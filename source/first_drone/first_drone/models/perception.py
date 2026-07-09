@@ -144,7 +144,7 @@ class PerceptionModule:
     ) -> bool:
         bw = max(0.0, x2 - x1)
         bh = max(0.0, y2 - y1)
-        if bw < 5.0 or bh < 5.0:
+        if bw < 1.0 or bh < 2.0:
             return False
 
         # 1. Height fraction check (must not be a tiny sliver)
@@ -1005,6 +1005,10 @@ class PerceptionModule:
             rgb_arr = rgb_img.detach().cpu().numpy() if isinstance(rgb_img, torch.Tensor) else rgb_img
             if rgb_arr.shape[-1] == 4:
                 rgb_arr = rgb_arr[..., :3]
+
+            if self.detection_count % 100 == 0:
+                print(f"[YOLO Debug] Input image min={rgb_arr.min():.2f} max={rgb_arr.max():.2f} dtype={rgb_arr.dtype}")
+
             if rgb_arr.dtype in (np.float32, np.float64):
                 if rgb_arr.max() <= 1.05:
                     rgb_arr = (rgb_arr * 255.0).astype(np.uint8)

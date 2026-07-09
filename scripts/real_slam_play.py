@@ -330,12 +330,12 @@ def main():
     env_cfg.yolo_show_opencv = _use_opencv and (not args_cli.no_slam_window)
     if _web_dashboard:
         # Lighter YOLO for web-only runs — 1280@3x upscale was blocking the sim loop on CPU
-        env_cfg.yolo_camera_upscale = 2
-        env_cfg.yolo_imgsz = 640
-        env_cfg.yolo_sharpen = False
+        # env_cfg.yolo_camera_upscale = 2
+        # env_cfg.yolo_imgsz = 640
+        # env_cfg.yolo_sharpen = False
         env_cfg.yolo_noted_conf_threshold = 0.35
         env_cfg.yolo_noted_confirm_frames = 1
-        print("[SLAM Launcher] YOLO perf: imgsz=640, upscale=2x, GPU if available")
+        print("[SLAM Launcher] YOLO high-res config kept active for GPU performance")
 
     # 2. Instantiate RealSlamDroneEnv
     print("[SLAM Launcher] Initializing RealSlamDroneEnv…")
