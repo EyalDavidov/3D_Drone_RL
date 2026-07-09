@@ -44,6 +44,7 @@ class OccupancyGridMapper:
         # Visual-only: cells once classified as structural walls stay yellow so
         # sparse early scans don't flicker teal → yellow frame-to-frame.
         self._sticky_wall_mask = np.zeros((self.h, self.w), dtype=np.uint8)
+        self.expected_total_cells = 11400
 
     def world_to_grid(self, x, y):
         """Convert world coordinates (meters) to grid indices (row, col)."""
@@ -152,7 +153,7 @@ class OccupancyGridMapper:
         prob = self.get_occupancy_grid()
         known = (prob < 0.35) | (prob > 0.65)
         visited = int(known.sum())
-        expected_total = 11400
+        expected_total = getattr(self, "expected_total_cells", 11400)
         return min(visited, expected_total), expected_total
 
     def get_inflated_grid(self):

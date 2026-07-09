@@ -82,6 +82,12 @@ class SlamBrainModule(BrainModule):
             "[SLAM Brain] Pure-SLAM mode: frontiers, paths, and targets use the "
             "depth-built occupancy grid only (no USD walkable / ground-truth map)."
         )
+        
+        # Calculate expected total cells dynamically based on the USD map zones
+        self.mapper.expected_total_cells = self.calculate_expected_total_cells()
+        print(
+            f"[SLAM Brain] Dynamically calculated expected total cells from USD zones: {self.mapper.expected_total_cells}"
+        )
 
         self.state = "EXPLORE"
         self.segment_idx = 0
@@ -115,6 +121,40 @@ class SlamBrainModule(BrainModule):
         self.MIN_UNKNOWN_GAIN = 10
         self._hold_log_ticks = 0
         self._frontier_lock_ticks = 0
+
+    def calculate_expected_total_cells(self) -> int:
+        """Estimate the expected total floor and wall cells of the track dynamically by unioning USD zones."""
+        zones = getattr(self.env, "_map_zones", None)
+        if not zones:
+            return 11400  # Fallback
+
+        h, w = self.mapper.h, self.mapper.w
+        mask = np.zeros((h, w), dtype=bool)
+
+        for name, zone in zones.items():
+            bounds = zone.get("bounds")
+            if not bounds:
+                continue
+            lx0, lx1, ly0, ly1 = bounds
+
+            # Convert world bounds to grid indices
+            r0, c0 = self.mapper.world_to_grid(lx0, ly0)
+            r1, c1 = self.mapper.world_to_grid(lx1, ly1)
+
+            # Row/col can be inverted based on coordinate orientations
+            min_r, max_r = min(r0, r1), max(r0, r1)
+            min_c, max_c = min(c0, c1), max(c0, c1)
+
+            # Clamp to grid size
+            min_r = max(0, min(min_r, h - 1))
+            max_r = max(0, min(max_r, h - 1))
+            min_c = max(0, min(min_c, w - 1))
+            max_c = max(0, min(max_c, w - 1))
+
+            mask[min_r : max_r + 1, min_c : max_c + 1] = True
+
+        expected_cells = int(mask.sum())
+        return expected_cells if expected_cells > 0 else 11400
 
     def reset_mission_from_start(self) -> None:
         """Keep room-1 spawn from sequential config but start in SLAM EXPLORE (not SCAN)."""

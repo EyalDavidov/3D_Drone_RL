@@ -215,8 +215,16 @@
                         <span class="panel-badge live">LIVE</span>
                         <button class="minimize-btn" title="Minimize">−</button>
                     </div>
-                    <div class="panel-body slam-3d-body">
+                    <div class="panel-body slam-3d-body" style="position: relative;">
                         <div id="slam-3d-container"></div>
+                        <div class="smap-legend">
+                            <span><i style="background:#ffcc33"></i>Wall</span>
+                            <span><i style="background:#1f9c8c"></i>Obstacle</span>
+                            <span><i style="background:#ff8800"></i>Frontier</span>
+                            <span><i class="smap-legend-drone"></i>Drone</span>
+                            <span><i style="background:#ff00cc; width:6px; height:12px; border-radius:2px; box-shadow:0 0 6px #ff00cc; margin-left:2px; margin-right:2px;"></i>Person</span>
+                            <span><i style="background:#00d4ff; width:6px; height:12px; border-radius:2px; box-shadow:0 0 6px #00d4ff; margin-left:2px; margin-right:2px;"></i>Goal</span>
+                        </div>
                     </div>
                 </div>
                 <!-- Stats sidebar -->
@@ -280,11 +288,13 @@
                             <span class="yhud-bracket br"></span>
 
                             <div class="smap-legend">
-                                <span><i style="background:#78cdff"></i>Wall</span>
+                                <span><i style="background:#ffcc33"></i>Wall</span>
                                 <span><i style="background:#1f9c8c"></i>Obstacle</span>
-                                <span><i style="background:#26364e"></i>Free</span>
+                                <span><i style="background:#223046"></i>Free</span>
                                 <span><i style="background:#ffb020"></i>Frontier</span>
                                 <span><i class="smap-legend-drone"></i>Drone</span>
+                                <span><i style="display:inline-flex; align-items:center; justify-content:center; width:10px; height:10px; background:none; box-shadow:none;"><span style="color:#ff2d95; text-shadow:0 0 6px #ff2d95; font-size:14px; line-height:1; margin-top:-1px;">★</span></i>Person</span>
+                                <span><i style="background:#2ff3ff; border-radius:50%; box-shadow:0 0 6px #2ff3ff;"></i>Goal</span>
                             </div>
 
                             <div class="smap-hud">

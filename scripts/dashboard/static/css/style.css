@@ -581,9 +581,9 @@ body { display: flex; flex-direction: column; }
     border-bottom: 4px solid transparent;
     filter: drop-shadow(0 0 4px rgba(60,255,140,0.8));
 }
-/* Coord + zoom readout (top-right) — compact so it never overflows the panel */
+/* Coord + zoom readout (bottom-left) — compact so it never overflows the panel */
 .smap-hud {
-    position: absolute; top: 10px; right: 10px; z-index: 4;
+    position: absolute; bottom: 10px; left: 10px; z-index: 4;
     display: flex; align-items: center; gap: 4px;
     pointer-events: none;
 }
