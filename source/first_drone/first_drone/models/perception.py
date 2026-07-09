@@ -1005,8 +1005,13 @@ class PerceptionModule:
             rgb_arr = rgb_img.detach().cpu().numpy() if isinstance(rgb_img, torch.Tensor) else rgb_img
             if rgb_arr.shape[-1] == 4:
                 rgb_arr = rgb_arr[..., :3]
-            if rgb_arr.dtype in (np.float32, np.float64) and rgb_arr.max() <= 1.0:
-                rgb_arr = (rgb_arr * 255.0).astype(np.uint8)
+            if rgb_arr.dtype in (np.float32, np.float64):
+                if rgb_arr.max() <= 1.05:
+                    rgb_arr = (rgb_arr * 255.0).astype(np.uint8)
+                else:
+                    rgb_arr = rgb_arr.astype(np.uint8)
+            elif rgb_arr.dtype != np.uint8:
+                rgb_arr = rgb_arr.astype(np.uint8)
 
             img_bgr = rgb_arr[0][:, :, ::-1]
             img_h, img_w = img_bgr.shape[:2]
@@ -1041,6 +1046,13 @@ class PerceptionModule:
             )
             filtered_results = results[0]
 
+            raw_confs = [float(box.conf[0].item()) for box in filtered_results.boxes if int(box.cls[0]) == 0]
+            if raw_confs:
+                print(
+                    f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Raw YOLO detected {len(raw_confs)} person(s) "
+                    f"with confidences: {['%.1f%%' % (c*100) for c in raw_confs]}"
+                )
+
             best_person = None
             best_bbox = None
             best_person_conf = 0.0
@@ -1069,6 +1081,14 @@ class PerceptionModule:
                 raw_yolo_best = max(raw_yolo_best, conf)
                 x1, y1, x2, y2 = self._box_xyxy_scaled(box, coord_back)
                 if not self._bbox_passes_person_shape_xy(x1, y1, x2, y2, img_w, img_h):
+                    bw = max(0.0, x2 - x1)
+                    bh = max(0.0, y2 - y1)
+                    aspect = bw / bh if bh > 0 else 0
+                    print(
+                        f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Rejected detection (conf {conf:.1%}) "
+                        f"due to shape filtering (aspect={bw:.1f}/{bh:.1f}={aspect:.2f}, "
+                        f"height_frac={bh/img_h:.3f}, area_frac={(bw*bh)/(img_w*img_h):.5f})"
+                    )
                     continue
 
                 best_person_conf = max(best_person_conf, conf)
