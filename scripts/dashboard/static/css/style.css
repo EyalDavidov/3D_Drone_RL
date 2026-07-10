@@ -156,6 +156,15 @@ body { display: flex; flex-direction: column; }
 
 .tab-icon { font-size: 14px; }
 
+/* Hide decorative icon glyphs across dashboard headers and HUD labels. */
+.tab-icon,
+.panel-icon,
+.glass-title-icon,
+.yhud-chip-icon,
+.hud-alert-icon {
+    display: none !important;
+}
+
 /* ========== LEVEL SELECTOR ========== */
 .level-selector { display: flex; align-items: center; gap: 6px; }
 .level-selector .label,
@@ -981,7 +990,16 @@ body { display: flex; flex-direction: column; }
 }
 .yhud-log-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
 .yhud-log-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
-.yhud-log-gps { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 10px; color: var(--text-muted); }
+.yhud-log-gps {
+    display: flex;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-top: 8px;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+.yhud-log-gps span { display: inline-flex; align-items: center; gap: 4px; }
 .yhud-log-gps b { color: var(--neon-cyan); font-weight: 600; }
 .glass-stats {
     flex-direction: column;

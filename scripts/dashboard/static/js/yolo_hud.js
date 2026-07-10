@@ -269,7 +269,7 @@ class YoloHud {
             if (hasGps) {
                 coordsHtml = `<div class="yhud-log-gps">
                         <span>LAT <b class="mono">${Number(entry.gps_lat).toFixed(6)}</b></span>
-                        <span>LON <b class="mono">${Number(entry.gps_lon).toFixed(6)}</b></span>
+                        <span>LONG <b class="mono">${Number(entry.gps_lon).toFixed(6)}</b></span>
                     </div>`;
             } else if (hasXyz) {
                 coordsHtml = `<div class="yhud-log-gps">

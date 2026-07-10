@@ -352,6 +352,25 @@ class SlamBrainModule(BrainModule):
         probes.sort(key=lambda p: -float(p.get("probe_score", 0)))
         return probes
 
+    def _get_closest_path_index(self, d_pos_w) -> int:
+        """Find the index of the closest node on the A* path that is not obstructed by a wall."""
+        if not getattr(self, "astar_path_world", None):
+            return 0
+        d_pos_2d = d_pos_w[:2]
+
+        valid_indices = []
+        for idx, node in enumerate(self.astar_path_world):
+            if not self.mapper.segment_hits_wall(d_pos_w[0], d_pos_w[1], node[0], node[1]):
+                valid_indices.append(idx)
+
+        if valid_indices:
+            sub_distances = [np.linalg.norm(d_pos_2d - np.array(self.astar_path_world[idx])) for idx in valid_indices]
+            return valid_indices[int(np.argmin(sub_distances))]
+
+        # Fallback if all are somehow obstructed
+        distances = [np.linalg.norm(d_pos_2d - np.array(node)) for node in self.astar_path_world]
+        return int(np.argmin(distances))
+
     def _stamp_visited(self, d_pos_w) -> None:
         """Mark a disk around the drone's current cell as 'visited' (pure SLAM).
 
@@ -791,12 +810,7 @@ class SlamBrainModule(BrainModule):
             self._stamp_visited(d_pos_w)
             self._prev_stamp_xy = np.array(d_pos_w[:2], dtype=np.float64)
             if getattr(self, "astar_path_world", None):
-                d_pos_2d = d_pos_w[:2]
-                distances = [
-                    np.linalg.norm(d_pos_2d - np.array(node))
-                    for node in self.astar_path_world
-                ]
-                closest_idx = int(np.argmin(distances))
+                closest_idx = self._get_closest_path_index(d_pos_w)
                 if closest_idx > 0:
                     self._stamp_path_visited(self.astar_path_world[: closest_idx + 1])
 
@@ -896,9 +910,7 @@ class SlamBrainModule(BrainModule):
                 path_blocked = False
                 if self.astar_path_world:
                     prob = self.mapper.get_occupancy_grid()
-                    d_pos_2d = d_pos_w[:2]
-                    distances = [np.linalg.norm(d_pos_2d - np.array(node)) for node in self.astar_path_world]
-                    closest_idx = int(np.argmin(distances))
+                    closest_idx = self._get_closest_path_index(d_pos_w)
                     for node in self.astar_path_world[closest_idx : closest_idx + 15]:
                         r, c = self.mapper.world_to_grid(node[0], node[1])
                         if self.mapper.is_in_bounds(r, c) and prob[r, c] >= 0.35:
@@ -1205,20 +1217,18 @@ class SlamBrainModule(BrainModule):
                     self.astar_path_world = []
 
             if self.astar_path_world:
-                # Find closest index on the A* path to the drone's current 2D position
                 d_pos_2d = d_pos_w[:2]
-                distances = [np.linalg.norm(d_pos_2d - np.array(node)) for node in self.astar_path_world]
-                closest_idx = int(np.argmin(distances))
-                
-                # Look ahead ~0.6m along the path (was 1.0m): 1.0 was smooth but let
-                # the drone aim too far ahead and clip inside corners; 0.6 hugs the
-                # planned route through turns while staying smoother than the old 0.4.
-                next_target = self.astar_path_world[-1]
+                closest_idx = self._get_closest_path_index(d_pos_w)
+
+                # Look ahead along the path, but make sure we do not beeline through a wall corner!
+                next_target = self.astar_path_world[closest_idx]
                 for node in self.astar_path_world[closest_idx:]:
-                    if np.linalg.norm(d_pos_2d - np.array(node)) > 0.6:
-                        next_target = node
+                    if self.mapper.segment_hits_wall(d_pos_w[0], d_pos_w[1], node[0], node[1]):
                         break
-                        
+                    next_target = node
+                    if np.linalg.norm(d_pos_2d - np.array(node)) > 0.6:
+                        break
+
                 desired_pos_w[0] = float(next_target[0])
                 desired_pos_w[1] = float(next_target[1])
                 desired_pos_w[2] = cruise_z

@@ -142,10 +142,10 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     yolo_person_conf_threshold: float = 0.50
     yolo_min_bbox_area_frac: float = 0.0
     yolo_min_bbox_height_frac: float = 0.0
-    yolo_min_person_aspect: float = 1.22
+    yolo_min_person_aspect: float = 1.65
     yolo_noted_confirm_frames: int = 2
-    yolo_camera_upscale: int = 3   # 512×288 → 1536×864 before YOLO (makes distant humans larger/sharper)
-    yolo_imgsz: int = 1280         # match upscaled feed so YOLO keeps full detail
+    yolo_camera_upscale: int = 2   # 512×288 → 1024×576 before YOLO
+    yolo_imgsz: int = 640          # standard YOLO input size
     yolo_sharpen: bool = True
     yolo_clahe: bool = False       # colorized models don't need color-distorting CLAHE contrast boost
     yolo_show_opencv: bool = True  # False when web dashboard renders YOLO/SLAM natively

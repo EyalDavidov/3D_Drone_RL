@@ -16,7 +16,7 @@ class PerceptionModule:
         noted_conf_threshold: float = 0.60,
         min_bbox_area_frac: float = 0.0001,
         min_bbox_height_frac: float = 0.02,
-        min_person_aspect: float = 0.30,
+        min_person_aspect: float = 1.65,
         noted_confirm_frames: int = 3,
         min_depth_m: float = 0.8,
         max_depth_m: float = 25.0,
@@ -1048,7 +1048,7 @@ class PerceptionModule:
                 yolo_bgr = cv2.resize(
                     img_bgr,
                     (img_w * up, img_h * up),
-                    interpolation=cv2.INTER_CUBIC,
+                    interpolation=cv2.INTER_LINEAR,
                 )
             if self.yolo_sharpen:
                 blur = cv2.GaussianBlur(yolo_bgr, (0, 0), sigmaX=1.0)
@@ -1064,34 +1064,11 @@ class PerceptionModule:
             _yolo_dev = getattr(self, "_yolo_device", "cpu")
             _yolo_half = str(_yolo_dev).startswith("cuda")
 
-            # --- Dual-scale YOLO: run at BOTH 640 (close) and 1280 (far) ---
-            # A single imgsz cannot optimally detect both close and distant
-            # targets — close persons overflow at 1280, distant ones vanish at 640.
-            results_hi = self.yolo_model(
+            results = self.yolo_model(
                 yolo_bgr, verbose=False, conf=0.15, classes=[0],
                 imgsz=self.yolo_imgsz, device=_yolo_dev, half=_yolo_half,
             )
-            # Second pass at native scale for close-up targets
-            results_lo = self.yolo_model(
-                img_bgr, verbose=False, conf=0.15, classes=[0],
-                imgsz=640, device=_yolo_dev, half=_yolo_half,
-            )
-
-            # Merge: for each pass, collect all person boxes with their
-            # confidences; use the pass that produced the higher best conf.
-            confs_hi = [float(b.conf[0].item()) for b in results_hi[0].boxes if int(b.cls[0]) == 0]
-            confs_lo = [float(b.conf[0].item()) for b in results_lo[0].boxes if int(b.cls[0]) == 0]
-            best_hi = max(confs_hi) if confs_hi else 0.0
-            best_lo = max(confs_lo) if confs_lo else 0.0
-
-            if best_lo > best_hi:
-                # Native-scale pass won — use its results (coord_back = 1.0)
-                filtered_results = results_lo[0]
-                coord_back_override = 1.0
-            else:
-                filtered_results = results_hi[0]
-                coord_back_override = None  # use normal coord_back
-
+            filtered_results = results[0]
 
             raw_confs = [float(box.conf[0].item()) for box in filtered_results.boxes if int(box.cls[0]) == 0]
             if raw_confs:
@@ -1106,8 +1083,6 @@ class PerceptionModule:
             raw_yolo_best = 0.0
 
             coord_back = 1.0 / float(up) if up > 1 else 1.0
-            if coord_back_override is not None:
-                coord_back = coord_back_override
 
             # Compute effective quaternion for this camera's yaw offset
             eff_quat = drone_quat
