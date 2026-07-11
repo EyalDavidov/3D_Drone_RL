@@ -616,9 +616,17 @@ class SlamBrainModule(BrainModule):
         if world_path is None or len(world_path) < 2:
             grid_path = self.mapper.reconstruct_path(came_from, deeper)
             if grid_path and len(grid_path) >= 2:
-                world_path = [
-                    self.mapper.grid_to_world(r, c) for r, c in grid_path
-                ]
+                is_safe = True
+                prob = self.mapper.get_occupancy_grid()
+                wall_mask, _ = self.mapper.get_wall_obstacle_masks(use_walkable=False)
+                for r, c in grid_path[:-1]:
+                    if not self.mapper.is_in_bounds(r, c) or wall_mask[r, c] == 1 or prob[r, c] >= 0.40:
+                        is_safe = False
+                        break
+                if is_safe:
+                    world_path = [
+                        self.mapper.grid_to_world(r, c) for r, c in grid_path
+                    ]
         if world_path and len(world_path) >= 2:
             self.astar_path_world = world_path
             self._frontier_lock_ticks = max(
@@ -1128,13 +1136,7 @@ class SlamBrainModule(BrainModule):
                     is_back = self._is_backtrack_target(
                         frontier, d_pos_w, came_from=came_from
                     )
-                    grid_path = self.mapper.reconstruct_path(came_from, goal)
                     REVISIT_MAX = 0.40
-                    if is_back and grid_path and self._path_visited_fraction(
-                        None, grid_path=grid_path
-                    ) > REVISIT_MAX:
-                        grid_path = None
-
                     world_path = self.mapper.plan_path_centered(
                         (start_r, start_c), goal
                     )
@@ -1144,10 +1146,24 @@ class SlamBrainModule(BrainModule):
                         world_path = None
 
                     if world_path is None or len(world_path) < 2:
+                        grid_path = self.mapper.reconstruct_path(came_from, goal)
+                        if is_back and grid_path and self._path_visited_fraction(
+                            None, grid_path=grid_path
+                        ) > REVISIT_MAX:
+                            grid_path = None
                         if grid_path and len(grid_path) >= 2:
-                            world_path = [
-                                self.mapper.grid_to_world(r, c) for r, c in grid_path
-                            ]
+                            is_safe = True
+                            prob = self.mapper.get_occupancy_grid()
+                            wall_mask, _ = self.mapper.get_wall_obstacle_masks(use_walkable=False)
+                            for r, c in grid_path[:-1]:
+                                if not self.mapper.is_in_bounds(r, c) or wall_mask[r, c] == 1 or prob[r, c] >= 0.40:
+                                    is_safe = False
+                                    break
+                            if is_safe:
+                                world_path = [
+                                    self.mapper.grid_to_world(r, c) for r, c in grid_path
+                                ]
+
                     if world_path and len(world_path) >= 2:
                         self.active_frontier = frontier
                         self.astar_path_world = world_path
@@ -1264,9 +1280,17 @@ class SlamBrainModule(BrainModule):
                 if world_path is None or len(world_path) < 2:
                     grid_path = self.mapper.reconstruct_path(came_from, goal)
                     if grid_path and len(grid_path) >= 2:
-                        world_path = [
-                            self.mapper.grid_to_world(r, c) for r, c in grid_path
-                        ]
+                        is_safe = True
+                        prob = self.mapper.get_occupancy_grid()
+                        wall_mask, _ = self.mapper.get_wall_obstacle_masks(use_walkable=False)
+                        for r, c in grid_path[:-1]:
+                            if not self.mapper.is_in_bounds(r, c) or wall_mask[r, c] == 1 or prob[r, c] >= 0.40:
+                                is_safe = False
+                                break
+                        if is_safe:
+                            world_path = [
+                                self.mapper.grid_to_world(r, c) for r, c in grid_path
+                            ]
                 REVISIT_MAX = 0.40
                 is_back = self._is_backtrack_target(
                     self.active_frontier, d_pos_w, came_from=came_from
@@ -1281,10 +1305,11 @@ class SlamBrainModule(BrainModule):
                 )
                 if path_ok:
                     self.astar_path_world = world_path
-                elif is_back and not self._is_live_opening(self.active_frontier):
+                else:
+                    why = "stale backtrack" if is_back else "no safe path"
                     print(
-                        "[SLAM Brain] Replan dropped stale frontier "
-                        "(target is in visited/backtrack territory)."
+                        f"[SLAM Brain] Replan dropped active frontier ({why}). "
+                        f"Clearing target to force replan."
                     )
                     self.active_frontier = None
                     self.astar_path_world = []
@@ -1312,8 +1337,8 @@ class SlamBrainModule(BrainModule):
                 desired_pos_w[:] = d_pos_w
                 if need_target and self.state != "COMPLETE":
                     self.active_frontier = None
-                    # Spin slowly in place to scan and map the room when holding/mapping
-                    target_yaw = drone_yaw + 0.08
+                    # Spin slightly faster in place to scan and map the room quickly
+                    target_yaw = drone_yaw + 0.15
 
         elif self.state == "COMPLETE":
             desired_pos_w[:] = d_pos_w

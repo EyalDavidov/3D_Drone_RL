@@ -965,7 +965,15 @@ class LiveDroneTelemetry:
             # ---- Spawned Targets ----
             spawned_targets = []
             origin = env._terrain.env_origins[0].cpu().numpy() if hasattr(env, "_terrain") else np.zeros(3)
-            for t in getattr(env.unwrapped, "spawned_targets_local", []):
+            local_targets = getattr(env.unwrapped, "spawned_targets_local", []) or []
+            if not local_targets:
+                cfg = getattr(env.unwrapped, "cfg", None)
+                if cfg is not None:
+                    room3 = getattr(cfg, "brain_room3_person_local", None)
+                    final_a = getattr(cfg, "brain_final_person_local", None)
+                    if room3 is not None and final_a is not None:
+                        local_targets = [room3, final_a]
+            for t in local_targets:
                 spawned_targets.append([round(float(t[0] + origin[0]), 3), round(float(t[1] + origin[1]), 3)])
 
             cell_w = (mapper.max_x - mapper.min_x) / W

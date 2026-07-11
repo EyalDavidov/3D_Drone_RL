@@ -644,20 +644,37 @@ class OccupancyGridMapper:
     def plan_path_centered(self, start_grid, goal_grid, clearance_cells=5, wall_weight=4.0):
         """A* that PREFERS the middle of free space (fixes wall-hugging paths).
 
-        Blocking = get_traversable_free() (walls block only their raw cells, poles
-        inflated) so narrow corridors are still passable. On top of the normal step
-        cost, cells close to a wall get a penalty proportional to how far inside
-        `clearance_cells` they are — so in open areas the path runs down the centre,
-        while in a genuinely narrow corridor (every cell is near a wall) the penalty
-        is ~uniform and it still finds the route. Returns a world-coord path or None.
+        Attempts to plan with the requested clearance first, and falls back to
+        smaller clearances and eventually to no wall inflation if A* fails due to
+        narrow passages. Always prevents planning paths through actual walls or obstacles.
         """
+        # Step 1: Full clearance & wall inflation
+        path = self._plan_path_centered_impl(start_grid, goal_grid, clearance_cells=clearance_cells, wall_weight=wall_weight, inflate=True)
+        if path is not None:
+            return path
+
+        # Step 2: Reduced clearance (0.2m) with wall inflation
+        path = self._plan_path_centered_impl(start_grid, goal_grid, clearance_cells=2, wall_weight=1.0, inflate=True)
+        if path is not None:
+            return path
+
+        # Step 3: Minimal clearance (0.1m) and NO wall inflation (still blocks raw walls/obstacles)
+        path = self._plan_path_centered_impl(start_grid, goal_grid, clearance_cells=1, wall_weight=0.0, inflate=False)
+        if path is not None:
+            return path
+
+        return None
+
+    def _plan_path_centered_impl(self, start_grid, goal_grid, clearance_cells, wall_weight, inflate):
         import heapq
 
-        # Inflate structural walls (to close noise gaps) but do NOT inflate small obstacles
-        # so that narrow corridor passages around poles/obstacles remain passable.
         wall_mask, obstacle_mask = self.get_wall_obstacle_masks(use_walkable=False)
-        small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        inflated_walls = cv2.dilate(wall_mask, small_k, iterations=1)
+        if inflate:
+            small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            inflated_walls = cv2.dilate(wall_mask, small_k, iterations=1)
+        else:
+            inflated_walls = wall_mask
+
         prob = self.get_occupancy_grid()
         free = ((inflated_walls == 0) & (obstacle_mask == 0) & (prob < 0.35)).astype(np.uint8)
         h, w = free.shape
@@ -666,10 +683,10 @@ class OccupancyGridMapper:
         if not (self.is_in_bounds(r0, c0) and self.is_in_bounds(r1, c1)):
             return None
 
-        # Distance from each free cell to the nearest wall/obstacle (non-free cell).
+        # Distance from each free cell to the nearest wall/obstacle
         dist = cv2.distanceTransform(free, cv2.DIST_L2, 5)
 
-        # Seed from nearest free cell if the drone's own cell reads blocked.
+        # Seed from nearest free cell if start cell reads blocked.
         if free[r0, c0] == 0:
             found = None
             for rad in range(1, 8):
@@ -691,7 +708,6 @@ class OccupancyGridMapper:
             d = float(dist[r, c])
             if d >= clearance_cells:
                 return 0.0
-            # Quadratic penalty — strongly avoids cells near walls.
             t = (clearance_cells - d) / max(clearance_cells, 1e-6)
             return wall_weight * t * t * clearance_cells
 
@@ -701,7 +717,6 @@ class OccupancyGridMapper:
         open_set = [(heuristic(r0, c0), 0.0, (r0, c0))]
         came = {}
         g = {(r0, c0): 0.0}
-        # 4-connected only — diagonal steps cut corners and hug walls in L-turns.
         neigh = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         it = 0
         while open_set and it < 20000:
