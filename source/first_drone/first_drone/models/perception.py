@@ -83,6 +83,7 @@ class PerceptionModule:
         # ─────────────────────────────────────────────────────────────────
         self._detection_log: list[dict] = []
         self._person_best_conf: dict[str, float] = {}
+        self.frame_confirmed_persons: list[dict] = []
         self._sidebar_scroll = 0
         self._sidebar_trackbar_ready = False
         self._alert_width = 1280
@@ -317,15 +318,59 @@ class PerceptionModule:
         if xyz is None or not self._rescue_person_slots:
             return None
         best_slot = None
-        best_dist = float(self._person_match_radius) + 1.0
+        # Reduce match radius for dynamic targets to avoid merging different people
+        limit_radius = 1.2 if len(self._rescue_person_slots) > 3 else self._person_match_radius
+        best_dist = float(limit_radius) + 1.0
         x, y = float(xyz[0]), float(xyz[1])
         for slot in self._rescue_person_slots:
             sx, sy = float(slot["xyz"][0]), float(slot["xyz"][1])
             dist = math.hypot(x - sx, y - sy)
-            if dist <= self._person_match_radius and dist < best_dist:
+            if dist <= limit_radius and dist < best_dist:
                 best_dist = dist
                 best_slot = slot
         return best_slot
+
+    def _person_log_key_from_world_xy(self, x: float, y: float) -> str:
+        """Stable log id for a distinct world position (~2 m cells)."""
+        bx = int(round(float(x) / 2.0))
+        by = int(round(float(y) / 2.0))
+        return f"pos_{bx}_{by}"
+
+    def _dedupe_confirmed_detections(
+        self, items: list[dict], merge_dist: float = 1.5
+    ) -> list[dict]:
+        """Merge same-frame duplicates from multiple cameras / boxes."""
+        cam_rank = {"front": 0, "left": 1, "right": 1}
+
+        def _rank(cam: str | None) -> int:
+            return cam_rank.get(str(cam or "front"), 2)
+
+        merged: list[dict] = []
+        for item in sorted(items, key=lambda d: -float(d.get("conf", 0.0))):
+            xyz = item.get("xyz")
+            if xyz is None:
+                continue
+            ix, iy = float(xyz[0]), float(xyz[1])
+            dup_idx = None
+            for i, kept in enumerate(merged):
+                kxyz = kept.get("xyz")
+                if kxyz is None:
+                    continue
+                if math.hypot(ix - float(kxyz[0]), iy - float(kxyz[1])) < merge_dist:
+                    dup_idx = i
+                    break
+            if dup_idx is not None:
+                kept = merged[dup_idx]
+                best_conf = max(float(kept.get("conf", 0.0)), float(item.get("conf", 0.0)))
+                # Keep the highest confidence, but prefer front-cam XYZ when the same
+                # person is seen from multiple cameras (side cams often lack depth).
+                if _rank(item.get("cam")) < _rank(kept.get("cam")):
+                    merged[dup_idx] = {**item, "conf": best_conf}
+                else:
+                    merged[dup_idx] = {**kept, "conf": best_conf}
+            else:
+                merged.append(item)
+        return merged
 
     def _person_log_key(
         self, scan_label: str | None, xyz: tuple[float, float, float] | None
@@ -334,6 +379,8 @@ class PerceptionModule:
         slot = self._match_rescue_person_slot(xyz)
         if slot is not None:
             return str(slot["id"])
+        if xyz is not None:
+            return self._person_log_key_from_world_xy(float(xyz[0]), float(xyz[1]))
         label = (scan_label or "person_detected").strip().lower().replace(" ", "_")
         return label
 
@@ -382,7 +429,7 @@ class PerceptionModule:
         if not replaced:
             self._detection_log.insert(0, entry)
         self._detection_log.sort(key=lambda e: (-float(e["conf"]), -int(e["frame"])))
-        self._detection_log = self._detection_log[:20]
+        self._detection_log = self._detection_log[:30]
         self._sidebar_scroll = 0
         return True
 
@@ -618,17 +665,33 @@ class PerceptionModule:
         import cv2
 
         vis = bgr.copy()
-        if results.boxes is None:
-            return vis
         thresh = float(draw_threshold if draw_threshold is not None else self.noted_conf_threshold)
-        cs = float(coord_scale)
-        for box in results.boxes:
-            if int(box.cls[0]) != 0:
-                continue
-            conf = float(box.conf[0].item())
-            if conf < 0.15:
-                continue
-            x1, y1, x2, y2 = self._box_xyxy_scaled(box, cs)
+        
+        # Determine format: list of keep_candidates vs YOLO Results object
+        if isinstance(results, list):
+            # Format: (conf, box, x1, y1, x2, y2, scale_type)
+            boxes_to_draw = []
+            for item in results:
+                conf = item[0]
+                if conf < 0.15:
+                    continue
+                x1, y1, x2, y2 = item[2], item[3], item[4], item[5]
+                boxes_to_draw.append((conf, x1, y1, x2, y2))
+        else:
+            if results is None or getattr(results, "boxes", None) is None:
+                return vis
+            cs = float(coord_scale)
+            boxes_to_draw = []
+            for box in results.boxes:
+                if int(box.cls[0]) != 0:
+                    continue
+                conf = float(box.conf[0].item())
+                if conf < 0.15:
+                    continue
+                x1, y1, x2, y2 = self._box_xyxy_scaled(box, cs)
+                boxes_to_draw.append((conf, x1, y1, x2, y2))
+
+        for conf, x1, y1, x2, y2 in boxes_to_draw:
             x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
             if conf >= self.person_conf_threshold:
                 color = self._hc["lime"]
@@ -663,19 +726,34 @@ class PerceptionModule:
         overlays instead of a baked-in bitmap.
         """
         boxes: list[dict] = []
-        if results is None or results.boxes is None:
-            return boxes
-        cs = float(coord_scale)
         iw = max(1.0, float(img_w))
         ih = max(1.0, float(img_h))
-        for box in results.boxes:
-            try:
+        
+        if isinstance(results, list):
+            # Format: (conf, box, x1, y1, x2, y2, scale_type)
+            boxes_to_collect = []
+            for item in results:
+                conf = item[0]
+                if conf < 0.15:
+                    continue
+                x1, y1, x2, y2 = item[2], item[3], item[4], item[5]
+                boxes_to_collect.append((conf, x1, y1, x2, y2))
+        else:
+            if results is None or getattr(results, "boxes", None) is None:
+                return boxes
+            cs = float(coord_scale)
+            boxes_to_collect = []
+            for box in results.boxes:
                 if int(box.cls[0]) != 0:
                     continue
                 conf = float(box.conf[0].item())
                 if conf < 0.15:
                     continue
                 x1, y1, x2, y2 = self._box_xyxy_scaled(box, cs)
+                boxes_to_collect.append((conf, x1, y1, x2, y2))
+
+        for conf, x1, y1, x2, y2 in boxes_to_collect:
+            try:
                 if conf >= self.person_conf_threshold:
                     tier = "confirmed"
                 elif conf >= self.noted_conf_threshold:
@@ -1042,6 +1120,8 @@ class PerceptionModule:
         if self.use_mock:
             return person_found, person_world_xyz
 
+        self.frame_confirmed_persons = []
+
         if scan_label and scan_label != self._active_scan_label:
             self._active_scan_label = scan_label
             self._noted_streak = 0
@@ -1058,7 +1138,7 @@ class PerceptionModule:
         # Helper to process a single camera stream
         def process_single_cam(rgb_img, depth_img, yaw_offset_deg):
             if rgb_img is None:
-                return None, None, 0.0, 0.0, [], None, None, None
+                return None, None, 0.0, 0.0, [], None, None, None, []
             # depth_img can be None for side cameras — 3D localisation will use a
             # conservative fallback depth (5 m) via relax_depth=True in _deproject_bbox_center
 
@@ -1112,37 +1192,80 @@ class PerceptionModule:
                 imgsz=576, device=_yolo_dev, half=_yolo_half,
             )
 
-            # Collect best confidence from each scale
-            confs_hi = [float(b.conf[0].item()) for b in results_hi[0].boxes if int(b.cls[0]) == 0]
-            confs_lo = [float(b.conf[0].item()) for b in results_lo[0].boxes if int(b.cls[0]) == 0]
-            best_hi = max(confs_hi) if confs_hi else 0.0
-            best_lo = max(confs_lo) if confs_lo else 0.0
+            # Define IoU helper locally
+            def compute_iou(box1, box2):
+                bx1 = max(box1[0], box2[0])
+                by1 = max(box1[1], box2[1])
+                bx2 = min(box1[2], box2[2])
+                by2 = min(box1[3], box2[3])
+                inter_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+                box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+                box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+                union_area = box1_area + box2_area - inter_area
+                if union_area <= 0:
+                    return 0.0
+                return inter_area / union_area
 
-            if best_lo > best_hi:
-                # Native low-res pass won: use native scale results
-                filtered_results = results_lo[0]
-                coord_back_override = 1.0
-            else:
-                # Upscaled high-res pass won: use upscaled scale results
-                filtered_results = results_hi[0]
-                coord_back_override = None
+            # Collect candidates from both scales
+            candidates = []
+            
+            # 1. High-res upscaled results
+            if results_hi and len(results_hi) > 0 and results_hi[0].boxes is not None:
+                for box in results_hi[0].boxes:
+                    if int(box.cls[0]) != 0:
+                        continue
+                    conf = float(box.conf[0].item())
+                    x1, y1, x2, y2 = self._box_xyxy_scaled(box, 1.0 / float(up) if up > 1 else 1.0)
+                    candidates.append((conf, box, x1, y1, x2, y2, f"Upscale {self.yolo_imgsz}"))
 
-            raw_confs = [float(box.conf[0].item()) for box in filtered_results.boxes if int(box.cls[0]) == 0]
-            if raw_confs:
-                selected_scale = "Native 576" if best_lo > best_hi else f"Upscale {self.yolo_imgsz}"
+            # 2. Native resolution results
+            if results_lo and len(results_lo) > 0 and results_lo[0].boxes is not None:
+                for box in results_lo[0].boxes:
+                    if int(box.cls[0]) != 0:
+                        continue
+                    conf = float(box.conf[0].item())
+                    x1, y1, x2, y2 = self._box_xyxy_scaled(box, 1.0)
+                    candidates.append((conf, box, x1, y1, x2, y2, "Native 576"))
+
+            # Sort by confidence descending
+            candidates = sorted(candidates, key=lambda x: x[0], reverse=True)
+
+            # Non-Maximum Suppression (NMS)
+            keep_candidates = []
+            for item in candidates:
+                conf, box, x1, y1, x2, y2, scale_label = item
+                overlap = False
+                for k_conf, k_box, k_x1, k_y1, k_x2, k_y2, k_label in keep_candidates:
+                    iou = compute_iou((x1, y1, x2, y2), (k_x1, k_y1, k_x2, k_y2))
+                    
+                    # Containment check: if one box is mostly inside another
+                    area_item = (x2 - x1) * (y2 - y1)
+                    area_k = (k_x2 - k_x1) * (k_y2 - k_y1)
+                    inter_x1 = max(x1, k_x1)
+                    inter_y1 = max(y1, k_y1)
+                    inter_x2 = min(x2, k_x2)
+                    inter_y2 = min(y2, k_y2)
+                    inter_area = max(0.0, inter_x2 - inter_x1) * max(0.0, inter_y2 - inter_y1)
+                    min_area = min(area_item, area_k)
+                    containment = inter_area / min_area if min_area > 0 else 0.0
+                    
+                    if iou > 0.45 or containment > 0.70:
+                        overlap = True
+                        break
+                if not overlap:
+                    keep_candidates.append(item)
+
+            if keep_candidates:
                 print(
-                    f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Raw YOLO detected {len(raw_confs)} person(s) "
-                    f"via {selected_scale} with confidences: {['%.1f%%' % (c*100) for c in raw_confs]}"
+                    f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Merged YOLO detected {len(keep_candidates)} person(s) "
+                    f"with confidences: {['%.1f%% (%s)' % (c[0]*100, c[6]) for c in keep_candidates]}"
                 )
 
             best_person = None
             best_bbox = None
             best_person_conf = 0.0
             raw_yolo_best = 0.0
-
-            coord_back = 1.0 / float(up) if up > 1 else 1.0
-            if coord_back_override is not None:
-                coord_back = coord_back_override
+            confirmed_list: list = []
 
             # Compute effective quaternion for this camera's yaw offset
             eff_quat = drone_quat
@@ -1158,12 +1281,8 @@ class PerceptionModule:
                 q_eff = rot_eff.as_quat()  # [x, y, z, w]
                 eff_quat = torch.tensor([[q_eff[3], q_eff[0], q_eff[1], q_eff[2]]], device=drone_quat.device, dtype=drone_quat.dtype)
 
-            for box in filtered_results.boxes:
-                if int(box.cls[0]) != 0:
-                    continue
-                conf = float(box.conf[0].item())
+            for conf, box, x1, y1, x2, y2, scale_label in keep_candidates:
                 raw_yolo_best = max(raw_yolo_best, conf)
-                x1, y1, x2, y2 = self._box_xyxy_scaled(box, coord_back)
                 if not self._bbox_passes_person_shape_xy(x1, y1, x2, y2, img_w, img_h):
                     bw = max(0.0, x2 - x1)
                     bh = max(0.0, y2 - y1)
@@ -1193,6 +1312,7 @@ class PerceptionModule:
                 (t_x, t_y, t_z), z_depth, local_x, local_y = deproj
 
                 candidate = (conf, (x1, y1, x2, y2), (t_x, t_y, t_z), z_depth, local_x, local_y)
+                confirmed_list.append(candidate)
                 if best_person is None or conf > best_person[0]:
                     best_person = candidate
 
@@ -1204,12 +1324,11 @@ class PerceptionModule:
 
             annotated_frame = self._annotate_detections(
                 display_bgr,
-                filtered_results,
+                keep_candidates,
                 draw_threshold=0.15,
-                coord_scale=coord_back,
             )
 
-            web_boxes = self._collect_web_boxes(filtered_results, coord_back, img_w, img_h)
+            web_boxes = self._collect_web_boxes(keep_candidates, 1.0, img_w, img_h)
 
             # Compute log_xyz for noted/detected candidates if needed
             log_xyz_local = None
@@ -1224,11 +1343,17 @@ class PerceptionModule:
                 if noted_deproj is not None:
                     log_xyz_local = noted_deproj[0]
 
-            return best_person, best_bbox, best_person_conf, raw_yolo_best, web_boxes, annotated_frame, img_bgr, log_xyz_local
+            return (
+                best_person, best_bbox, best_person_conf, raw_yolo_best,
+                web_boxes, annotated_frame, img_bgr, log_xyz_local, confirmed_list,
+            )
 
         # 1. Process Front
         res_f = process_single_cam(rgb_image, depth_image, 0.0)
-        best_person, best_bbox, best_person_conf, raw_yolo_best, web_boxes, annotated_frame, front_bgr, log_xyz_f = res_f
+        (
+            best_person, best_bbox, best_person_conf, raw_yolo_best, web_boxes,
+            annotated_frame, front_bgr, log_xyz_f, confirmed_f,
+        ) = res_f
         self._web_frame_bgr = front_bgr
         self._web_boxes = web_boxes
 
@@ -1236,7 +1361,10 @@ class PerceptionModule:
         if self.detection_count % 200 == 0:
             print(f"[YOLO Diag] Left cam: rgb={'OK '+str(rgb_left.shape) if rgb_left is not None else 'None'}, depth={'OK' if depth_left is not None else 'None'}")
         res_l = process_single_cam(rgb_left, depth_left, 90.0)
-        best_person_l, best_bbox_l, best_person_conf_l, raw_yolo_best_l, web_boxes_l, annotated_frame_l, left_bgr, log_xyz_l = res_l
+        (
+            best_person_l, best_bbox_l, best_person_conf_l, raw_yolo_best_l, web_boxes_l,
+            annotated_frame_l, left_bgr, log_xyz_l, confirmed_l,
+        ) = res_l
         self._web_frame_left_bgr = left_bgr
         self._web_boxes_left = web_boxes_l
 
@@ -1244,9 +1372,40 @@ class PerceptionModule:
         if self.detection_count % 200 == 0:
             print(f"[YOLO Diag] Right cam: rgb={'OK '+str(rgb_right.shape) if rgb_right is not None else 'None'}, depth={'OK' if depth_right is not None else 'None'}")
         res_r = process_single_cam(rgb_right, depth_right, -90.0)
-        best_person_r, best_bbox_r, best_person_conf_r, raw_yolo_best_r, web_boxes_r, annotated_frame_r, right_bgr, log_xyz_r = res_r
+        (
+            best_person_r, best_bbox_r, best_person_conf_r, raw_yolo_best_r, web_boxes_r,
+            annotated_frame_r, right_bgr, log_xyz_r, confirmed_r,
+        ) = res_r
         self._web_frame_right_bgr = right_bgr
         self._web_boxes_right = web_boxes_r
+
+        all_confirmed_raw: list[dict] = []
+        for cam_name, clist in (
+            ("front", confirmed_f or []),
+            ("left", confirmed_l or []),
+            ("right", confirmed_r or []),
+        ):
+            for conf, _bbox, xyz, z_depth, local_x, local_y in clist:
+                all_confirmed_raw.append({
+                    "conf": float(conf),
+                    "cam": cam_name,
+                    "xyz": (float(xyz[0]), float(xyz[1]), float(xyz[2])),
+                    "z_depth": float(z_depth),
+                    "local_x": float(local_x),
+                    "local_y": float(local_y),
+                })
+        merged_confirmed = self._dedupe_confirmed_detections(all_confirmed_raw)
+        if rescue_armed:
+            self.frame_confirmed_persons = [
+                {
+                    "conf": float(m["conf"]),
+                    "world_xyz": m["xyz"],
+                    "cam": m.get("cam", "front"),
+                    "z_depth": float(m.get("z_depth", 0.0)),
+                }
+                for m in merged_confirmed
+                if float(m["conf"]) >= self.person_conf_threshold
+            ]
 
         # Find best noted / confirmed person across all cameras
         cam_frames = {
@@ -1303,10 +1462,39 @@ class PerceptionModule:
             display_conf = max(display_conf, candidate_conf)
 
         has_confirmed_person = False
-        if overall_best_person is None:
+        if overall_best_person is None and not self.frame_confirmed_persons:
             self._last_intel = None
 
-        if overall_best_person is not None:
+        if self.frame_confirmed_persons:
+            best_det = max(self.frame_confirmed_persons, key=lambda d: float(d["conf"]))
+            conf = float(best_det["conf"])
+            t_x, t_y, t_z = best_det["world_xyz"]
+            z_depth = float(best_det.get("z_depth", 0.0))
+            confirmed_cam = best_det.get("cam", confirmed_cam)
+            has_confirmed_person = True
+            person_found[0] = True
+            person_world_xyz[0, 0] = t_x
+            person_world_xyz[0, 1] = t_y
+            person_world_xyz[0, 2] = t_z
+
+            target_lat, target_lon = self._local_xyz_to_gps(t_x, t_y)
+            slot = self._match_rescue_person_slot((t_x, t_y, t_z))
+            self._last_intel = {
+                "conf": conf,
+                "label": slot["label"] if slot else (scan_label or "person detected"),
+                "gps_lat": target_lat,
+                "gps_lon": target_lon,
+                "dist": z_depth,
+            }
+
+            print(
+                f"[ALARM] {len(self.frame_confirmed_persons)} person(s) confirmed "
+                f"(best {conf:.0%}) via {confirmed_cam or 'front'} cam! "
+                f"Dist: {z_depth:.2f}m\n"
+                f"   ↳ [RESCUE COORDS] Target is {t_x:.1f}m Forward, {t_y:.1f}m Right, "
+                f"and {t_z:.1f}m High relative to the Building Entrance!"
+            )
+        elif overall_best_person is not None:
             conf, (bx1, by1, bx2, by2), (t_x, t_y, t_z), z_depth, local_x, local_y = overall_best_person
             has_confirmed_person = True
             person_found[0] = True
@@ -1374,12 +1562,36 @@ class PerceptionModule:
         person_key = self._person_log_key(scan_label, log_xyz)
         person_seen = has_noted or has_confirmed_person
         should_log = person_seen and float(alert_conf) > self._person_best_conf.get(person_key, 0.0) + 1e-6
+        logged_any = False
 
-        if should_log:
+        if rescue_armed and self.frame_confirmed_persons:
+            for det in self.frame_confirmed_persons:
+                xyz = det["world_xyz"]
+                conf = float(det["conf"])
+                pk = self._person_log_key(scan_label, xyz)
+                if conf <= self._person_best_conf.get(pk, 0.0) + 1e-6:
+                    continue
+                saved_new = self._append_detection_log(
+                    conf, xyz, scan_label, frame_idx=self.detection_count
+                )
+                if saved_new:
+                    logged_any = True
+                    win_cam = det.get("cam", "front")
+                    alert_frame = cam_frames.get(win_cam)
+                    if alert_frame is None:
+                        alert_frame = annotated_frame
+                    self._trigger_operator_alert(alert_frame, conf, scan_label)
+                    
+                    # Save frame for this newly logged person if confidence is high
+                    if conf >= 0.70:
+                        save_frame = self._make_simple_view(alert_frame)
+                        self._save_detection_frame(save_frame, "detection", cam=win_cam)
+        elif should_log:
             saved_new = self._append_detection_log(
                 alert_conf, log_xyz, scan_label, frame_idx=self.detection_count
             )
             if saved_new:
+                logged_any = True
                 win_cam = confirmed_cam if has_confirmed_person else noted_cam
                 alert_frame = cam_frames.get(win_cam or "front")
                 if alert_frame is None:
@@ -1403,17 +1615,17 @@ class PerceptionModule:
                 f"[YOLO] Person NOTED in {scan_label or 'rooms 1–3'} "
                 f"(conf {display_conf:.0%}) — continuing mission, no GPS approach."
             )
-        elif has_noted and rescue_armed and should_log:
+        elif has_noted and rescue_armed and logged_any:
             print(
                 f"[YOLO] Person SEEN at {display_conf:.0%} in {scan_label or 'scan'} "
                 f"(need {self.person_conf_threshold:.0%} for rescue) — saved to debug_yolo_detections/"
             )
-        elif has_noted and should_log:
+        elif has_noted and logged_any:
             print(
                 f"[YOLO] Person NOTED at {display_conf:.0%} in {scan_label or 'rooms 1–3'} "
                 f"— continuing mission."
             )
-        elif has_confirmed_person and should_log:
+        elif has_confirmed_person and logged_any:
             print(
                 f"[YOLO] Person CONFIRMED at {display_conf:.0%} "
                 f"(threshold {self.person_conf_threshold:.0%})"
@@ -1457,7 +1669,7 @@ class PerceptionModule:
                 print(f"[Perception] Detection window error: {exc}")
                 self._display_error_logged = True
 
-        should_save = should_log and (float(alert_conf) >= 0.70)
+        should_save = should_log and (float(alert_conf) >= 0.70) and not (rescue_armed and has_confirmed_person)
         if should_save:
             prefix = "detection" if has_confirmed_person else "noted"
             win_cam = confirmed_cam if has_confirmed_person else noted_cam

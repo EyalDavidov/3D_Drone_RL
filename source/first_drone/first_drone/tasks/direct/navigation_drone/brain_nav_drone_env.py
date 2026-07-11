@@ -550,6 +550,23 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             {"id": "final_a", "xyz": tuple(final_a), "label": "Final room"},
         ]
 
+    def _build_dynamic_spawn_log_slots(
+        self, local_positions: list[tuple[float, float, float]]
+    ) -> list[dict]:
+        """One YOLO log card per dynamically spawned person (world-frame coords)."""
+        origin = self._terrain.env_origins[0].cpu().numpy()
+        slots: list[dict] = []
+        for i, local_xyz in enumerate(local_positions):
+            wx = float(local_xyz[0]) + float(origin[0])
+            wy = float(local_xyz[1]) + float(origin[1])
+            wz = float(local_xyz[2]) + float(origin[2])
+            slots.append({
+                "id": f"spawn_{i:02d}",
+                "xyz": (wx, wy, wz),
+                "label": f"Target {i + 1}",
+            })
+        return slots
+
     def _local_to_world_vec3d(self, local_xyz: tuple[float, float, float]):
         from pxr import Gf
 
@@ -2555,7 +2572,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         # Drone gets no GPS hints to spawn positions — operator map markers only.
         if hasattr(self, "_perception") and self._perception is not None:
-            self._perception._rescue_person_slots = []
+            self._perception._rescue_person_slots = self._build_dynamic_spawn_log_slots(
+                confirmed
+            )
+            self._perception._detection_log = []
+            self._perception._person_best_conf = {}
+            self._perception.frame_confirmed_persons = []
 
         th_str = f"{target_h:.2f}m" if target_h else "unknown"
         print(

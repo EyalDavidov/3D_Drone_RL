@@ -795,28 +795,56 @@ class SlamBrainModule(BrainModule):
                     "side view(s) into the occupancy grid."
                 )
 
-        if person_found[0].item() and self.state != "COMPLETE":
-            conf = self._current_yolo_confidence()
+        if self.state != "COMPLETE":
+            perception = getattr(self.env.unwrapped, "_perception", None)
+            confirmed = (
+                list(getattr(perception, "frame_confirmed_persons", None) or [])
+                if perception is not None
+                else []
+            )
             thresh = self._yolo_rescue_conf_threshold()
-            if conf < thresh:
-                pass
-            else:
-                p_pos_w = person_world_xyz[0].cpu().numpy()
 
-                # Check if this person is close to any already detected person
-                already_detected = False
-                for detected in self.rescued_people:
-                    if np.linalg.norm(p_pos_w - detected) < 2.0:
-                        already_detected = True
-                        break
+            if confirmed:
+                for det in confirmed:
+                    conf = float(det.get("conf", 0.0))
+                    if conf < thresh:
+                        continue
+                    xyz = det.get("world_xyz")
+                    if xyz is None:
+                        continue
+                    p_pos_w = np.asarray(xyz, dtype=np.float64)
 
-                if not already_detected:
-                    print(
-                        f"\n[SLAM Brain] YOLO CONFIRMED ({conf:.0%}) NEW HUMAN AT WORLD: "
-                        f"X:{p_pos_w[0]:.2f} Y:{p_pos_w[1]:.2f} Z:{p_pos_w[2]:.2f}"
-                    )
-                    self.rescued_people.append(p_pos_w.copy())
-                    self.rescued_people_conf.append(conf)
+                    already_detected = False
+                    for detected in self.rescued_people:
+                        if np.linalg.norm(p_pos_w - detected) < 2.0:
+                            already_detected = True
+                            break
+
+                    if not already_detected:
+                        print(
+                            f"\n[SLAM Brain] YOLO CONFIRMED ({conf:.0%}) NEW HUMAN AT WORLD: "
+                            f"X:{p_pos_w[0]:.2f} Y:{p_pos_w[1]:.2f} Z:{p_pos_w[2]:.2f}"
+                        )
+                        self.rescued_people.append(p_pos_w.copy())
+                        self.rescued_people_conf.append(conf)
+            elif person_found[0].item():
+                conf = self._current_yolo_confidence()
+                if conf >= thresh:
+                    p_pos_w = person_world_xyz[0].cpu().numpy()
+
+                    already_detected = False
+                    for detected in self.rescued_people:
+                        if np.linalg.norm(p_pos_w - detected) < 2.0:
+                            already_detected = True
+                            break
+
+                    if not already_detected:
+                        print(
+                            f"\n[SLAM Brain] YOLO CONFIRMED ({conf:.0%}) NEW HUMAN AT WORLD: "
+                            f"X:{p_pos_w[0]:.2f} Y:{p_pos_w[1]:.2f} Z:{p_pos_w[2]:.2f}"
+                        )
+                        self.rescued_people.append(p_pos_w.copy())
+                        self.rescued_people_conf.append(conf)
 
         if self.state not in ("EXPLORE", "COMPLETE"):
             self.state = "EXPLORE"

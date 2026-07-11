@@ -1084,7 +1084,7 @@ class LiveDroneTelemetry:
 
         # ---- Rescue log snapshot (same source as OpenCV sidebar: _detection_log) ----
         rescue_log = []
-        for entry in (getattr(perception, "_detection_log", None) or [])[:12]:
+        for entry in (getattr(perception, "_detection_log", None) or [])[:30]:
             try:
                 label = str(entry.get("label", ""))
                 key = str(entry.get("person_key", ""))
