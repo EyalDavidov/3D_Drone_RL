@@ -315,6 +315,8 @@ class YoloHud {
         for (const frame of frames) {
             const isConfirmed = frame.startsWith('detection');
             const label = isConfirmed ? 'CONFIRMED' : 'NOTED';
+            const camMatch = frame.match(/_(front|left|right)\.jpg$/i);
+            const camLabel = camMatch ? camMatch[1].toUpperCase() : '';
             
             const thumb = document.createElement('div');
             thumb.className = 'yhud-gallery-thumb';
@@ -352,7 +354,7 @@ class YoloHud {
                     display: flex;
                     justify-content: space-between;
                 ">
-                    <span>${label}</span>
+                    <span>${label}${camLabel ? ` · ${camLabel}` : ''}</span>
                     <span>#${frame.split('_')[1]?.split('.')[0] || ''}</span>
                 </div>
             `;

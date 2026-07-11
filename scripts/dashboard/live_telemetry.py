@@ -281,6 +281,44 @@ class LiveDroneTelemetry:
             return out
         return MAP_ZONES
 
+    @staticmethod
+    def _get_blueprint(env) -> list:
+        """Extract a 1:1 wall boundary blueprint from the USD walkable grid."""
+        if getattr(env, "_blueprint_cache", None) is not None:
+            return env._blueprint_cache
+
+        walkable = getattr(env, "_walkable_grid", None)
+        if walkable is None:
+            return []
+
+        try:
+            import numpy as np
+            ox, oy = env._walkable_grid_origin
+            res = env._walkable_grid_res
+            w = walkable.astype(bool)
+            
+            # Find boundary cells (False cells adjacent to at least one True cell)
+            neighbors = np.zeros_like(w)
+            neighbors[1:, :] |= w[:-1, :]   # shift down
+            neighbors[:-1, :] |= w[1:, :]   # shift up
+            neighbors[:, 1:] |= w[:, :-1]   # shift right
+            neighbors[:, :-1] |= w[:, 1:]   # shift left
+            boundary = neighbors & ~w
+            
+            bx, by = np.where(boundary)
+            coords = []
+            for ix, iy in zip(bx, by):
+                wx = float(ox + (ix + 0.5) * res)
+                wy = float(oy + (iy + 0.5) * res)
+                coords.append([round(wx, 2), round(wy, 2)])
+                
+            env._blueprint_cache = coords
+            print(f"[LiveTelemetry] Extracted 1:1 blueprint wall count: {len(coords)}")
+            return coords
+        except Exception as e:
+            print(f"[LiveTelemetry] Failed to extract blueprint: {e}")
+            return []
+
     def push(self, env, elapsed_secs: float) -> None:
         """Extract live data from a running env instance and update snapshot."""
         import numpy as np
@@ -427,6 +465,8 @@ class LiveDroneTelemetry:
                 or not self._slam3d_cache
             ):
                 self._slam3d_cache = self._get_slam_3d(env, frontiers_raw=frontiers_raw)
+                self._slam3d_cache["blueprint"] = self._get_blueprint(env)
+                self._slam3d_cache["res"] = float(env._walkable_grid_res) if getattr(env, "_walkable_grid_res", None) is not None else 0.4
 
             # YOLO native-HUD payload (boxes + intel + rescue log + status)
             perception = getattr(env, "_perception", None)

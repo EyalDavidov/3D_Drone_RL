@@ -176,17 +176,17 @@ class NavigationScene {
 
     _createLabel(text, color) {
         const c = document.createElement('canvas');
-        c.width = 64; c.height = 32;
+        c.width = 256; c.height = 64;
         const ctx = c.getContext('2d');
         ctx.fillStyle = '#' + new THREE.Color(color).getHexString();
-        ctx.font = 'bold 20px Inter, sans-serif';
+        ctx.font = 'bold 24px Inter, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(text, 32, 16);
+        ctx.fillText(text, 128, 32);
         const tex = new THREE.CanvasTexture(c);
-        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.7 });
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.85 });
         const sprite = new THREE.Sprite(mat);
-        sprite.scale.set(1, 0.5, 1);
+        sprite.scale.set(4, 1, 1);
         return sprite;
     }
 

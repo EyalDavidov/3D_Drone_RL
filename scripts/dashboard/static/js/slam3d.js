@@ -142,9 +142,52 @@ class SlamScene3D {
         this._updateTarget(slam3d.active);
         this._updatePath(slam3d.path);
         this._updatePerson(slam3d.person);
+
+        if (slam3d.blueprint && !this._blueprintMesh) {
+            this._buildBlueprint(slam3d.blueprint, slam3d.res || 0.4);
+        }
     }
 
     _handleResize() { this._resize(); }
+
+    _buildBlueprint(blueprint, res) {
+        if (this._blueprintMesh) {
+            this._scene.remove(this._blueprintMesh);
+            this._blueprintMesh.geometry.dispose();
+            this._blueprintMesh.material.dispose();
+            this._blueprintMesh = null;
+        }
+
+        const count = blueprint.length;
+        if (count === 0) return;
+
+        // Blueprint material: cool semi-transparent cyan wireframe/grid pattern
+        const mat = new THREE.MeshBasicMaterial({
+            color: 0x00f0ff,
+            transparent: true,
+            opacity: 0.12,
+            wireframe: true,
+            depthWrite: false,
+        });
+
+        const BLUEPRINT_H = 2.5;
+        const geo = new THREE.BoxGeometry(res * 0.95, BLUEPRINT_H, res * 0.95);
+        const mesh = new THREE.InstancedMesh(geo, mat, count);
+        const dummy = new THREE.Object3D();
+
+        for (let i = 0; i < count; i++) {
+            const [wx, wy] = blueprint[i];
+            const tx = -wx; // world X → Three -X
+            const tz = wy;  // world Y → Three Z
+            dummy.position.set(tx, BLUEPRINT_H / 2, tz);
+            dummy.updateMatrix();
+            mesh.setMatrixAt(i, dummy.matrix);
+        }
+
+        mesh.instanceMatrix.needsUpdate = true;
+        this._scene.add(mesh);
+        this._blueprintMesh = mesh;
+    }
 
     // ---------------------------------------------------------------
     //  Wall rebuild (tall architectural boxes from occupancy grid)

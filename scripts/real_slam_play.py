@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+from pathlib import Path
 import sys
 import os
 import time
@@ -45,6 +46,10 @@ parser.add_argument(
 parser.add_argument(
     "--yolo_conf", type=float, default=0.70,
     help="Minimum YOLO confidence (0-1) to accept a person detection.",
+)
+parser.add_argument(
+    "--yolo_front_camera_only", action="store_true", default=False,
+    help="Run YOLO only on the front camera feed.",
 )
 parser.add_argument(
     "--no-dashboard", action="store_true", default=False,
@@ -336,6 +341,7 @@ def main():
         env_cfg.ae_checkpoint_path = args_cli.ae_checkpoint
 
     env_cfg.yolo_person_conf_threshold = args_cli.yolo_conf
+    env_cfg.yolo_front_camera_only = args_cli.yolo_front_camera_only or getattr(env_cfg, "yolo_front_camera_only", False)
     env_cfg.debug_vis   = False
     env_cfg.show_ae_images = False
 

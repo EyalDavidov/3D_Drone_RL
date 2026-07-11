@@ -1003,17 +1003,26 @@ class BrainModule:
                         print(f"[Brain] Reached waypoint. Continuing to waypoint {self.current_wp_idx}/{len(self.waypoints)}...")
                     
         elif self.state == "APPROACH_TARGET":
-            # Action: Head straight to detected human
-            desired_pos_w = self.target_person_pos
-            
-            # Look at target
+            # Action: Head toward a point 1.6 meters away from the detected human (keeps full body in camera FOV)
             dx = self.target_person_pos[0] - d_pos[0]
             dy = self.target_person_pos[1] - d_pos[1]
+            dist_xy = math.sqrt(dx*dx + dy*dy)
+            
+            if dist_xy > 1e-3:
+                desired_pos_w = np.array([
+                    self.target_person_pos[0] - (dx / dist_xy) * 1.6,
+                    self.target_person_pos[1] - (dy / dist_xy) * 1.6,
+                    self.target_person_pos[2]
+                ], dtype=float)
+            else:
+                desired_pos_w = self.target_person_pos
+            
+            # Look at target
             target_yaw = math.atan2(dy, dx)
             
             # Check distance to target
             dist_to_target = np.linalg.norm(self.target_person_pos - d_pos)
-            if dist_to_target < 0.8:
+            if dist_to_target < 2.0:
                 self.state = "COMPLETE"
                 print(f"\n[Brain] SUCCESS: Reached search and rescue target person location!")
                 print(f"  ↳ FINAL RESCUE COORDINATES relative to entrance: X:{self.target_person_pos[0]:.2f}m, Y:{self.target_person_pos[1]:.2f}m, Z:{self.target_person_pos[2]:.2f}m")

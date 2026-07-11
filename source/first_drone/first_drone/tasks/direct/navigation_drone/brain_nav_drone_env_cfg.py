@@ -81,8 +81,8 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
 
     view_left_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Drone/body/Camera_ViewLeft",
-        height=180,
-        width=320,
+        height=288,
+        width=512,
         data_types=["depth", "rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=18.0,
@@ -97,8 +97,8 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
 
     view_right_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Drone/body/Camera_ViewRight",
-        height=180,
-        width=320,
+        height=288,
+        width=512,
         data_types=["depth", "rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=18.0,
@@ -144,11 +144,12 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     yolo_min_bbox_height_frac: float = 0.0
     yolo_min_person_aspect: float = 1.65
     yolo_noted_confirm_frames: int = 2
-    yolo_camera_upscale: int = 2   # 512×288 → 1024×576 before YOLO
-    yolo_imgsz: int = 640          # standard YOLO input size
+    yolo_camera_upscale: int = 3   # 512×288 → 1536×864 before YOLO (makes distant humans larger/sharper)
+    yolo_imgsz: int = 1280         # match upscaled feed so YOLO keeps full detail
     yolo_sharpen: bool = True
     yolo_clahe: bool = False       # colorized models don't need color-distorting CLAHE contrast boost
     yolo_show_opencv: bool = True  # False when web dashboard renders YOLO/SLAM natively
+    yolo_front_camera_only: bool = False  # Run YOLO on all three cameras (Front, Left, Right) to enable peripheral detection
 
     # ---------- Walkable floor (R-shaped map) ----------
     walkable_grid_resolution: float = 0.4   # Meters per occupancy cell when parsing floor meshes from USD
@@ -158,7 +159,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     # ---------- Brain Module Parameters ----------
     brain_step_size: float = 10.0       # Lawnmower corridor spacing in meters
     brain_safety_margin: float = 0.7    # Wall clearance for waypoint generation in meters
-    brain_yolo_interval: int = 2        # Run YOLO every N steps (2 = every 2 frames, reduces GPU load)
+    brain_yolo_interval: int = 1        # Run YOLO every N steps (1 = every step, critical so we don't miss detections during SCAN)
     brain_scan_yaw_rate: float = 0.05   # SCAN spin action (slower = better YOLO frames)
     brain_room_entry_scan: bool = True  # do one slow 360 the first time the drone reaches each room checkpoint
     brain_scan_trigger_radius: float = 2.0  # distance (m) to a room checkpoint that arms its entry scan

@@ -52,6 +52,23 @@ class PerceptionModule:
         self.person_ever_detected = False
         self.output_dir = Path("debug_yolo_detections")
         self.output_dir.mkdir(exist_ok=True)
+        # Clear yolo_saves and debug_yolo_detections directories on initialization to clean up old runs
+        try:
+            saves_dir = Path(r"D:\isaac\3D_Drone_RL\scripts\dashboard\static\yolo_saves")
+            if saves_dir.exists():
+                for f in saves_dir.glob("*.jpg"):
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+            for f in self.output_dir.glob("*.jpg"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            print("[Perception] Cleared old YOLO detection image saves.")
+        except Exception as e_clear:
+            print(f"[Perception] Warning: failed to clear old saves: {e_clear}")
         self._display_initialized = False
         self._alert_window_initialized = False
         # ── Layout constants ──────────────────────────────────────────────
@@ -166,7 +183,9 @@ class PerceptionModule:
             return False
 
         # 4. Max aspect ratio — reject very wide/horizontal shapes
-        if aspect > self.min_person_aspect:
+        # Relax this limit to 3.0 if the detection is close-up (occupies >= 25% of screen height)
+        max_aspect = 3.0 if h_frac >= 0.25 else self.min_person_aspect
+        if aspect > max_aspect:
             return False
 
         return True
@@ -952,9 +971,12 @@ class PerceptionModule:
                 print(f"[Perception] OpenCV imshow failed: {exc}")
                 self._display_error_logged = True
 
-    def _save_detection_frame(self, frame_bgr: np.ndarray, prefix: str) -> None:
+    def _save_detection_frame(
+        self, frame_bgr: np.ndarray, prefix: str, cam: str = ""
+    ) -> None:
         """Save an annotated or HUD frame to debug_yolo_detections/ and yolo_saves/."""
-        tag = f"{prefix}_{self.detection_count:06d}.jpg"
+        cam_tag = f"_{cam}" if cam else ""
+        tag = f"{prefix}_{self.detection_count:06d}{cam_tag}.jpg"
         output_path = self.output_dir / tag
         try:
             from PIL import Image
@@ -1032,10 +1054,10 @@ class PerceptionModule:
                 print(f"[YOLO Debug] Input image min={rgb_arr.min():.2f} max={rgb_arr.max():.2f} dtype={rgb_arr.dtype}")
 
             if rgb_arr.dtype in (np.float32, np.float64):
-                if rgb_arr.max() <= 1.05:
-                    rgb_arr = (rgb_arr * 255.0).astype(np.uint8)
+                if rgb_arr.max() <= 1.0:
+                    rgb_arr = np.clip(np.round(rgb_arr * 255.0), 0, 255).astype(np.uint8)
                 else:
-                    rgb_arr = rgb_arr.astype(np.uint8)
+                    rgb_arr = np.clip(np.round(rgb_arr), 0, 255).astype(np.uint8)
             elif rgb_arr.dtype != np.uint8:
                 rgb_arr = rgb_arr.astype(np.uint8)
 
@@ -1052,7 +1074,7 @@ class PerceptionModule:
                 )
             if self.yolo_sharpen:
                 blur = cv2.GaussianBlur(yolo_bgr, (0, 0), sigmaX=1.0)
-                yolo_bgr = cv2.addWeighted(yolo_bgr, 1.4, blur, -0.4, 0)
+                yolo_bgr = cv2.addWeighted(yolo_bgr, 1.6, blur, -0.6, 0)
 
             if self.yolo_clahe:
                 lab = cv2.cvtColor(yolo_bgr, cv2.COLOR_BGR2LAB)
@@ -1064,17 +1086,37 @@ class PerceptionModule:
             _yolo_dev = getattr(self, "_yolo_device", "cpu")
             _yolo_half = str(_yolo_dev).startswith("cuda")
 
-            results = self.yolo_model(
+            # --- Dual-scale YOLO: run at BOTH high-res upscaled and low-res native ---
+            results_hi = self.yolo_model(
                 yolo_bgr, verbose=False, conf=0.15, classes=[0],
                 imgsz=self.yolo_imgsz, device=_yolo_dev, half=_yolo_half,
             )
-            filtered_results = results[0]
+            results_lo = self.yolo_model(
+                img_bgr, verbose=False, conf=0.15, classes=[0],
+                imgsz=576, device=_yolo_dev, half=_yolo_half,
+            )
+
+            # Collect best confidence from each scale
+            confs_hi = [float(b.conf[0].item()) for b in results_hi[0].boxes if int(b.cls[0]) == 0]
+            confs_lo = [float(b.conf[0].item()) for b in results_lo[0].boxes if int(b.cls[0]) == 0]
+            best_hi = max(confs_hi) if confs_hi else 0.0
+            best_lo = max(confs_lo) if confs_lo else 0.0
+
+            if best_lo > best_hi:
+                # Native low-res pass won: use native scale results
+                filtered_results = results_lo[0]
+                coord_back_override = 1.0
+            else:
+                # Upscaled high-res pass won: use upscaled scale results
+                filtered_results = results_hi[0]
+                coord_back_override = None
 
             raw_confs = [float(box.conf[0].item()) for box in filtered_results.boxes if int(box.cls[0]) == 0]
             if raw_confs:
+                selected_scale = "Native 576" if best_lo > best_hi else f"Upscale {self.yolo_imgsz}"
                 print(
                     f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Raw YOLO detected {len(raw_confs)} person(s) "
-                    f"with confidences: {['%.1f%%' % (c*100) for c in raw_confs]}"
+                    f"via {selected_scale} with confidences: {['%.1f%%' % (c*100) for c in raw_confs]}"
                 )
 
             best_person = None
@@ -1083,6 +1125,8 @@ class PerceptionModule:
             raw_yolo_best = 0.0
 
             coord_back = 1.0 / float(up) if up > 1 else 1.0
+            if coord_back_override is not None:
+                coord_back = coord_back_override
 
             # Compute effective quaternion for this camera's yaw offset
             eff_quat = drone_quat
@@ -1126,6 +1170,7 @@ class PerceptionModule:
 
                 deproj = self._deproject_bbox_center(
                     x1, y1, x2, y2, img_w, img_h, depth_img, drone_pos, eff_quat,
+                    relax_depth=True,
                 )
                 if deproj is None:
                     continue
@@ -1138,8 +1183,8 @@ class PerceptionModule:
             # Build annotated frame
             display_bgr = img_bgr.copy()
             if self.yolo_sharpen:
-                blur = cv2.GaussianBlur(display_bgr, (0, 0), sigmaX=0.8)
-                display_bgr = cv2.addWeighted(display_bgr, 1.35, blur, -0.35, 0)
+                blur = cv2.GaussianBlur(display_bgr, (0, 0), sigmaX=1.0)
+                display_bgr = cv2.addWeighted(display_bgr, 1.6, blur, -0.6, 0)
 
             annotated_frame = self._annotate_detections(
                 display_bgr,
@@ -1188,17 +1233,38 @@ class PerceptionModule:
         self._web_boxes_right = web_boxes_r
 
         # Find best noted / confirmed person across all cameras
-        detected_persons = [p for p in (best_person, best_person_l, best_person_r) if p is not None]
-        overall_best_person = None
-        if detected_persons:
-            detected_persons.sort(key=lambda p: -p[0])
-            overall_best_person = detected_persons[0]
+        cam_frames = {
+            "front": annotated_frame,
+            "left": annotated_frame_l,
+            "right": annotated_frame_r,
+        }
+        detected_persons = []
+        if best_person is not None:
+            detected_persons.append(("front", best_person))
+        if best_person_l is not None:
+            detected_persons.append(("left", best_person_l))
+        if best_person_r is not None:
+            detected_persons.append(("right", best_person_r))
 
-        noted_candidates = [b for b in (best_bbox, best_bbox_l, best_bbox_r) if b is not None]
+        overall_best_person = None
+        confirmed_cam = None
+        if detected_persons:
+            detected_persons.sort(key=lambda item: -item[1][0])
+            confirmed_cam, overall_best_person = detected_persons[0]
+
+        noted_candidates = []
+        if best_bbox is not None:
+            noted_candidates.append(("front", best_bbox))
+        if best_bbox_l is not None:
+            noted_candidates.append(("left", best_bbox_l))
+        if best_bbox_r is not None:
+            noted_candidates.append(("right", best_bbox_r))
+
         overall_best_bbox = None
+        noted_cam = None
         if noted_candidates:
-            noted_candidates.sort(key=lambda b: -b[0])
-            overall_best_bbox = noted_candidates[0]
+            noted_candidates.sort(key=lambda item: -item[1][0])
+            noted_cam, overall_best_bbox = noted_candidates[0]
 
         overall_best_person_conf = max(best_person_conf, best_person_conf_l, best_person_conf_r)
         overall_raw_yolo_best = max(raw_yolo_best, raw_yolo_best_l, raw_yolo_best_r)
@@ -1244,7 +1310,8 @@ class PerceptionModule:
             }
 
             print(
-                f"[ALARM] Person confirmed ({conf:.0%})! Dist: {z_depth:.2f}m, Local X: {local_x:.2f}m\n"
+                f"[ALARM] Person confirmed ({conf:.0%}) via {confirmed_cam or 'front'} cam! "
+                f"Dist: {z_depth:.2f}m, Local X: {local_x:.2f}m\n"
                 f"   ↳ [RESCUE COORDS] Target is {t_x:.1f}m Forward, {t_y:.1f}m Right, "
                 f"and {t_z:.1f}m High relative to the Building Entrance!"
             )
@@ -1297,7 +1364,11 @@ class PerceptionModule:
                 alert_conf, log_xyz, scan_label, frame_idx=self.detection_count
             )
             if saved_new:
-                self._trigger_operator_alert(annotated_frame, alert_conf, scan_label)
+                win_cam = confirmed_cam if has_confirmed_person else noted_cam
+                alert_frame = cam_frames.get(win_cam or "front")
+                if alert_frame is None:
+                    alert_frame = annotated_frame
+                self._trigger_operator_alert(alert_frame, alert_conf, scan_label)
         if has_noted or has_confirmed_person:
             self._operator_alert_until = max(
                 self._operator_alert_until, self.detection_count + 45
@@ -1370,12 +1441,17 @@ class PerceptionModule:
                 print(f"[Perception] Detection window error: {exc}")
                 self._display_error_logged = True
 
-        save_frame = getattr(self, "_last_display_frame", None)
-        if save_frame is None:
-            save_frame = self._make_simple_view(annotated_frame)
-        should_save = should_log
+        should_save = should_log and (float(alert_conf) >= 0.70)
         if should_save:
             prefix = "detection" if has_confirmed_person else "noted"
-            self._save_detection_frame(save_frame, prefix)
+            win_cam = confirmed_cam if has_confirmed_person else noted_cam
+            det_frame = cam_frames.get(win_cam or "front")
+            if det_frame is not None:
+                save_frame = self._make_simple_view(det_frame)
+            else:
+                save_frame = getattr(self, "_last_display_frame", None)
+                if save_frame is None:
+                    save_frame = self._make_simple_view(annotated_frame)
+            self._save_detection_frame(save_frame, prefix, cam=win_cam or "front")
 
         return person_found, person_world_xyz

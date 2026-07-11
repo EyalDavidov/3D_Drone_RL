@@ -607,12 +607,20 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         mesh_colors: dict[str, tuple[float, float, float]] = {
             "skin": (0.76, 0.60, 0.46),
-            "shirt": (0.88, 0.86, 0.82),
+            "head": (0.76, 0.60, 0.46),
+            "face": (0.76, 0.60, 0.46),
+            "body": (0.76, 0.60, 0.46),
+            "hand": (0.76, 0.60, 0.46),
+            "arm": (0.76, 0.60, 0.46),
+            "leg": (0.76, 0.60, 0.46),
+            "shirt": (0.15, 0.35, 0.65),  # contrasting dark blue shirt to separate head/arms silhouette
             "vest": (0.22, 0.20, 0.28),
-            "bluejeans": (0.24, 0.36, 0.58),
+            "jeans": (0.24, 0.36, 0.58),
+            "pants": (0.24, 0.36, 0.58),
+            "shoes": (0.14, 0.12, 0.10),
             "tennisshoes": (0.14, 0.12, 0.10),
             "hair": (0.12, 0.08, 0.06),
-            "default": (0.68, 0.52, 0.40),
+            "default": (0.76, 0.60, 0.46),  # default to skin color to prevent untextured white heads
         }
 
         def _color_key(mesh_name: str) -> str:
@@ -633,6 +641,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
                 ckey = _color_key(prim.GetName())
                 rgb = mesh_colors[ckey]
+                print(f"[Override Debug] Mesh Name: '{prim.GetName()}' -> Color Key: '{ckey}' (RGB: {rgb})")
+                
+                # Unbind existing remote materials to prevent async S3 downloads from overwriting our local overrides
+                from pxr import UsdShade
+                UsdShade.MaterialBindingAPI(prim).UnbindAllBindings()
+                
                 mat_path = f"{mat_root}/{ckey}"
                 if not stage.GetPrimAtPath(mat_path).IsValid():
                     mat_cfg = sim_utils.PreviewSurfaceCfg(
@@ -1674,6 +1688,24 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         determines all high-level commands, and the frozen PPO policy
         generates the low-level navigation actions.
         """
+        # Dynamic material override binding (runs once USD references are fully loaded in background)
+        if not getattr(self, "_person_materials_bound", False) and getattr(self.cfg, "brain_person_override_textures", False):
+            from pxr import Usd, UsdGeom
+            bound_count = 0
+            if hasattr(self, "_room3_rescue_person_prim") and self._room3_rescue_person_prim is not None:
+                self._ensure_person_textures(self._room3_rescue_person_prim)
+                for prim in Usd.PrimRange(self._room3_rescue_person_prim):
+                    if prim.IsA(UsdGeom.Mesh):
+                        bound_count += 1
+            if hasattr(self, "_final_rescue_person_prim") and self._final_rescue_person_prim is not None:
+                self._ensure_person_textures(self._final_rescue_person_prim)
+                for prim in Usd.PrimRange(self._final_rescue_person_prim):
+                    if prim.IsA(UsdGeom.Mesh):
+                        bound_count += 1
+            if bound_count > 0:
+                self._person_materials_bound = True
+                print(f"\n[BrainNavEnv] Async USD references loaded! Bound {bound_count} meshes successfully with custom textures.\n")
+
         if hasattr(self, "_brain") and self._brain.state == "SCAN":
             self._steps_since_last_scan = 0
         else:
@@ -1732,10 +1764,10 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                         if self._brain.state == "SCAN"
                         else None
                     ),
-                    rgb_left=rgb_left,
-                    depth_left=depth_left,
-                    rgb_right=rgb_right,
-                    depth_right=depth_right,
+                    rgb_left=None if getattr(self.cfg, "yolo_front_camera_only", False) else rgb_left,
+                    depth_left=None if getattr(self.cfg, "yolo_front_camera_only", False) else depth_left,
+                    rgb_right=None if getattr(self.cfg, "yolo_front_camera_only", False) else rgb_right,
+                    depth_right=None if getattr(self.cfg, "yolo_front_camera_only", False) else depth_right,
                 )
                 self._last_person_found = person_found
                 self._last_person_world_xyz = person_world_xyz
