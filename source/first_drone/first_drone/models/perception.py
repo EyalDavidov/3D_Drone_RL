@@ -253,12 +253,28 @@ class PerceptionModule:
         px = max(0, min(int(x_center), img_w - 1))
         py = max(0, min(int(y_center), img_h - 1))
 
-        if isinstance(depth_image, torch.Tensor):
-            depth_array = depth_image[0].detach().cpu().numpy()
-            z_depth = float(np.squeeze(depth_array[py, px]))
-        elif depth_image is not None:
-            depth_array = depth_image[0]
-            z_depth = float(np.squeeze(depth_array[py, px]))
+        if depth_image is not None:
+            if isinstance(depth_image, torch.Tensor):
+                depth_array = depth_image[0].detach().cpu().numpy()
+            else:
+                depth_array = depth_image[0]
+            
+            depth_array = np.squeeze(depth_array)
+            
+            # Robust neighborhood depth sampling (5x5 window) to prevent de-projection
+            # from hitting background walls/void when querying thin/side-profile mannequins
+            r_start = max(0, py - 2)
+            r_end = min(img_h, py + 3)
+            c_start = max(0, px - 2)
+            c_end = min(img_w, px + 3)
+            
+            neighborhood = depth_array[r_start:r_end, c_start:c_end]
+            valid_mask = (neighborhood > 0.05) & (~np.isinf(neighborhood)) & (~np.isnan(neighborhood))
+            if np.any(valid_mask):
+                # 15th percentile filters single-pixel noise but picks the foreground object
+                z_depth = float(np.percentile(neighborhood[valid_mask], 15))
+            else:
+                z_depth = float(depth_array[py, px])
         else:
             z_depth = 5.0  # fallback when side camera has no depth
         if np.isinf(z_depth) or z_depth <= 0.0:

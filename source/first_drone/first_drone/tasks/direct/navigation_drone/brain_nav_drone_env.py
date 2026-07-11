@@ -111,6 +111,10 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         self.is_brain_play = True
         self._closing = False
         self._mission_complete = False
+        self.spawned_targets_local = []
+        self.dynamic_spawn_active = False
+        self._dynamic_spawn_names: list[str] = []
+        self._dynamic_spawn_prims = []
         self._require_ae_checkpoint()
 
         if getattr(self, "_room_bounds_local", None) is not None:
@@ -679,6 +683,212 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         sy = sx * height_mul
         return float(sx), float(sy), float(sz)
 
+    def _get_static_person_wrapper_scale(self) -> tuple[float, float, float]:
+        """Read the exact wrapper scale from the Room 3 static person (source of truth)."""
+        from pxr import UsdGeom
+
+        template = getattr(self, "_room3_rescue_person_prim", None)
+        if template is None or not template.IsValid():
+            return self._person_wrapper_scale()
+        for op in UsdGeom.Xformable(template).GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                v = op.Get()
+                return float(v[0]), float(v[1]), float(v[2])
+        return self._person_wrapper_scale()
+
+    def _refresh_static_person_target_height(self) -> float | None:
+        """Re-measure Room 3 person height once USD meshes are loaded."""
+        template = getattr(self, "_room3_rescue_person_prim", None)
+        if template is None or not template.IsValid():
+            return None
+        h = self._person_bbox_height(template)
+        if h and h > 0.3:
+            self._static_person_target_height = h
+            return h
+        return getattr(self, "_static_person_target_height", None)
+
+    def _align_person_scale_to_static_template(self, wrapper_prim) -> bool:
+        """Resize a spawned person until its world height matches Room 3 / Final static persons."""
+        from pxr import Gf, UsdGeom
+
+        template = getattr(self, "_room3_rescue_person_prim", None)
+        if template is None or not template.IsValid() or wrapper_prim is None:
+            return False
+        if not wrapper_prim.IsValid():
+            return False
+
+        target_h = self._refresh_static_person_target_height()
+        if target_h is None or target_h < 0.1:
+            target_h = getattr(self, "_static_person_target_height", None)
+        if not target_h or target_h < 0.1:
+            return False
+
+        current_h = self._person_bbox_height(wrapper_prim)
+        if not current_h or current_h < 0.1:
+            return False
+        if abs(current_h - target_h) < 0.08:
+            return True
+
+        ratio = target_h / current_h
+        xform = UsdGeom.Xformable(wrapper_prim)
+        scaled = False
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                v = op.Get()
+                op.Set(
+                    Gf.Vec3d(
+                        float(v[0]) * ratio,
+                        float(v[1]) * ratio,
+                        float(v[2]) * ratio,
+                    )
+                )
+                scaled = True
+                break
+        if not scaled:
+            sx, sy, sz = self._get_static_person_wrapper_scale()
+            xform.AddScaleOp().Set(Gf.Vec3d(sx * ratio, sy * ratio, sz * ratio))
+
+        new_h = self._person_bbox_height(wrapper_prim)
+        print(
+            f"[BrainNavEnv] Aligned {wrapper_prim.GetName()} height "
+            f"{current_h:.2f}m -> {new_h:.2f}m (target {target_h:.2f}m)\n"
+        )
+        return abs(new_h - target_h) < 0.08
+
+    def _process_pending_person_scale_fixes(self) -> None:
+        """Retry scale alignment after async USD character payloads finish loading."""
+        pending = getattr(self, "_pending_person_scale_fix", None)
+        if not pending:
+            return
+        still_pending = []
+        for prim in pending:
+            if prim is None or not prim.IsValid():
+                continue
+            if not self._align_person_scale_to_static_template(prim):
+                still_pending.append(prim)
+        self._pending_person_scale_fix = still_pending
+
+    def _queue_person_scale_fix(self, wrapper_prim) -> None:
+        if wrapper_prim is None or not wrapper_prim.IsValid():
+            return
+        pending = getattr(self, "_pending_person_scale_fix", None)
+        if pending is None:
+            pending = []
+        if wrapper_prim not in pending:
+            pending.append(wrapper_prim)
+        self._pending_person_scale_fix = pending
+
+    def _person_spawn_local_z(self) -> float:
+        """Floor height for rescue persons (same as static room-3 / final placements)."""
+        return float(getattr(self.cfg, "brain_person_floor_z", 0.0))
+
+    def _is_valid_dynamic_spawn_xy(self, x: float, y: float, margin: float = 0.25) -> bool:
+        """True when (x,y) is on the navigable floor inside the map, clear of obstacles."""
+        bounds = getattr(self, "_room_bounds_local", None)
+        if bounds is None:
+            bounds = getattr(self.cfg, "map_bounds", None)
+        if bounds is not None and len(bounds) == 4:
+            min_x, max_x, min_y, max_y = bounds
+            if (
+                x < float(min_x) + margin
+                or x > float(max_x) - margin
+                or y < float(min_y) + margin
+                or y > float(max_y) - margin
+            ):
+                return False
+        if not hasattr(self, "_is_on_navigable_floor"):
+            return True
+        tx = torch.tensor([x], device=self.device, dtype=torch.float32)
+        ty = torch.tensor([y], device=self.device, dtype=torch.float32)
+        if not bool(self._is_on_navigable_floor(tx, ty, margin=margin).item()):
+            return False
+        if hasattr(self, "_is_inside_map_obstacle"):
+            if bool(self._is_inside_map_obstacle(tx, ty, margin=margin).item()):
+                return False
+        return True
+
+    def _sample_dynamic_spawn_positions(
+        self, count: int, *, min_drone_dist: float = 2.0
+    ) -> list[tuple[float, float, float]]:
+        """Pick random floor positions inside the walkable map (no scene changes)."""
+        import random as _rng
+
+        floor_z = self._person_spawn_local_z()
+        margin = 0.25
+        placed: list[tuple[float, float, float]] = []
+        seen_xy: set[tuple[int, int]] = set()
+
+        d_pos = self._robot.data.root_pos_w[0] - self._terrain.env_origins[0]
+        dx, dy = float(d_pos[0].item()), float(d_pos[1].item())
+
+        def _try_place(x: float, y: float) -> bool:
+            key = (int(round(x * 10)), int(round(y * 10)))
+            if key in seen_xy:
+                return False
+            if not self._is_valid_dynamic_spawn_xy(x, y, margin=margin):
+                return False
+            if math.hypot(x - dx, y - dy) < min_drone_dist:
+                return False
+            for px, py, _ in placed:
+                if math.hypot(x - px, y - py) < 2.0:
+                    return False
+            seen_xy.add(key)
+            placed.append((x, y, floor_z))
+            return True
+
+        cells = getattr(self, "_interior_walkable_spawn_cells", None)
+        if cells is None or cells.shape[0] == 0:
+            cells = getattr(self, "_walkable_spawn_cells", None)
+        n_cells = int(cells.shape[0]) if cells is not None else 0
+        if n_cells > 0:
+            idxs = list(range(n_cells))
+            _rng.shuffle(idxs)
+            for idx in idxs:
+                if len(placed) >= count:
+                    break
+                _try_place(float(cells[idx, 0].item()), float(cells[idx, 1].item()))
+
+        if len(placed) < count:
+            zones = [
+                (-2.05,  2.05,  -2.05,  2.05),
+                (-2.05,  2.05,  -8.05, -2.00),
+                (-4.05,  4.05, -16.05, -7.95),
+                (-8.55, -4.45, -23.05, -17.95),
+                (-4.50,  0.55, -22.05, -16.00),
+            ]
+            attempts = 0
+            max_attempts = max(500, count * 400)
+            while len(placed) < count and attempts < max_attempts:
+                attempts += 1
+                zone = _rng.choice(zones)
+                x = _rng.uniform(zone[0] + margin, zone[1] - margin)
+                y = _rng.uniform(zone[2] + margin, zone[3] - margin)
+                _try_place(x, y)
+
+        if len(placed) < count:
+            print(
+                f"[BrainNavEnv] Spawn sampling: {len(placed)}/{count} valid positions "
+                f"(walkable_cells={n_cells})."
+            )
+        return placed
+
+    def _disable_physics_under_prim(self, root_prim) -> None:
+        """Visual-only persons: strip rigid-body/collision to avoid PhysX attach errors."""
+        try:
+            from pxr import Usd, UsdPhysics
+
+            for prim in Usd.PrimRange(root_prim):
+                if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    rb = UsdPhysics.RigidBodyAPI(prim)
+                    if rb.GetRigidBodyEnabledAttr().IsValid():
+                        rb.GetRigidBodyEnabledAttr().Set(False)
+                if prim.HasAPI(UsdPhysics.CollisionAPI):
+                    col = UsdPhysics.CollisionAPI(prim)
+                    if col.GetCollisionEnabledAttr().IsValid():
+                        col.GetCollisionEnabledAttr().Set(False)
+        except Exception as exc:
+            print(f"[BrainNavEnv] Could not disable person physics: {exc}")
+
     def _spawn_rescue_person_wrapper(
         self,
         name: str,
@@ -697,7 +907,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         wrapper_path = f"{parent_path}/{name}"
         char_path = f"{wrapper_path}/Character"
 
-        sx, sy, sz = self._person_wrapper_scale()
+        sx, sy, sz = self._get_static_person_wrapper_scale()
         world_pos = self._local_to_world_vec3d(local_xyz)
 
         edit_layer = self._get_usd_edit_layer()
@@ -725,9 +935,76 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         if not wrapper_prim.IsValid():
             raise RuntimeError(f"Failed to spawn rescue person wrapper at {wrapper_path}")
         self._ensure_person_textures(wrapper_prim)
+        self._disable_physics_under_prim(wrapper_prim)
         print(
             f"[BrainNavEnv] Spawned {name} from {person_usd} "
             f"scale=({sx:.3f},{sy:.3f},{sz:.3f})\n"
+        )
+        return wrapper_prim
+
+    def _clone_rescue_person_from_template(
+        self,
+        new_name: str,
+        local_xyz: tuple[float, float, float],
+        *,
+        template_name: str | None = None,
+        yaw_deg: float = 90.0,
+    ):
+        """Clone an existing default rescue person so scale/materials match exactly."""
+        from pxr import Gf, Sdf, Usd, UsdGeom
+
+        template_name = template_name or getattr(
+            self.cfg, "brain_room3_person_name", "RescuePerson_Room3"
+        )
+        stage = self.sim.stage
+        scope = getattr(self.cfg, "brain_rescue_person_scope", "RescuePersons")
+        parent_path = f"/World/envs/env_0/Room/{scope}"
+        template_path = f"{parent_path}/{template_name}"
+        wrapper_path = f"{parent_path}/{new_name}"
+
+        template_prim = getattr(self, "_room3_rescue_person_prim", None)
+        if template_prim is None or not template_prim.IsValid():
+            template_prim = stage.GetPrimAtPath(template_path)
+        if template_prim is None or not template_prim.IsValid():
+            return self._spawn_rescue_person_wrapper(
+                new_name, local_xyz, yaw_deg=yaw_deg
+            )
+
+        edit_layer = self._get_usd_edit_layer()
+        world_pos = self._local_to_world_vec3d(local_xyz)
+
+        with Usd.EditContext(stage, edit_layer):
+            if stage.GetPrimAtPath(wrapper_path).IsValid():
+                stage.RemovePrim(wrapper_path)
+            Sdf.CopySpec(
+                edit_layer,
+                Sdf.Path(template_path),
+                edit_layer,
+                Sdf.Path(wrapper_path),
+            )
+
+            wrapper = stage.GetPrimAtPath(wrapper_path)
+            if not wrapper.IsValid():
+                raise RuntimeError(f"Failed to clone rescue person to {wrapper_path}")
+
+            xform = UsdGeom.Xformable(wrapper)
+            for op in xform.GetOrderedXformOps():
+                if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                    op.Set(world_pos)
+                elif op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
+                    op.Set(Gf.Vec3f(0.0, 0.0, float(yaw_deg)))
+            UsdGeom.Imageable(wrapper).MakeVisible()
+
+        wrapper_prim = stage.GetPrimAtPath(wrapper_path)
+        self._ensure_person_textures(wrapper_prim)
+        self._disable_physics_under_prim(wrapper_prim)
+        sx, sy, sz = self._person_wrapper_scale()
+        h = self._person_bbox_height(wrapper_prim)
+        print(
+            f"[BrainNavEnv] Cloned {new_name} from {template_name} "
+            f"scale=({sx:.3f},{sy:.3f},{sz:.3f}) at "
+            f"({local_xyz[0]:.2f}, {local_xyz[1]:.2f}, {local_xyz[2]:.2f})"
+            f"{f', height={h:.2f}m' if h else ''}\n"
         )
         return wrapper_prim
 
@@ -736,6 +1013,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         from pxr import Usd, UsdGeom
 
         stage = self.sim.stage
+        scope = getattr(self.cfg, "brain_rescue_person_scope", "RescuePersons")
         for path in (
             "/World/envs/env_0/Room/F_Business_02",
             "/World/envs/env_0/Room/RescuePerson_Final",
@@ -747,9 +1025,14 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         room = stage.GetPrimAtPath("/World/envs/env_0/Room")
         if room.IsValid():
-            for prim in room.GetChildren():
+            for prim in Usd.PrimRange(room):
+                path = prim.GetPath().pathString
                 name = prim.GetName().lower()
-                if name == "f_business_02" and prim.IsA(UsdGeom.Xformable):
+                if f"/{scope}/" in path or path.endswith(f"/{scope}"):
+                    continue
+                if "f_business" in name or "female_adult_business" in name:
+                    self._set_prim_visibility(prim, visible=False)
+                elif name == "f_business_02" and prim.IsA(UsdGeom.Xformable):
                     self._set_prim_visibility(prim, visible=False)
 
     def _person_bbox_height(self, prim) -> float | None:
@@ -782,6 +1065,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             )
             self._room3_rescue_person_prim = room3_prim
             h3 = self._person_bbox_height(room3_prim)
+            self._static_person_target_height = h3
             print(
                 f"[BrainNavEnv] Room 3 person ({room3_prim.GetPath()}) "
                 f"scale=({sx:.2f},{sy:.2f},{sz:.2f}) at "
@@ -1704,7 +1988,10 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                         bound_count += 1
             if bound_count > 0:
                 self._person_materials_bound = True
+                self._refresh_static_person_target_height()
                 print(f"\n[BrainNavEnv] Async USD references loaded! Bound {bound_count} meshes successfully with custom textures.\n")
+
+        self._process_pending_person_scale_fixes()
 
         if hasattr(self, "_brain") and self._brain.state == "SCAN":
             self._steps_since_last_scan = 0
@@ -1928,9 +2215,16 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 ppo_actions = self._navigator_policy(policy_obs)
             else:
                 self._scan_step_count = 0
-                # Normal navigation: query frozen PPO policy
-                policy_obs = obs_dict if self._navigator_policy_expects_dict else obs_dict["policy"]
-                ppo_actions = self._navigator_policy(policy_obs)
+                # If we are in EXPLORE state but have no active path, hover/hold in place safely (zeros)
+                # to prevent querying the PPO policy with target_dist=0 (which is out-of-distribution
+                # and causes the policy to output incorrect forward commands into walls).
+                is_explore = (self._brain.state == "EXPLORE")
+                has_path = (getattr(self._brain, "astar_path_world", None) is not None and len(self._brain.astar_path_world) >= 2)
+                if is_explore and not has_path:
+                    ppo_actions = torch.zeros((self.num_envs, 4), device=self.device)
+                else:
+                    policy_obs = obs_dict if self._navigator_policy_expects_dict else obs_dict["policy"]
+                    ppo_actions = self._navigator_policy(policy_obs)
 
         # Sync target_yaw at boundary transitions (entering and exiting SCAN) BEFORE stepping the simulator
         is_scanning = hasattr(self, "_brain") and self._brain.state == "SCAN"
@@ -2117,6 +2411,159 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         except Exception:
             pass
         super().close()
+
+    # ------------------------------------------------------------------
+    #  Dynamic target spawning (dashboard-triggered, operator-only map hints)
+    # ------------------------------------------------------------------
+    def _hide_static_rescue_persons_for_dynamic_spawn(self) -> None:
+        """Hide default room-3 / final-room persons when operator spawns new targets."""
+        for attr in (
+            "_room3_rescue_person_prim",
+            "_final_rescue_person_prim",
+            "_final_center_person_prim",
+        ):
+            prim = getattr(self, attr, None)
+            if prim is not None and prim.IsValid():
+                self._set_prim_visibility(prim, visible=False)
+
+    def _restore_static_rescue_persons(self) -> None:
+        """Show default static persons again after a failed dynamic spawn."""
+        for attr in (
+            "_room3_rescue_person_prim",
+            "_final_rescue_person_prim",
+            "_final_center_person_prim",
+        ):
+            prim = getattr(self, attr, None)
+            if prim is not None and prim.IsValid():
+                self._set_prim_visibility(prim, visible=True)
+        self.spawned_targets_local = []
+        self.dynamic_spawn_active = False
+
+    def _clear_dynamic_spawned_persons(self) -> None:
+        """Remove ALL dashboard-spawned person wrappers from the stage."""
+        from pxr import Usd
+
+        stage = self.sim.stage
+        scope = getattr(self.cfg, "brain_rescue_person_scope", "RescuePersons")
+        parent_path = f"/World/envs/env_0/Room/{scope}"
+        to_remove: list[str] = []
+        parent = stage.GetPrimAtPath(parent_path)
+        if parent.IsValid():
+            for child in parent.GetChildren():
+                if child.GetName().startswith("DynamicSpawn_"):
+                    to_remove.append(str(child.GetPath()))
+        for name in getattr(self, "_dynamic_spawn_names", []):
+            path = f"{parent_path}/{name}"
+            if path not in to_remove:
+                to_remove.append(path)
+        with Usd.EditContext(stage, self._get_usd_edit_layer()):
+            for path in to_remove:
+                prim = stage.GetPrimAtPath(path)
+                if prim.IsValid():
+                    stage.RemovePrim(path)
+        self._dynamic_spawn_names = []
+        self._dynamic_spawn_prims = []
+        self.spawned_targets_local = []
+        self.dynamic_spawn_active = False
+        brain = getattr(self, "_brain", None)
+        if brain is not None:
+            brain.rescued_people = []
+            if hasattr(brain, "rescued_people_conf"):
+                brain.rescued_people_conf = []
+
+    def count_spawned_targets_detected(self) -> tuple[int, int]:
+        """Return (detected_count, total_spawned) for YOLO confirmations >= rescue threshold."""
+        import numpy as np
+
+        spawned = getattr(self, "spawned_targets_local", []) or []
+        if not spawned:
+            return 0, 0
+        brain = getattr(self, "_brain", None)
+        rescued = getattr(brain, "rescued_people", []) or [] if brain else []
+        rescued_conf = getattr(brain, "rescued_people_conf", []) or [] if brain else []
+        thresh = float(getattr(self.cfg, "yolo_person_conf_threshold", 0.70))
+        origin = self._terrain.env_origins[0].cpu().numpy()
+        detected = 0
+        for tgt in spawned:
+            tw = np.array(
+                [float(tgt[0]) + float(origin[0]), float(tgt[1]) + float(origin[1])],
+                dtype=np.float64,
+            )
+            for idx, rp in enumerate(rescued):
+                conf = float(rescued_conf[idx]) if idx < len(rescued_conf) else 0.0
+                if conf < thresh:
+                    continue
+                rw = np.asarray(rp[:2], dtype=np.float64)
+                if float(np.linalg.norm(rw - tw)) < 1.5:
+                    detected += 1
+                    break
+        return detected, len(spawned)
+
+    def spawn_random_targets(self, count: int = 2):
+        """Spawn *count* F_Business_02 persons at random safe map positions.
+
+        Operator-only: positions are stored for the dashboard (cyan/pink stars).
+        The drone brain is NOT given these coordinates — YOLO must find them.
+        Replaces static room-3 / final persons when triggered.
+        """
+        count = max(1, min(15, int(count)))
+        placed = self._sample_dynamic_spawn_positions(count)
+        if not placed:
+            print(
+                "[BrainNavEnv] Dynamic spawn aborted — no valid floor positions found. "
+                "Static persons left unchanged."
+            )
+            return
+
+        # Hide full-scale map-embedded F_Business_02 (can overlap spawn sites).
+        self._hide_map_default_person()
+        self._hide_static_rescue_persons_for_dynamic_spawn()
+        self._clear_dynamic_spawned_persons()
+        self._refresh_static_person_target_height()
+        target_h = getattr(self, "_static_person_target_height", None)
+
+        default_yaw = 90.0  # same facing as RescuePerson_Room3
+        names: list[str] = []
+        prims = []
+        confirmed: list[tuple[float, float, float]] = []
+        for i, local_xyz in enumerate(placed):
+            name = f"DynamicSpawn_{i:02d}"
+            try:
+                prim = self._spawn_rescue_person_wrapper(
+                    name, local_xyz, yaw_deg=default_yaw
+                )
+                if not self._align_person_scale_to_static_template(prim):
+                    self._queue_person_scale_fix(prim)
+                names.append(name)
+                prims.append(prim)
+                confirmed.append(local_xyz)
+            except Exception as exc:
+                print(f"[BrainNavEnv] Failed to spawn {name}: {exc}")
+
+        if not confirmed:
+            print(
+                "[BrainNavEnv] Dynamic spawn failed during USD placement — "
+                "restoring static persons."
+            )
+            self._restore_static_rescue_persons()
+            return
+
+        self._dynamic_spawn_names = names
+        self._dynamic_spawn_prims = prims
+        self.spawned_targets_local = confirmed
+        self.dynamic_spawn_active = True
+
+        # Drone gets no GPS hints to spawn positions — operator map markers only.
+        if hasattr(self, "_perception") and self._perception is not None:
+            self._perception._rescue_person_slots = []
+
+        th_str = f"{target_h:.2f}m" if target_h else "unknown"
+        print(
+            f"[BrainNavEnv] Dynamic spawn: {len(confirmed)}/{count} persons placed "
+            f"(operator map only, drone blind, target_height={th_str}): "
+            f"{[(round(p[0], 2), round(p[1], 2)) for p in confirmed]}"
+        )
+
 
 
 class _BrainEnvAdapter:

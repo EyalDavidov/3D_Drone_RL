@@ -107,6 +107,64 @@ body { display: flex; flex-direction: column; }
     50% { opacity: 0.5; transform: scale(0.8); }
 }
 
+/* ---- Dynamic spawn panel (operator only) ---- */
+.spawn-panel {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin-left: 8px;
+    border: 1px solid rgba(255, 45, 149, 0.35);
+    border-radius: 8px;
+    background: rgba(255, 45, 149, 0.08);
+}
+.spawn-panel .label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #ff2d95;
+}
+.spawn-panel input[type="number"] {
+    width: 44px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 45, 149, 0.4);
+    background: rgba(0, 0, 0, 0.25);
+    color: #ffb8dc;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-align: center;
+}
+.spawn-panel input[type="number"]:disabled {
+    opacity: 0.45;
+}
+.spawn-panel button {
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 45, 149, 0.5);
+    background: rgba(255, 45, 149, 0.22);
+    color: #ff2d95;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+}
+.spawn-panel button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+.spawn-panel button:not(:disabled):hover {
+    background: rgba(255, 45, 149, 0.38);
+}
+.spawn-status {
+    font-size: 10px;
+    color: var(--text-muted);
+    max-width: 140px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* ========== TABS (Chrome-style) ========== */
 .tab-bar {
     display: flex; align-items: flex-end; gap: 2px;

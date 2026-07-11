@@ -70,6 +70,12 @@
                 <span class="label">TICK</span>
                 <span class="value mono" id="tick-counter">0</span>
             </div>
+            <div class="spawn-panel" id="spawn-panel" title="Spawn rescue persons after simulation is running">
+                <span class="label">TARGETS</span>
+                <input type="number" id="input-spawn-count" min="1" max="15" value="2" disabled>
+                <button type="button" id="btn-spawn-targets" disabled>Spawn</button>
+                <span class="spawn-status mono" id="spawn-status">Waiting for sim…</span>
+            </div>
         </div>
     </header>
 
@@ -294,6 +300,8 @@
                                 <span><i style="background:#ffb020"></i>Frontier</span>
                                 <span><i class="smap-legend-drone"></i>Drone</span>
                                 <span><i style="display:inline-flex; align-items:center; justify-content:center; width:10px; height:10px; background:none; box-shadow:none;"><span style="color:#ff2d95; text-shadow:0 0 6px #ff2d95; font-size:14px; line-height:1; margin-top:-1px;">★</span></i>Person</span>
+                                <span><i style="display:inline-flex; align-items:center; justify-content:center; width:10px; height:10px; background:#ff2d95; border-radius:2px; box-shadow:0 0 6px #ff2d95;"></i>Spawn</span>
+                                <span><i style="display:inline-flex; align-items:center; justify-content:center; width:10px; height:10px; background:#22ff66; border-radius:2px; box-shadow:0 0 6px #22ff66;"></i>Found</span>
                                 <span><i style="background:#2ff3ff; border-radius:50%; box-shadow:0 0 6px #2ff3ff;"></i>Goal</span>
                             </div>
 

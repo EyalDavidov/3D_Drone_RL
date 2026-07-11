@@ -99,6 +99,7 @@ class SlamBrainModule(BrainModule):
         self.explore_step_count = 0
         self.last_scan_pos = None
         self.rescued_people = []
+        self.rescued_people_conf = []
         self.blacklisted_frontiers = []
         self.active_frontier_ticks = 0
         self.scanned_rooms = set()  # kept for snapshot compat; no scans are triggered
@@ -167,6 +168,7 @@ class SlamBrainModule(BrainModule):
         self.explore_step_count = 0
         self.last_scan_pos = None
         self.rescued_people = []
+        self.rescued_people_conf = []
         self.blacklisted_frontiers = []
         self.active_frontier_ticks = 0
         self.scanned_rooms = set()
@@ -184,6 +186,7 @@ class SlamBrainModule(BrainModule):
         snap["segment_idx"] = int(self.segment_idx)
         snap["max_segment_reached"] = int(getattr(self, "max_segment_reached", 0))
         snap["rescued_people"] = [p.copy() for p in self.rescued_people]
+        snap["rescued_people_conf"] = [float(c) for c in getattr(self, "rescued_people_conf", [])]
         snap["scanned_rooms"] = set(self.scanned_rooms)
         # Preserve the frontier blacklist across the crash, and blacklist the target
         # the drone was chasing when it crashed — otherwise it re-picks the same
@@ -210,6 +213,11 @@ class SlamBrainModule(BrainModule):
             int(snap.get("max_segment_reached", 0)),
         )
         self.rescued_people = [np.array(p) for p in snap.get("rescued_people", [])]
+        self.rescued_people_conf = [float(c) for c in snap.get("rescued_people_conf", [])]
+        if len(self.rescued_people_conf) < len(self.rescued_people):
+            thresh = float(getattr(self.env.cfg, "yolo_person_conf_threshold", 0.70))
+            missing = len(self.rescued_people) - len(self.rescued_people_conf)
+            self.rescued_people_conf.extend([thresh] * missing)
         self.scanned_rooms = set(snap.get("scanned_rooms", set()))
         if "last_scan_pos" in snap and snap["last_scan_pos"] is not None:
             self.last_scan_pos = snap["last_scan_pos"].copy()
@@ -700,6 +708,21 @@ class SlamBrainModule(BrainModule):
         )
         return True
 
+    def _yolo_rescue_conf_threshold(self) -> float:
+        return float(getattr(self.env.cfg, "yolo_person_conf_threshold", 0.70))
+
+    def _current_yolo_confidence(self) -> float:
+        perception = getattr(self.env, "_perception", None)
+        if perception is None:
+            return 0.0
+        state = getattr(perception, "_web_state", None) or {}
+        if not state.get("has_confirmed"):
+            return 0.0
+        intel = getattr(perception, "_last_intel", None)
+        if isinstance(intel, dict) and intel.get("conf") is not None:
+            return float(intel["conf"])
+        return float(getattr(perception, "last_best_person_conf", 0.0))
+
     def update(self, person_found, person_world_xyz, drone_pos, drone_quat):
         """SLAM-driven high-level brain update logic."""
         env_origin = self.env._terrain.env_origins[0].cpu().numpy()
@@ -773,21 +796,27 @@ class SlamBrainModule(BrainModule):
                 )
 
         if person_found[0].item() and self.state != "COMPLETE":
-            p_pos_w = person_world_xyz[0].cpu().numpy()
-            
-            # Check if this person is close to any already detected person
-            already_detected = False
-            for detected in self.rescued_people:
-                if np.linalg.norm(p_pos_w - detected) < 2.0:
-                    already_detected = True
-                    break
-                    
-            if not already_detected:
-                print(
-                    f"\n[SLAM Brain] YOLO DETECTED NEW HUMAN AT WORLD: "
-                    f"X:{p_pos_w[0]:.2f} Y:{p_pos_w[1]:.2f} Z:{p_pos_w[2]:.2f}"
-                )
-                self.rescued_people.append(p_pos_w.copy())
+            conf = self._current_yolo_confidence()
+            thresh = self._yolo_rescue_conf_threshold()
+            if conf < thresh:
+                pass
+            else:
+                p_pos_w = person_world_xyz[0].cpu().numpy()
+
+                # Check if this person is close to any already detected person
+                already_detected = False
+                for detected in self.rescued_people:
+                    if np.linalg.norm(p_pos_w - detected) < 2.0:
+                        already_detected = True
+                        break
+
+                if not already_detected:
+                    print(
+                        f"\n[SLAM Brain] YOLO CONFIRMED ({conf:.0%}) NEW HUMAN AT WORLD: "
+                        f"X:{p_pos_w[0]:.2f} Y:{p_pos_w[1]:.2f} Z:{p_pos_w[2]:.2f}"
+                    )
+                    self.rescued_people.append(p_pos_w.copy())
+                    self.rescued_people_conf.append(conf)
 
         if self.state not in ("EXPLORE", "COMPLETE"):
             self.state = "EXPLORE"
@@ -1150,19 +1179,35 @@ class SlamBrainModule(BrainModule):
                 if not committed:
                     visited, total = self.coverage_stats()
                     coverage_pct = visited / max(total, 1) * 100.0
-                    
+
                     has_substantial_frontiers = any(
                         int(f.get("unknown_gain", 0)) >= self.MIN_UNKNOWN_GAIN
                         for f in candidates
                     )
-                    
+
                     if total >= 10000 and coverage_pct >= 95.0 and not has_substantial_frontiers:
-                        print(
-                            f"[SLAM Brain] All frontiers cleared. "
-                            f"Exploration COMPLETE ({visited}/{total} cells = {coverage_pct:.1f}%)."
+                        spawned_active = bool(
+                            getattr(self.env, "dynamic_spawn_active", False)
                         )
-                        self.state = "COMPLETE"
-                        self.mission_finished = True
+                        all_spawned_found = True
+                        if spawned_active and hasattr(
+                            self.env, "count_spawned_targets_detected"
+                        ):
+                            det, tot = self.env.count_spawned_targets_detected()
+                            all_spawned_found = tot > 0 and det >= tot
+                        if not spawned_active or all_spawned_found:
+                            print(
+                                f"[SLAM Brain] All frontiers cleared. "
+                                f"Exploration COMPLETE ({visited}/{total} cells = {coverage_pct:.1f}%)."
+                            )
+                            self.state = "COMPLETE"
+                            self.mission_finished = True
+                        elif self._hold_log_ticks % 30 == 1:
+                            det, tot = self.env.count_spawned_targets_detected()
+                            print(
+                                f"[SLAM Brain] Coverage {coverage_pct:.1f}% but waiting for "
+                                f"spawned targets ({det}/{tot} detected by YOLO)."
+                            )
                     else:
                         self._hold_log_ticks = int(getattr(self, "_hold_log_ticks", 0)) + 1
                         if self._hold_log_ticks % 30 == 1:

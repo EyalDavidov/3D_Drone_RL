@@ -458,6 +458,12 @@ def main():
             if _telemetry is not None:
                 _telemetry.push(env, time.time() - start_run_time)
 
+                # ---- Handle spawn command from dashboard ------------------
+                if getattr(_telemetry, "pending_spawn_count", None) is not None:
+                    cnt = _telemetry.pending_spawn_count
+                    _telemetry.pending_spawn_count = None
+                    env.spawn_random_targets(count=cnt)
+
             # ---- Key handling -----------------------------------------
             if show_slam_win and cv2.waitKey(1) & 0xFF == ord("q"):
                 print("[SLAM Launcher] Exiting on user request.")
@@ -467,6 +473,26 @@ def main():
                 print("[SLAM Launcher] Mission complete!")
                 time.sleep(2.0)
                 break
+
+            # ---- Dynamic spawn mission: 95% coverage + all targets detected ----
+            if getattr(env, "dynamic_spawn_active", False):
+                visited, total = (0, 0)
+                brain = getattr(env, "_brain", None)
+                if brain and hasattr(brain, "coverage_stats"):
+                    visited, total = brain.coverage_stats()
+                coverage_pct = visited / max(total, 1) * 100.0
+                det, tot = env.count_spawned_targets_detected()
+                if tot > 0 and det >= tot and coverage_pct >= 95.0:
+                    print(
+                        f"[SLAM Launcher] Mission complete: {det}/{tot} spawned targets "
+                        f"detected, coverage {coverage_pct:.1f}%."
+                    )
+                    if brain is not None:
+                        brain.state = "COMPLETE"
+                        brain.mission_finished = True
+                    env.slam_state = "COMPLETE"
+                    time.sleep(2.0)
+                    break
 
             # ---- Real-time pacing -------------------------------------
             sleep_time = dt - (time.time() - t0)

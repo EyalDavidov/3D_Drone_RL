@@ -208,6 +208,7 @@ class LiveDroneTelemetry:
     def __init__(self, tick_rate: float = 10.0, perf_mode: bool = False):
         self.tick_rate = tick_rate
         self.force_level: int | None = None  # required by server.py interface
+        self.pending_spawn_count: int | None = None
         self._perf_mode = bool(perf_mode)
 
         self._lock = threading.Lock()
@@ -472,6 +473,18 @@ class LiveDroneTelemetry:
             perception = getattr(env, "_perception", None)
             yolo_stats = self._build_yolo_stats(perception, brain)
 
+            # ---- Spawn mission status (operator-only markers) ------------
+            spawn_detected, spawn_total = (0, 0)
+            if hasattr(env, "count_spawned_targets_detected"):
+                spawn_detected, spawn_total = env.count_spawned_targets_detected()
+            spawn_info = {
+                "active": bool(getattr(env, "dynamic_spawn_active", False)),
+                "total": int(spawn_total),
+                "detected": int(spawn_detected),
+                "pending": getattr(self, "pending_spawn_count", None),
+                "coverage_required": 95.0,
+            }
+
             # ---- Assemble state dict -----------------------------------
             state: dict[str, Any] = {
                 "pos":        [round(float(v), 4) for v in pos_w],
@@ -509,6 +522,8 @@ class LiveDroneTelemetry:
                 "room_bounds":      ROOM_BOUNDS,
                 "map_zones":        self._get_map_zones(env),
                 "poles":            [],
+                "sim_running":      True,
+                "spawn_info":       spawn_info,
             }
 
             with self._lock:
@@ -921,11 +936,20 @@ class LiveDroneTelemetry:
             # ---- Person ----
             person_found = False
             person_pos = None
+            rescued_list = []
+            yolo_thresh = float(getattr(env.cfg, "yolo_person_conf_threshold", 0.70))
             if brain is not None:
                 rescued = getattr(brain, "rescued_people", None)
-                if rescued and len(rescued) > 0:
+                rescued_conf = getattr(brain, "rescued_people_conf", []) or []
+                if rescued:
+                    for idx, p in enumerate(rescued):
+                        conf = float(rescued_conf[idx]) if idx < len(rescued_conf) else yolo_thresh
+                        if conf < yolo_thresh:
+                            continue
+                        rescued_list.append([round(float(p[0]), 3), round(float(p[1]), 3)])
+                if rescued_list:
                     person_found = True
-                    person_pos = rescued[0]
+                    person_pos = rescued_list[0]
                 elif getattr(brain, "found_person", False):
                     person_found = True
                     person_pos = getattr(brain, "target_person_pos", None)
@@ -937,6 +961,12 @@ class LiveDroneTelemetry:
                                    round(float(person_pos[1]), 3)]
                 except Exception:
                     pass
+
+            # ---- Spawned Targets ----
+            spawned_targets = []
+            origin = env._terrain.env_origins[0].cpu().numpy() if hasattr(env, "_terrain") else np.zeros(3)
+            for t in getattr(env.unwrapped, "spawned_targets_local", []):
+                spawned_targets.append([round(float(t[0] + origin[0]), 3), round(float(t[1] + origin[1]), 3)])
 
             cell_w = (mapper.max_x - mapper.min_x) / W
             cell_d = (mapper.max_y - mapper.min_y) / H
@@ -960,6 +990,8 @@ class LiveDroneTelemetry:
                 "active":    active_data,
                 "path":      path_list,
                 "person":    person_data,
+                "persons":   rescued_list,
+                "spawned_targets": spawned_targets,
             }
 
         except Exception as exc:

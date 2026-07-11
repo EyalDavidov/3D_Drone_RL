@@ -206,7 +206,10 @@ class SlamMap2D {
         this._drawPath(ctx, t, d.path);
         this._drawFrontiers(ctx, t, d.frontiers, d.active);
         this._drawActive(ctx, t, d.active);
-        this._drawPerson(ctx, t, d.person);
+        this._drawSpawnedTargets(ctx, t, d.spawned_targets, d.persons);
+        if (!d.spawned_targets || d.spawned_targets.length === 0) {
+            this._drawPerson(ctx, t, d.person);
+        }
         this._drawDrone(ctx, t, d.drone);
 
         this._updateHud(d);
@@ -303,6 +306,45 @@ class SlamMap2D {
         }
         ctx.closePath(); ctx.fill();
         ctx.restore();
+    }
+
+    _isSpawnTargetDetected(tgt, persons) {
+        const pts = persons || [];
+        for (const p of pts) {
+            if (Math.hypot(p[0] - tgt[0], p[1] - tgt[1]) < 1.5) return true;
+        }
+        return false;
+    }
+
+    _drawSpawnedTargets(ctx, t, targets, persons) {
+        if (!targets || targets.length === 0) return;
+        for (const tgt of targets) {
+            const [sx, sy] = this._toScreen(t, tgt[0], tgt[1]);
+            const isDetected = this._isSpawnTargetDetected(tgt, persons);
+            ctx.save();
+            ctx.translate(sx, sy);
+            // 5-point star path
+            ctx.beginPath();
+            for (let i = 0; i < 10; i++) {
+                const r = i % 2 ? 4 : 10;
+                const a = -Math.PI / 2 + i * Math.PI / 5;
+                const x = Math.cos(a) * r, y = Math.sin(a) * r;
+                i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+            }
+            ctx.closePath();
+            if (isDetected) {
+                ctx.fillStyle = '#22ff66';
+                ctx.shadowColor = 'rgba(34,255,102,0.85)';
+                ctx.shadowBlur = 14;
+                ctx.fill();
+            } else {
+                ctx.fillStyle = '#ff2d95';
+                ctx.shadowColor = 'rgba(255,45,149,0.8)';
+                ctx.shadowBlur = 12;
+                ctx.fill();
+            }
+            ctx.restore();
+        }
     }
 
     _drawDrone(ctx, t, drone) {

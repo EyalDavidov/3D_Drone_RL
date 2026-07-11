@@ -659,7 +659,7 @@ class OccupancyGridMapper:
         small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         inflated_walls = cv2.dilate(wall_mask, small_k, iterations=1)
         prob = self.get_occupancy_grid()
-        free = ((inflated_walls == 0) & ((prob < 0.35) | (obstacle_mask > 0))).astype(np.uint8)
+        free = ((inflated_walls == 0) & (obstacle_mask == 0) & (prob < 0.35)).astype(np.uint8)
         h, w = free.shape
         r0, c0 = int(start_grid[0]), int(start_grid[1])
         r1, c1 = int(goal_grid[0]), int(goal_grid[1])

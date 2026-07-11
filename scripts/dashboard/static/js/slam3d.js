@@ -94,6 +94,7 @@ class SlamScene3D {
         this._buildDrone();
         this._buildTarget();
         this._buildPerson();
+        this._spawnedTargetMeshes = [];
 
         // ---- Shared geometry for frontier pillars ----
         this._fCylGeo = new THREE.CylinderGeometry(0.08, 0.12, 0.8, 8);
@@ -141,7 +142,12 @@ class SlamScene3D {
         this._updateFrontiers(slam3d.frontiers, slam3d.active);
         this._updateTarget(slam3d.active);
         this._updatePath(slam3d.path);
-        this._updatePerson(slam3d.person);
+        this._updateSpawnedTargets(slam3d.spawned_targets, slam3d.persons);
+        if (!slam3d.spawned_targets || slam3d.spawned_targets.length === 0) {
+            this._updatePerson(slam3d.person);
+        } else if (this._personGroup) {
+            this._personGroup.visible = false;
+        }
 
         if (slam3d.blueprint && !this._blueprintMesh) {
             this._buildBlueprint(slam3d.blueprint, slam3d.res || 0.4);
@@ -503,6 +509,47 @@ class SlamScene3D {
 
         this._personGroup.visible = false;
         this._scene.add(this._personGroup);
+    }
+
+    _isSpawnTargetDetected(tgt, persons) {
+        const pts = persons || [];
+        for (const p of pts) {
+            if (Math.hypot(p[0] - tgt[0], p[1] - tgt[1]) < 1.5) return true;
+        }
+        return false;
+    }
+
+    _updateSpawnedTargets(targets, persons) {
+        // Remove old meshes
+        for (const m of this._spawnedTargetMeshes) this._scene.remove(m);
+        this._spawnedTargetMeshes = [];
+        if (!targets || targets.length === 0) return;
+        for (const tgt of targets) {
+            const isDetected = this._isSpawnTargetDetected(tgt, persons);
+            const col = isDetected ? 0x22ff66 : 0xff2d95;
+            const emCol = isDetected ? 0x0a6630 : 0x880044;
+            const g = new THREE.Group();
+            const pMat = new THREE.MeshStandardMaterial({
+                color: col, emissive: emCol, emissiveIntensity: 0.6, roughness: 0.35,
+            });
+            const pillar = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.05, 0.08, 2.5, 8), pMat
+            );
+            pillar.position.y = 1.25;
+            g.add(pillar);
+            const bMat = new THREE.MeshStandardMaterial({
+                color: col, emissive: col, emissiveIntensity: 0.7,
+            });
+            const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), bMat);
+            beacon.position.y = 2.7;
+            g.add(beacon);
+            const light = new THREE.PointLight(col, 0.8, 5);
+            light.position.y = 1.5;
+            g.add(light);
+            g.position.set(-tgt[0], 0, tgt[1]);
+            this._scene.add(g);
+            this._spawnedTargetMeshes.push(g);
+        }
     }
 
     // ---------------------------------------------------------------

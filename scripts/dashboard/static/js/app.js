@@ -159,6 +159,54 @@
         sendCommand({ command: 'set_level', level: 'auto' });
     });
 
+    // ---- Spawn Targets panel (enabled only when sim is live) ----
+    const spawnBtn = document.getElementById('btn-spawn-targets');
+    const spawnCountInput = document.getElementById('input-spawn-count');
+    const spawnStatusEl = document.getElementById('spawn-status');
+    let simRunning = false;
+
+    function updateSpawnPanel(data) {
+        simRunning = Boolean(data && data.sim_running);
+        const spawn = (data && data.spawn_info) || {};
+        const canSpawn = simRunning && ws && ws.readyState === WebSocket.OPEN;
+        if (spawnBtn) {
+            spawnBtn.disabled = !canSpawn;
+        }
+        if (spawnCountInput) {
+            spawnCountInput.disabled = !canSpawn;
+        }
+        if (!spawnStatusEl) return;
+        if (!simRunning) {
+            spawnStatusEl.textContent = 'Waiting for sim…';
+        } else if (spawn.pending != null) {
+            spawnStatusEl.textContent = `Spawning ${spawn.pending}…`;
+        } else if (spawn.active && spawn.total > 0) {
+            spawnStatusEl.textContent = `${spawn.detected}/${spawn.total} found · ${Math.round(data.map_explored_pct || 0)}% map`;
+        } else if (canSpawn) {
+            spawnStatusEl.textContent = 'Ready — click Spawn';
+        } else {
+            spawnStatusEl.textContent = 'Connect to sim';
+        }
+    }
+
+    if (spawnBtn) {
+        spawnBtn.addEventListener('click', () => {
+            if (spawnBtn.disabled) return;
+            const count = parseInt(spawnCountInput?.value || '2', 10);
+            sendCommand({
+                command: 'spawn_random_targets',
+                count: Math.max(1, Math.min(15, count)),
+            });
+            spawnBtn.textContent = 'Sent';
+            spawnBtn.disabled = true;
+            if (spawnStatusEl) spawnStatusEl.textContent = 'Command sent…';
+            setTimeout(() => {
+                spawnBtn.textContent = 'Spawn';
+                if (simRunning) spawnBtn.disabled = false;
+            }, 1500);
+        });
+    }
+
     // ---- WebSocket ----
     function setStatus(state) {
         statusBadge.className = 'header-badge ' + state;
@@ -197,6 +245,7 @@
         try {
             const data = JSON.parse(event.data);
             updateHeader(data);
+            updateSpawnPanel(data);
             cameraFeeds.update(data.images);
             metricsPanel.update(data);
             liveCharts.update(data);
@@ -224,6 +273,9 @@
         ws = new WebSocket(WS_URL);
         ws.onopen = () => {
             setStatus('connected');
+            if (spawnStatusEl && !simRunning) {
+                spawnStatusEl.textContent = 'Waiting for sim…';
+            }
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         };
         ws.onmessage = onMessage;

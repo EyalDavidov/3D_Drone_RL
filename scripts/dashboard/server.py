@@ -70,7 +70,10 @@ async def _ws_handler(websocket, telemetry_source):
                             lv = int(level) - 1  # 0-indexed
                             telemetry_source.force_level = lv
                             telemetry_source._reset_to_level(lv)
-                            print(f"[Dashboard] Level forced: {level}")
+                    elif cmd.get("command") == "spawn_random_targets":
+                        count = int(cmd.get("count", 2))
+                        telemetry_source.pending_spawn_count = count
+                        print(f"[Dashboard] Spawn command received: {count} targets")
                 except (json.JSONDecodeError, KeyError, ValueError):
                     pass
         except Exception:
