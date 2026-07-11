@@ -369,48 +369,76 @@ class SlamScene3D {
 
     _buildDrone() {
         this._droneGroup = new THREE.Group();
+        this._droneProps = [];
 
-        // Body
-        const bMat = new THREE.MeshStandardMaterial({
-            color: 0x00e040, emissive: 0x00a020, emissiveIntensity: 0.6,
-            roughness: 0.3, metalness: 0.5,
+        const bodyMat = new THREE.MeshStandardMaterial({
+            color: 0x1e293b, emissive: 0x0a1628, emissiveIntensity: 0.35,
+            roughness: 0.35, metalness: 0.72,
         });
-        this._droneGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), bMat));
-
-        // Arms
+        const accentMat = new THREE.MeshStandardMaterial({
+            color: 0x22ff66, emissive: 0x118833, emissiveIntensity: 0.55,
+            roughness: 0.4, metalness: 0.3,
+        });
         const armMat = new THREE.MeshStandardMaterial({
-            color: 0x90a0b0, roughness: 0.5, metalness: 0.6,
+            color: 0x64748b, roughness: 0.45, metalness: 0.65,
         });
-        for (let i = 0; i < 2; i++) {
-            const arm = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.04, 0.04), armMat);
-            arm.rotation.y = i * Math.PI / 2;
-            this._droneGroup.add(arm);
-        }
-
-        // Propeller discs (semi-transparent)
+        const motorMat = new THREE.MeshStandardMaterial({
+            color: 0x334155, roughness: 0.3, metalness: 0.8,
+        });
         const propMat = new THREE.MeshStandardMaterial({
-            color: 0x60a5fa, transparent: true, opacity: 0.40,
-            roughness: 0.8,
+            color: 0x38bdf8, transparent: true, opacity: 0.45, roughness: 0.7,
         });
-        for (const [ox, oz] of [[0.39, 0], [-0.39, 0], [0, 0.39], [0, -0.39]]) {
-            const prop = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.13, 0.13, 0.02, 10), propMat
-            );
-            prop.position.set(ox, 0.04, oz);
+        const camMat = new THREE.MeshStandardMaterial({
+            color: 0x0f172a, roughness: 0.5, metalness: 0.6,
+        });
+
+        // Central body plate
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.16), bodyMat);
+        body.position.y = 0.04;
+        this._droneGroup.add(body);
+
+        const deck = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.015, 0.11), accentMat);
+        deck.position.y = 0.075;
+        this._droneGroup.add(deck);
+
+        // Camera pod under nose
+        const cam = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 6), camMat);
+        cam.position.set(0, 0.01, 0.06);
+        this._droneGroup.add(cam);
+
+        const armLen = 0.34;
+        for (let i = 0; i < 4; i++) {
+            const angle = Math.PI / 4 + i * (Math.PI / 2);
+            const ex = Math.cos(angle) * armLen * 0.5;
+            const ez = Math.sin(angle) * armLen * 0.5;
+
+            const arm = new THREE.Mesh(new THREE.BoxGeometry(armLen, 0.03, 0.03), armMat);
+            arm.position.set(Math.cos(angle) * armLen * 0.22, 0.04, Math.sin(angle) * armLen * 0.22);
+            arm.rotation.y = -angle;
+            this._droneGroup.add(arm);
+
+            const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.045, 10), motorMat);
+            motor.position.set(ex, 0.05, ez);
+            this._droneGroup.add(motor);
+
+            const prop = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.006, 18), propMat);
+            prop.position.set(ex, 0.085, ez);
+            prop.userData.spinSign = i % 2 === 0 ? 1 : -1;
             this._droneGroup.add(prop);
+            this._droneProps.push(prop);
         }
 
-        // Direction cone (+Z = facing forward in Three.js local space)
-        const coneMat = new THREE.MeshStandardMaterial({
-            color: 0xef4444, emissive: 0xaa0000, emissiveIntensity: 0.5,
+        // Front heading marker (+Z)
+        const noseMat = new THREE.MeshStandardMaterial({
+            color: 0xff3355, emissive: 0xaa1122, emissiveIntensity: 0.7,
         });
-        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.18, 4), coneMat);
-        cone.rotation.x = Math.PI / 2;
-        cone.position.set(0, 0, 0.36);
-        this._droneGroup.add(cone);
+        const nose = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.1, 4), noseMat);
+        nose.rotation.x = Math.PI / 2;
+        nose.position.set(0, 0.05, 0.13);
+        this._droneGroup.add(nose);
 
-        // Glow
-        const glow = new THREE.PointLight(0x00ff44, 0.7, 5);
+        const glow = new THREE.PointLight(0x22ff66, 0.55, 4);
+        glow.position.y = 0.12;
         this._droneGroup.add(glow);
 
         this._droneGroup.position.set(0, 2.0, 1.5);
@@ -469,44 +497,7 @@ class SlamScene3D {
     }
 
     _buildPerson() {
-        this._personGroup = new THREE.Group();
-
-        // Tall pillar
-        const pMat = new THREE.MeshStandardMaterial({
-            color: 0xff00cc, emissive: 0x880066, emissiveIntensity: 0.6,
-            roughness: 0.35,
-        });
-        const pillar = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.06, 0.10, 3.0, 8), pMat
-        );
-        pillar.position.y = 1.5;
-        this._personGroup.add(pillar);
-
-        // Top beacon sphere
-        const bGeo = new THREE.SphereGeometry(0.30, 10, 8);
-        const bMat = new THREE.MeshStandardMaterial({
-            color: 0xff00cc, emissive: 0xcc0099, emissiveIntensity: 0.7,
-        });
-        const beacon = new THREE.Mesh(bGeo, bMat);
-        beacon.position.y = 3.2;
-        this._personGroup.add(beacon);
-
-        // Ground ring
-        const lGeo = new THREE.RingGeometry(0.4, 0.54, 32);
-        const lMat = new THREE.MeshBasicMaterial({
-            color: 0xff00cc, transparent: true, opacity: 0.45,
-            side: THREE.DoubleSide,
-        });
-        const ring = new THREE.Mesh(lGeo, lMat);
-        ring.rotation.x = -Math.PI / 2;
-        ring.position.y = 0.02;
-        this._personGroup.add(ring);
-
-        // Glow
-        const light = new THREE.PointLight(0xff00ff, 1.2, 8);
-        light.position.y = 2.0;
-        this._personGroup.add(light);
-
+        this._personGroup = this._buildMiniPersonFigure(0xff00cc, 0x880066);
         this._personGroup.visible = false;
         this._scene.add(this._personGroup);
     }
@@ -519,6 +510,50 @@ class SlamScene3D {
         return false;
     }
 
+    _buildMiniPersonFigure(col, emCol) {
+        const g = new THREE.Group();
+        const mat = new THREE.MeshStandardMaterial({
+            color: col, emissive: emCol, emissiveIntensity: 0.65, roughness: 0.38, metalness: 0.1,
+        });
+
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10), mat);
+        head.position.y = 0.68;
+        g.add(head);
+
+        const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.32, 10), mat);
+        torso.position.y = 0.42;
+        g.add(torso);
+
+        for (const side of [-1, 1]) {
+            const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.032, 0.22, 6), mat);
+            arm.position.set(side * 0.14, 0.48, 0);
+            arm.rotation.z = side * 0.55;
+            g.add(arm);
+        }
+
+        for (const side of [-1, 1]) {
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.038, 0.26, 6), mat);
+            leg.position.set(side * 0.055, 0.13, 0.02);
+            leg.rotation.x = 0.08;
+            g.add(leg);
+        }
+
+        const ringMat = new THREE.MeshBasicMaterial({
+            color: col, transparent: true, opacity: 0.32, side: THREE.DoubleSide,
+        });
+        const ring = new THREE.Mesh(new THREE.RingGeometry(0.14, 0.19, 28), ringMat);
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.y = 0.01;
+        g.add(ring);
+
+        const light = new THREE.PointLight(col, 0.45, 2.5);
+        light.position.y = 0.45;
+        g.add(light);
+
+        g.userData.isMiniPerson = true;
+        return g;
+    }
+
     _updateSpawnedTargets(targets, persons) {
         // Remove old meshes
         for (const m of this._spawnedTargetMeshes) this._scene.remove(m);
@@ -528,24 +563,7 @@ class SlamScene3D {
             const isDetected = this._isSpawnTargetDetected(tgt, persons);
             const col = isDetected ? 0x22ff66 : 0xff2d95;
             const emCol = isDetected ? 0x0a6630 : 0x880044;
-            const g = new THREE.Group();
-            const pMat = new THREE.MeshStandardMaterial({
-                color: col, emissive: emCol, emissiveIntensity: 0.6, roughness: 0.35,
-            });
-            const pillar = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.05, 0.08, 2.5, 8), pMat
-            );
-            pillar.position.y = 1.25;
-            g.add(pillar);
-            const bMat = new THREE.MeshStandardMaterial({
-                color: col, emissive: col, emissiveIntensity: 0.7,
-            });
-            const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), bMat);
-            beacon.position.y = 2.7;
-            g.add(beacon);
-            const light = new THREE.PointLight(col, 0.8, 5);
-            light.position.y = 1.5;
-            g.add(light);
+            const g = this._buildMiniPersonFigure(col, emCol);
             g.position.set(-tgt[0], 0, tgt[1]);
             this._scene.add(g);
             this._spawnedTargetMeshes.push(g);
@@ -581,16 +599,30 @@ class SlamScene3D {
             if (beacon) beacon.position.y = 2.95 + 0.18 * Math.sin(this._t * 2.0);
         }
 
+        // Spin propellers
+        if (this._droneProps) {
+            for (const prop of this._droneProps) {
+                prop.rotation.y += 0.35 * (prop.userData.spinSign || 1);
+            }
+        }
+
         // Pulse drone glow
         if (this._droneGroup) {
             const light = this._droneGroup.children.find(c => c.isPointLight);
             if (light) light.intensity = 0.55 + 0.25 * Math.sin(this._t * 5.5);
         }
 
-        // Bob person beacon
+        // Bob spawned mini-person markers
+        this._spawnedTargetMeshes.forEach((g, i) => {
+            if (!g.userData.isMiniPerson) return;
+            g.position.y = 0.04 * Math.sin(this._t * 2.4 + i * 1.1);
+            const light = g.children.find(c => c.isPointLight);
+            if (light) light.intensity = 0.35 + 0.12 * Math.sin(this._t * 3 + i);
+        });
+
+        // Bob person marker
         if (this._personGroup && this._personGroup.visible) {
-            const beacon = this._personGroup.children.find(c => c.geometry && c.geometry.type === 'SphereGeometry');
-            if (beacon) beacon.position.y = 3.2 + 0.20 * Math.sin(this._t * 2.2);
+            this._personGroup.position.y = 0.04 * Math.sin(this._t * 2.2);
         }
 
         if (this._controls) this._controls.update();

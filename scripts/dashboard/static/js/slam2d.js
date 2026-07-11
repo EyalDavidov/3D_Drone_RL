@@ -288,23 +288,58 @@ class SlamMap2D {
         ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
     }
 
+    _roundRect(ctx, x, y, w, h, r) {
+        const rad = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + rad, y);
+        ctx.lineTo(x + w - rad, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+        ctx.lineTo(x + w, y + h - rad);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+        ctx.lineTo(x + rad, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+        ctx.lineTo(x, y + rad);
+        ctx.quadraticCurveTo(x, y, x + rad, y);
+        ctx.closePath();
+    }
+
+    /** Restroom / services signage person (head, torso, separate arms & legs). */
+    _drawPersonPictogram(ctx, color, glowColor, scale = 1) {
+        const s = scale;
+        ctx.fillStyle = color;
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 8 * s;
+
+        // Head (detached circle)
+        ctx.beginPath();
+        ctx.arc(0, -9.8 * s, 2.9 * s, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Torso
+        this._roundRect(ctx, -4.2 * s, -4.8 * s, 8.4 * s, 5.2 * s, 1.6 * s);
+        ctx.fill();
+
+        // Arms (vertical bars, separated from torso)
+        this._roundRect(ctx, -7.0 * s, -4.2 * s, 1.7 * s, 7.2 * s, 0.85 * s);
+        ctx.fill();
+        this._roundRect(ctx, 5.3 * s, -4.2 * s, 1.7 * s, 7.2 * s, 0.85 * s);
+        ctx.fill();
+
+        // Legs (two bars with gap)
+        this._roundRect(ctx, -3.4 * s, 1.8 * s, 2.2 * s, 7.8 * s, 1.1 * s);
+        ctx.fill();
+        this._roundRect(ctx, 1.2 * s, 1.8 * s, 2.2 * s, 7.8 * s, 1.1 * s);
+        ctx.fill();
+
+        ctx.shadowBlur = 0;
+    }
+
     _drawPerson(ctx, t, person) {
         if (!person) return;
         const [sx, sy] = this._toScreen(t, person[0], person[1]);
         ctx.save();
         ctx.translate(sx, sy);
-        ctx.fillStyle = '#ff2d95';
-        ctx.shadowColor = 'rgba(255,45,149,0.8)';
-        ctx.shadowBlur = 12;
-        // 5-point star
-        ctx.beginPath();
-        for (let i = 0; i < 10; i++) {
-            const r = i % 2 ? 4 : 9;
-            const a = -Math.PI / 2 + i * Math.PI / 5;
-            const x = Math.cos(a) * r, y = Math.sin(a) * r;
-            i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-        }
-        ctx.closePath(); ctx.fill();
+        this._drawPersonPictogram(ctx, '#ff2d95', 'rgba(255,45,149,0.8)', 1);
         ctx.restore();
     }
 
@@ -323,25 +358,10 @@ class SlamMap2D {
             const isDetected = this._isSpawnTargetDetected(tgt, persons);
             ctx.save();
             ctx.translate(sx, sy);
-            // 5-point star path
-            ctx.beginPath();
-            for (let i = 0; i < 10; i++) {
-                const r = i % 2 ? 4 : 10;
-                const a = -Math.PI / 2 + i * Math.PI / 5;
-                const x = Math.cos(a) * r, y = Math.sin(a) * r;
-                i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-            }
-            ctx.closePath();
             if (isDetected) {
-                ctx.fillStyle = '#22ff66';
-                ctx.shadowColor = 'rgba(34,255,102,0.85)';
-                ctx.shadowBlur = 14;
-                ctx.fill();
+                this._drawPersonPictogram(ctx, '#22ff66', 'rgba(34,255,102,0.85)', 1.05);
             } else {
-                ctx.fillStyle = '#ff2d95';
-                ctx.shadowColor = 'rgba(255,45,149,0.8)';
-                ctx.shadowBlur = 12;
-                ctx.fill();
+                this._drawPersonPictogram(ctx, '#ff2d95', 'rgba(255,45,149,0.8)', 1);
             }
             ctx.restore();
         }
