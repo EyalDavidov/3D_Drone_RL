@@ -65,8 +65,8 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     # Dashboard / viewport cameras — TiledCamera (same pipeline as the front cam).
     view_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Drone/body/Camera_View",
-        height=180,
-        width=320,
+        height=288,
+        width=512,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=18.0,

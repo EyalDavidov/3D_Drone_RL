@@ -110,6 +110,31 @@ def _auto_brighten(bgr, target: float = 110.0, max_gain: float = 3.5):
         return bgr
 
 
+def _encode_rgb_feed_b64(
+    bgr,
+    *,
+    max_w: int = 512,
+    max_h: int = 288,
+    quality: int = 93,
+    auto_light: bool = False,
+) -> str:
+    """Encode an RGB dashboard feed at native resolution (capped, never upscaled)."""
+    try:
+        import cv2
+
+        h, w = bgr.shape[:2]
+        if w > max_w or h > max_h:
+            scale = min(max_w / w, max_h / h)
+            nw = max(1, int(round(w * scale)))
+            nh = max(1, int(round(h * scale)))
+            bgr = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)
+        if auto_light:
+            bgr = _auto_brighten(bgr)
+        return _ndarray_to_jpeg_b64(bgr, quality=quality)
+    except Exception:
+        return ""
+
+
 def _ndarray_to_jpeg_b64(arr_bgr, quality: int = 80) -> str:
     """Encode a BGR uint8 ndarray as JPEG, return base64 string."""
     try:
@@ -162,21 +187,16 @@ def _depth_gray_b64(depth_np, near: float = 0.05, far: float = 10.0) -> str:
 
 
 def _norm_depth_gray_b64(depth_norm) -> str:
-    """Display env-normalized depth [0,1] (close=0) as inverted grayscale JPEG."""
+    """Display env-normalized depth [0,1] (close=0) as inverted grayscale JPEG.
+
+    Uses a fixed global invert (not per-frame min-max) so close stays bright
+    white and far stays dark — matching the AE-input convention on the dashboard.
+    """
     try:
         import cv2
         import numpy as np
 
-        min_val = np.min(depth_norm)
-        max_val = np.max(depth_norm)
-        diff = max_val - min_val
-        if diff > 1e-5:
-            norm = (depth_norm - min_val) / diff
-        else:
-            norm = np.zeros_like(depth_norm)
-            
-        # Invert so close = pure white (255), far/background = pure black (0)
-        norm = 1.0 - norm
+        norm = np.clip(1.0 - depth_norm, 0.0, 1.0)
         gray = (norm * 255).astype("uint8")
         bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         bgr = cv2.resize(bgr, (512, 288), interpolation=cv2.INTER_CUBIC)
@@ -260,6 +280,10 @@ class LiveDroneTelemetry:
         self._saliency_regen_interval = 1
         self._yolo_upscale = 1 if perf_mode else 3
         self._yolo_jpeg_quality = 78 if perf_mode else 90
+        # RGB wall feeds: native sim resolution (512×288 FPV/sides), high JPEG quality.
+        self._rgb_jpeg_quality = 85 if perf_mode else 93
+        self._rgb_max_w = 512
+        self._rgb_max_h = 288
         # Always read body-mounted rear/left/right cameras — skipping them made every
         # dashboard panel show the front-camera fallback (all four views identical).
         self._skip_angle_cams = False
@@ -485,7 +509,9 @@ class LiveDroneTelemetry:
             bt["waypoint_idx"] = int(getattr(brain, "current_wp_idx", 0))
             bt["waypoint_total"] = len(wps) if wps else 0
             bt["explore_steps"] = int(getattr(brain, "explore_step_count", 0))
-            bt["stuck_ticks"] = int(getattr(brain, "_stuck_ticks", 0))
+            bt["stuck_ticks"] = int(
+                getattr(brain, "_stuck_ticks", getattr(env, "_stuck_ticks", 0)) or 0
+            )
             bt["mission_finished"] = bool(getattr(brain, "mission_finished", False))
             astar_path = getattr(brain, "astar_path_world", None) or getattr(
                 env, "astar_path_world", None
@@ -500,8 +526,6 @@ class LiveDroneTelemetry:
     ) -> dict[str, Any]:
         """Operator-facing mission summary (header badge)."""
         brain_state = str(getattr(brain, "state", "EXPLORE")) if brain else "EXPLORE"
-        stuck_steps = int(getattr(env, "_stuck_step_count", 0) or 0)
-        stuck_ticks = int(getattr(brain, "_stuck_ticks", 0)) if brain else 0
         mission_finished = bool(getattr(brain, "mission_finished", False)) if brain else False
         detected = int(spawn_info.get("detected", 0))
         total = int(spawn_info.get("total", 0))
@@ -534,9 +558,9 @@ class LiveDroneTelemetry:
             detail = crash_reason
         elif mission_finished or brain_state == "COMPLETE":
             status = "COMPLETE"
-        elif stuck_steps > 200 or stuck_ticks >= 90:
-            status = "STUCK"
-            detail = f"steps={max(stuck_steps, stuck_ticks)}"
+        # MODE follows brain.state — do not override with STUCK. The stuck counters
+        # are internal progress heuristics (slow corridor / frontier lock) and can fire
+        # while state stays EXPLORE. See brain_telemetry.stuck_steps / stuck_ticks.
         else:
             ep_status = str(getattr(env, "_env0_last_episode_status", "") or "")
             if ep_status.startswith("CRASHED"):
@@ -916,10 +940,15 @@ class LiveDroneTelemetry:
             if rgb_tensor is not None:
                 rgb_np = rgb_tensor[0].cpu().numpy()[:, :, :3]
                 bgr = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
-                bgr_small = cv2.resize(bgr, (320, 180), interpolation=cv2.INTER_AREA)
-                if getattr(self, "_cam_auto_light", True):
-                    bgr_small = _auto_brighten(bgr_small)
-                fallback_rgb_b64 = _ndarray_to_jpeg_b64(bgr_small)
+                rgb_q = int(getattr(self, "_rgb_jpeg_quality", 93))
+                auto_light = getattr(self, "_cam_auto_light", True)
+                fallback_rgb_b64 = _encode_rgb_feed_b64(
+                    bgr,
+                    max_w=int(getattr(self, "_rgb_max_w", 512)),
+                    max_h=int(getattr(self, "_rgb_max_h", 288)),
+                    quality=rgb_q,
+                    auto_light=auto_light,
+                )
                 images["rgb_first_person"] = fallback_rgb_b64
 
             # --- Real drone-mounted cameras: rear (behind), left side, right side ---
@@ -950,10 +979,13 @@ class LiveDroneTelemetry:
                                 if rgb_np.ndim == 3 and rgb_np.shape[-1] >= 3:
                                     rgb_np = rgb_np[:, :, :3]
                                 bgr = cv2.cvtColor(rgb_np.astype("uint8"), cv2.COLOR_RGB2BGR)
-                                bgr_small = cv2.resize(bgr, (320, 180), interpolation=cv2.INTER_AREA)
-                                if getattr(self, "_cam_auto_light", True):
-                                    bgr_small = _auto_brighten(bgr_small)
-                                images[img_key] = _ndarray_to_jpeg_b64(bgr_small)
+                                images[img_key] = _encode_rgb_feed_b64(
+                                    bgr,
+                                    max_w=int(getattr(self, "_rgb_max_w", 512)),
+                                    max_h=int(getattr(self, "_rgb_max_h", 288)),
+                                    quality=int(getattr(self, "_rgb_jpeg_quality", 93)),
+                                    auto_light=getattr(self, "_cam_auto_light", True),
+                                )
                                 captured = True
                         except Exception as exc:
                             if cam_attr not in self._cam_err_logged:

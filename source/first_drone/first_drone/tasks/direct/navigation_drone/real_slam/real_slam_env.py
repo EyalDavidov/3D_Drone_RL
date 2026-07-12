@@ -122,6 +122,8 @@ class SlamBrainModule(BrainModule):
         self.MIN_UNKNOWN_GAIN = 10
         self._hold_log_ticks = 0
         self._frontier_lock_ticks = 0
+        self._stuck_ref_pos = None
+        self._stuck_ticks = 0
 
     def calculate_expected_total_cells(self) -> int:
         """Estimate the expected total floor and wall cells of the track dynamically by unioning USD zones."""

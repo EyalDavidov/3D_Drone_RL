@@ -2295,7 +2295,11 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             self._stuck_step_count = 0
         else:
             moved = torch.norm(pos_now[:2] - self._prev_drone_pos_xy).item()
-            if moved < 0.03 and self._brain.state in ("GOTO_WAYPOINT", "APPROACH_TARGET", "EXPLORE"):
+            # Real SLAM navigates entirely in EXPLORE; it has its own frontier stuck
+            # detector (_stuck_ticks). Counting EXPLORE here false-triggers MODE=STUCK
+            # on slow-but-valid corridor flight (<3 cm per physics step).
+            stuck_states = ("GOTO_WAYPOINT", "APPROACH_TARGET")
+            if moved < 0.03 and self._brain.state in stuck_states:
                 self._stuck_step_count += 1
             else:
                 self._stuck_step_count = 0
