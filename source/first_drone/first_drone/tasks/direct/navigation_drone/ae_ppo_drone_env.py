@@ -98,6 +98,10 @@ class AEPPODroneEnv(DirectRLEnv):
         self._desired_vel_b = torch.zeros(self.num_envs, 3, device=self.device)
         self._target_yaw = torch.zeros(self.num_envs, device=self.device)
         self._previous_actions = torch.zeros(self.num_envs, 4, device=self.device)
+        # Cached LLC telemetry for dashboard / JSONL recordings
+        self._last_ll_obs = torch.zeros(self.num_envs, 13, device=self.device)
+        self._last_ll_actions = torch.zeros(self.num_envs, 4, device=self.device)
+        self._last_yaw_err = torch.zeros(self.num_envs, device=self.device)
 
         # ----- Depth image buffer -----
         self._last_depth_processed = None
@@ -1101,6 +1105,10 @@ class AEPPODroneEnv(DirectRLEnv):
         with torch.no_grad():
             ll_actions = self.llc(ll_obs)
             ll_actions = ll_actions.clamp(-1.0, 1.0)
+
+        self._last_ll_obs = ll_obs.clone()
+        self._last_ll_actions = ll_actions.clone()
+        self._last_yaw_err = yaw_err.clone()
 
         self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (ll_actions[:, 0] + 1.0) / 2.0
         self._moment[:, 0, :] = self.cfg.moment_scale * ll_actions[:, 1:]

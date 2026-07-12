@@ -30,6 +30,13 @@
                 <span class="status-dot"></span>
                 <span class="status-text">CONNECTING…</span>
             </div>
+            <div class="header-badge mission-badge" id="mission-status" title="Brain mode and rescue targets found">
+                <span class="mission-kicker">MODE</span>
+                <span class="mission-state mono" id="mission-state-val">—</span>
+                <span class="mission-detail mono" id="mission-detail-val" hidden></span>
+                <span class="mission-kicker">FOUND</span>
+                <span class="mission-targets mono" id="mission-targets-val">0/0</span>
+            </div>
         </div>
 
         <!-- TABS (Chrome-style) -->
@@ -118,76 +125,87 @@
 
         <!-- ======== TAB 1: CAMERAS ======== -->
         <section class="tab-content active" id="tab-cameras">
-            <!-- Row 1: First Person + Third Person Angle 1 -->
-            <div class="cam-row cam-row-2">
-                <div class="panel cam-cell">
-                    <div class="panel-header">
+            <div class="cam-main-wrap">
+                <div class="cam-solo-bar" id="cam-solo-bar" hidden>
+                    <button type="button" class="cam-solo-exit" id="cam-solo-exit" title="Back to 4-up grid">⊞ 4-up</button>
+                    <span class="cam-solo-hint">Solo view — switch:</span>
+                    <div class="cam-solo-picks">
+                        <button type="button" class="cam-solo-pick" data-cam-id="fp">FPV</button>
+                        <button type="button" class="cam-solo-pick" data-cam-id="t1">Rear</button>
+                        <button type="button" class="cam-solo-pick" data-cam-id="t2">Left</button>
+                        <button type="button" class="cam-solo-pick" data-cam-id="t3">Right</button>
+                    </div>
+                </div>
+                <div class="cam-wall" id="cam-wall">
+                <div class="panel cam-wall-cell cam-wall-fp" data-cam-id="fp">
+                    <div class="panel-header cam-wall-header">
                         <span class="panel-icon">🎥</span>
-                        <span class="panel-title">Front Camera — First Person</span>
+                        <span class="panel-title">Front · FPV</span>
                         <span class="panel-badge live">LIVE</span>
+                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
                         <button class="minimize-btn" title="Minimize">−</button>
                     </div>
-                    <div class="panel-body"><canvas id="cam-fp" width="640" height="360"></canvas></div>
+                    <div class="panel-body cam-wall-body"><canvas id="cam-fp"></canvas></div>
                 </div>
-                <div class="panel cam-cell">
-                    <div class="panel-header">
+                <div class="panel cam-wall-cell" data-cam-id="t1">
+                    <div class="panel-header cam-wall-header">
                         <span class="panel-icon">📷</span>
-                        <span class="panel-title">Rear Camera — Behind Drone</span>
+                        <span class="panel-title">Rear · Chase</span>
                         <span class="panel-badge dim">REAR</span>
+                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
                         <button class="minimize-btn" title="Minimize">−</button>
                     </div>
-                    <div class="panel-body"><canvas id="cam-t1" width="640" height="360"></canvas></div>
+                    <div class="panel-body cam-wall-body"><canvas id="cam-t1"></canvas></div>
                 </div>
-            </div>
-            <!-- Row 2: Depth Colormap + AE Reconstruction -->
-            <div class="cam-row cam-row-2">
-                <div class="panel cam-cell">
-                    <div class="panel-header">
-                        <span class="panel-icon">🌈</span>
-                        <span class="panel-title">Side Camera — Left</span>
+                <div class="panel cam-wall-cell" data-cam-id="t2">
+                    <div class="panel-header cam-wall-header">
+                        <span class="panel-icon">◧</span>
+                        <span class="panel-title">Port · Left</span>
                         <span class="panel-badge dim">LEFT</span>
+                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
                         <button class="minimize-btn" title="Minimize">−</button>
                     </div>
-                    <div class="panel-body"><canvas id="cam-t2" width="640" height="360"></canvas></div>
+                    <div class="panel-body cam-wall-body"><canvas id="cam-t2"></canvas></div>
                 </div>
-                <div class="panel cam-cell">
-                    <div class="panel-header">
-                        <span class="panel-icon">🧭</span>
-                        <span class="panel-title">Side Camera — Right</span>
+                <div class="panel cam-wall-cell" data-cam-id="t3">
+                    <div class="panel-header cam-wall-header">
+                        <span class="panel-icon">◨</span>
+                        <span class="panel-title">Starboard · Right</span>
                         <span class="panel-badge dim">RIGHT</span>
+                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
                         <button class="minimize-btn" title="Minimize">−</button>
                     </div>
-                    <div class="panel-body"><canvas id="cam-t3" width="640" height="360"></canvas></div>
+                    <div class="panel-body cam-wall-body"><canvas id="cam-t3"></canvas></div>
                 </div>
             </div>
-            <!-- Row 3: Depth + Saliency + AE -->
-            <div class="cam-row cam-row-3">
-                <div class="panel cam-cell">
-                    <div class="panel-header">
-                        <span class="panel-icon">🌊</span>
-                        <span class="panel-title">Depth Input</span>
-                        <span class="panel-badge dim">128×72</span>
-                        <button class="minimize-btn" title="Minimize">−</button>
+            </div>
+            <div class="cam-sensors-strip">
+                <div class="cam-sensors-label">Neural sensor feeds · Depth · Saliency · AE</div>
+                <div class="cam-sensors-row">
+                    <div class="panel cam-sensor-cell">
+                        <div class="panel-header cam-wall-header">
+                            <span class="panel-icon">🌊</span>
+                            <span class="panel-title">Depth Input</span>
+                            <span class="panel-badge dim">128×72</span>
+                        </div>
+                        <div class="panel-body cam-sensor-body"><canvas id="cam-depth"></canvas></div>
                     </div>
-                    <div class="panel-body"><canvas id="cam-depth" width="512" height="288"></canvas></div>
-                </div>
-                <div class="panel cam-cell">
-                    <div class="panel-header">
-                        <span class="panel-icon">🔥</span>
-                        <span class="panel-title">Depth Saliency</span>
-                        <span class="panel-badge dim">PPO · SmoothGrad</span>
-                        <button class="minimize-btn" title="Minimize">−</button>
+                    <div class="panel cam-sensor-cell">
+                        <div class="panel-header cam-wall-header">
+                            <span class="panel-icon">🔥</span>
+                            <span class="panel-title">Depth Saliency</span>
+                            <span class="panel-badge dim">PPO</span>
+                        </div>
+                        <div class="panel-body cam-sensor-body"><canvas id="cam-saliency"></canvas></div>
                     </div>
-                    <div class="panel-body"><canvas id="cam-saliency" width="512" height="288"></canvas></div>
-                </div>
-                <div class="panel cam-cell">
-                    <div class="panel-header">
-                        <span class="panel-icon">🧠</span>
-                        <span class="panel-title">AE Reconstruction</span>
-                        <span class="panel-badge dim">z=64</span>
-                        <button class="minimize-btn" title="Minimize">−</button>
+                    <div class="panel cam-sensor-cell">
+                        <div class="panel-header cam-wall-header">
+                            <span class="panel-icon">🧠</span>
+                            <span class="panel-title">AE Reconstruction</span>
+                            <span class="panel-badge dim">z=64</span>
+                        </div>
+                        <div class="panel-body cam-sensor-body"><canvas id="cam-ae"></canvas></div>
                     </div>
-                    <div class="panel-body"><canvas id="cam-ae" width="512" height="288"></canvas></div>
                 </div>
             </div>
         </section>
@@ -217,6 +235,45 @@
                     </div>
                 </div>
             </div>
+            <!-- Flight Controller — compact strip (expand for body vel / LLC debug) -->
+            <details class="nav-fc-row fc-compact" id="panel-flight-control">
+                <summary class="fc-compact-summary">
+                    <span class="fc-sum-icon">🎛️</span>
+                    <span class="fc-sum-title">Flight Controller</span>
+                    <span class="fc-sum-badge">LLC · body</span>
+                    <span class="fc-chips">
+                        <span class="fc-chip"><span class="fc-chip-lbl">Yaw</span><span class="mono fc-chip-val" id="fc-yaw-err">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">Z</span><span class="mono fc-chip-val" id="fc-z-err">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">XY</span><span class="mono fc-chip-val" id="fc-xy-pos-err">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">εVx</span><span class="mono fc-chip-val" id="fc-vel-err-x">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">εVy</span><span class="mono fc-chip-val" id="fc-vel-err-y">—</span></span>
+                    </span>
+                </summary>
+                <div class="fc-expanded">
+                    <div class="fc-expanded-grid">
+                        <div class="fc-mini-block">
+                            <div class="fc-mini-head">Body vel (m/s)</div>
+                            <div class="fc-mini-row"><span>Vx</span><span class="mono" id="fc-vel-bx">—</span></div>
+                            <div class="fc-mini-row"><span>Vy</span><span class="mono" id="fc-vel-by">—</span></div>
+                            <div class="fc-mini-row"><span>Vz</span><span class="mono" id="fc-vel-bz">—</span></div>
+                        </div>
+                        <div class="fc-mini-block">
+                            <div class="fc-mini-head">Desired (m/s)</div>
+                            <div class="fc-mini-row"><span>Vx</span><span class="mono" id="fc-des-vx">—</span></div>
+                            <div class="fc-mini-row"><span>Vy</span><span class="mono" id="fc-des-vy">—</span></div>
+                            <div class="fc-mini-row"><span>Vz</span><span class="mono" id="fc-des-vz">—</span></div>
+                        </div>
+                        <div class="fc-mini-block fc-mini-wide">
+                            <div class="fc-mini-head">LLC actions</div>
+                            <div class="fc-mini-row fc-actions-row"><span class="mono fc-actions-val" id="fc-ll-actions">—</span></div>
+                            <details class="fc-obs-details">
+                                <summary class="fc-obs-summary">LLC Obs (13D) — debug</summary>
+                                <div class="fc-obs-grid" id="fc-ll-obs-grid"></div>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+            </details>
             <!-- Bottom: 3D Navigation Map -->
             <div class="nav-bottom-row">
                 <div class="panel nav-map-panel">
@@ -292,6 +349,8 @@
                                             class="mono slam-stat-val" id="slam-spd-val">0.00 m/s</span></div>
                                     <div class="slam-stat-row"><span class="slam-stat-label">Time</span><span
                                             class="mono slam-stat-val" id="slam-time-val">0s</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Crash</span><span
+                                            class="mono slam-stat-val" id="slam-crash-val">—</span></div>
                                 </div>
                                 <div class="slam-stats-block">
                                     <div class="slam-stats-heading">Mapped Targets</div>
@@ -311,6 +370,25 @@
                                             class="mono slam-stat-val" id="slam-level-val">1</span></div>
                                 </div>
                             </div>
+                            <details class="slam-brain-details">
+                                <summary class="slam-brain-summary">Mission / Brain</summary>
+                                <div class="slam-stats-block slam-stats-block-full">
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Brain</span><span
+                                            class="mono slam-stat-val" id="brain-state-val">—</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Segment</span><span
+                                            class="mono slam-stat-val" id="brain-seg-val">—</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Waypoint</span><span
+                                            class="mono slam-stat-val" id="brain-wp-val">—</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Nav Target</span><span
+                                            class="mono slam-stat-val" id="brain-target-val">—</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Stuck</span><span
+                                            class="mono slam-stat-val" id="brain-stuck-val">0</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Steps</span><span
+                                            class="mono slam-stat-val" id="brain-explore-val">0</span></div>
+                                    <div class="slam-stat-row"><span class="slam-stat-label">Mission</span><span
+                                            class="mono slam-stat-val" id="brain-mission-val">—</span></div>
+                                </div>
+                            </details>
                         </div>
                     </div>
                     <!-- 2D SLAM occupancy map (native top-down radar) -->
@@ -525,83 +603,138 @@
 
         <!-- ======== TAB 5: RECORDINGS (Flight Telemetry Playback) ======== -->
         <section class="tab-content" id="tab-recordings">
-            <div class="panel" style="max-width: 800px; margin: 30px auto; padding: 25px; border-radius: 12px; background: rgba(30, 20, 35, 0.65); border: 1px solid rgba(255, 45, 149, 0.2); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4); backdrop-filter: blur(8px);">
-                <div class="panel-header" style="border-bottom: 1px solid rgba(255, 45, 149, 0.2); padding-bottom: 15px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span style="font-size: 1.5rem;">📼</span>
-                        <h2 style="margin: 0; font-size: 1.3rem; font-weight: 600; color: #ff2d95;">Flight Playback</h2>
-                    </div>
-                    <span id="playback-status-badge" style="background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.6); padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 600; border: 1px solid rgba(255, 255, 255, 0.15);" class="mono">OFFLINE</span>
-                </div>
-                <div class="panel-body">
-                    <!-- Flight Runs List -->
-                    <div class="recordings-list-wrapper" style="margin-bottom: 25px;">
-                        <h3 style="margin: 0 0 12px 0; font-size: 1.05rem; font-weight: 600; color: rgba(255, 255, 255, 0.85); display: flex; align-items: center; justify-content: space-between;">
-                            <span>📂 Recorded Flights Directory</span>
-                            <button id="btn-refresh-recordings" style="background: transparent; color: #ff2d95; border: none; font-size: 0.9rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 4px 8px;">🔄 Refresh List</button>
-                        </h3>
-                        <div id="recordings-table-container" style="max-height: 250px; overflow-y: auto; background: rgba(0, 0, 0, 0.2); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05); padding: 5px;">
-                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.88rem;">
-                                <thead>
-                                    <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.5);">
-                                        <th style="padding: 10px 8px;">Date / Time</th>
-                                        <th style="padding: 10px 8px; text-align: center;">Targets Found</th>
-                                        <th style="padding: 10px 8px; text-align: center;">Max Coverage</th>
-                                        <th style="padding: 10px 8px; text-align: center;">Duration</th>
-                                        <th style="padding: 10px 8px; text-align: right;">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="recordings-list-body">
-                                    <tr>
-                                        <td colspan="5" style="text-align: center; padding: 20px 0; color: rgba(255, 255, 255, 0.4);">Scanning recordings directory...</td>
-                                    </tr>
-                                </tbody>
-                            </table>
+            <div class="rec-studio">
+                <header class="rec-studio-header">
+                    <div class="rec-brand">
+                        <span class="rec-brand-icon">✈</span>
+                        <div>
+                            <div class="rec-brand-title">Flight Data Review</div>
+                            <div class="rec-brand-sub">FDR telemetry replay · JSONL archive</div>
                         </div>
                     </div>
-
-                    <!-- File Drag and Drop Zone -->
-                    <div id="drop-zone" style="border: 2px dashed rgba(255, 45, 149, 0.45); border-radius: 10px; padding: 40px 20px; text-align: center; background: rgba(255, 45, 149, 0.02); margin-bottom: 25px; cursor: pointer; transition: all 0.2s ease;">
-                        <span style="font-size: 2.5rem; display: block; margin-bottom: 15px;">📥</span>
-                        <p style="margin: 0 0 8px 0; font-size: 1.15rem; font-weight: 500; color: #ff2d95;">Drag & Drop flight recording file here (.jsonl)</p>
-                        <p style="margin: 0; font-size: 0.85rem; color: rgba(255, 255, 255, 0.5);">Or click to browse your workspace</p>
-                        <input type="file" id="file-input" accept=".jsonl" style="display: none;">
+                    <div class="rec-header-stats">
+                        <div class="rec-hstat"><span class="rec-hstat-lbl">Sessions</span><span class="mono rec-hstat-val" id="rec-count-val">—</span></div>
+                        <div class="rec-hstat"><span class="rec-hstat-lbl">Loaded</span><span class="mono rec-hstat-val" id="rec-loaded-val">None</span></div>
+                        <div class="rec-hstat"><span class="rec-hstat-lbl">Frames</span><span class="mono rec-hstat-val" id="rec-frames-val">—</span></div>
                     </div>
+                    <span id="playback-status-badge" class="rec-status-badge mono">OFFLINE</span>
+                </header>
 
-                    <!-- Playback Controls -->
-                    <div class="playback-controls-wrapper" id="playback-controls" style="display: none; background: rgba(0, 0, 0, 0.2); border-radius: 8px; padding: 18px; border: 1px solid rgba(255, 255, 255, 0.05);">
-                        <!-- Action buttons row -->
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; flex-wrap: wrap; gap: 15px;">
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <button class="action-btn" id="btn-play" style="background: rgba(34, 255, 102, 0.12); color: #22ff66; border: 1px solid rgba(34, 255, 102, 0.35); padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit;">
-                                    <span>▶</span> Play
-                                </button>
-                                <button class="action-btn" id="btn-pause" style="background: rgba(255, 215, 0, 0.12); color: #ffd700; border: 1px solid rgba(255, 215, 0, 0.35); padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; display: none; align-items: center; gap: 6px; font-family: inherit;">
-                                    <span>⏸</span> Pause
-                                </button>
-                                <button class="action-btn" id="btn-stop" style="background: rgba(255, 45, 149, 0.12); color: #ff2d95; border: 1px solid rgba(255, 45, 149, 0.35); padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit;">
-                                    <span>⏹</span> Stop
-                                </button>
+                <div class="rec-studio-body">
+                    <!-- Left: session library -->
+                    <aside class="rec-library panel">
+                        <div class="rec-panel-head">
+                            <span class="rec-panel-title">Archive</span>
+                            <button id="btn-refresh-recordings" class="rec-icon-btn" title="Refresh list">↻</button>
+                        </div>
+                        <div class="rec-lib-cols">
+                            <span>Date</span><span>Outcome</span><span>Rescued</span><span>Map</span><span>Log</span>
+                        </div>
+                        <div id="recordings-table-container" class="rec-lib-scroll">
+                            <div id="recordings-list-body" class="rec-lib-list">
+                                <div class="rec-lib-empty">Scanning recordings directory…</div>
                             </div>
-                            
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <span style="font-size: 0.9rem; color: rgba(255, 255, 255, 0.65);">Speed:</span>
-                                <select id="playback-speed" style="background: rgba(15, 10, 20, 0.8); color: white; border: 1px solid rgba(255, 45, 149, 0.3); border-radius: 6px; padding: 6px 12px; cursor: pointer; outline: none; font-family: inherit; font-size: 0.9rem; font-weight: 600;">
-                                    <option value="1">1x (Normal)</option>
-                                    <option value="2">2x Speed</option>
-                                    <option value="5">5x Speed</option>
-                                    <option value="10">10x Speed</option>
-                                    <option value="20">20x Speed</option>
+                        </div>
+                    </aside>
+
+                    <!-- Center: FDR replay deck -->
+                    <main class="rec-deck panel">
+                        <div class="rec-deck-top">
+                            <div class="rec-now-playing">
+                                <span class="rec-np-lbl">Flight Log</span>
+                                <span class="rec-np-name mono" id="rec-now-name">—</span>
+                            </div>
+                            <div class="rec-flight-clock">
+                                <span class="rec-clock-lbl">Mission Elapsed</span>
+                                <span class="rec-deck-meta mono" id="rec-deck-time">0:00 / 0:00</span>
+                            </div>
+                        </div>
+
+                        <div class="rec-fdr-source-bar mono" id="rec-fdr-source">Source: JSONL log</div>
+
+                        <div class="rec-fdr-panel">
+                            <div class="rec-fdr-labels">
+                                <span>ALT<br><em>m</em></span>
+                                <span>GS<br><em>m/s</em></span>
+                                <span>MAP<br><em>%</em></span>
+                                <span>THR<br><em>N</em></span>
+                            </div>
+                            <div class="rec-fdr-charts">
+                                <canvas id="rec-fdr-canvas" class="rec-fdr-canvas"></canvas>
+                                <input type="range" id="timeline-slider" class="rec-fdr-scrubber" min="0" max="100" value="0">
+                                <div class="rec-fdr-axis mono" id="rec-fdr-axis">T+ 0:00</div>
+                            </div>
+                        </div>
+
+                        <div class="rec-live-strip">
+                            <div class="rec-live-item"><span class="rec-live-lbl">ALT</span><span class="mono rec-live-val" id="rec-live-alt">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">GS</span><span class="mono rec-live-val" id="rec-live-gs">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">HDG</span><span class="mono rec-live-val" id="rec-live-hdg">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">MODE</span><span class="mono rec-live-val" id="rec-live-mode">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">POS</span><span class="mono rec-live-val" id="rec-live-pos">—</span></div>
+                            <div class="rec-live-item rec-live-crash"><span class="rec-live-lbl">EVENT</span><span class="mono rec-live-val" id="rec-live-event">—</span></div>
+                        </div>
+
+                        <div class="rec-transport rec-transport-flight" id="playback-controls">
+                            <div class="rec-transport-btns">
+                                <button class="rec-fbtn" id="btn-rewind" title="Back 10s">−10s</button>
+                                <button class="rec-fbtn rec-fbtn-primary" id="btn-play" title="Replay">▶ Replay</button>
+                                <button class="rec-fbtn rec-fbtn-warn" id="btn-pause" title="Hold" style="display:none">⏸ Hold</button>
+                                <button class="rec-fbtn" id="btn-stop" title="Eject log">■ Eject</button>
+                                <button class="rec-fbtn" id="btn-ffwd" title="Forward 10s">+10s</button>
+                            </div>
+                            <div class="rec-speed-wrap">
+                                <label class="rec-speed-lbl" for="playback-speed">Replay rate</label>
+                                <select id="playback-speed" class="rec-speed-select">
+                                    <option value="1">1× real-time</option>
+                                    <option value="2">2×</option>
+                                    <option value="5">5×</option>
+                                    <option value="10">10×</option>
+                                    <option value="20">20×</option>
                                 </select>
                             </div>
+                            <span id="timeline-time" class="rec-time-readout mono">0:00 / 0:00</span>
                         </div>
 
-                        <!-- Progress Bar & Slider Row -->
-                        <div style="display: flex; align-items: center; gap: 15px;">
-                            <input type="range" id="timeline-slider" min="0" max="100" value="0" style="flex: 1; accent-color: #ff2d95; height: 6px; border-radius: 3px; cursor: pointer;">
-                            <span id="timeline-time" class="mono" style="font-size: 0.9rem; color: rgba(255, 255, 255, 0.8); min-width: 100px; text-align: right;">0:00 / 0:00</span>
+                        <div id="drop-zone" class="rec-import-zone">
+                            <input type="file" id="file-input" accept=".jsonl" hidden>
+                            <span class="rec-import-icon">📂</span>
+                            <span class="rec-import-text">Import flight log (.jsonl)</span>
+                            <span class="rec-import-hint">Drop from recordings/ or browse workspace</span>
                         </div>
-                    </div>
+                    </main>
+
+                    <!-- Right: session inspector -->
+                    <aside class="rec-inspector panel">
+                        <div class="rec-panel-head">
+                            <span class="rec-panel-title">Flight Inspector</span>
+                        </div>
+                        <div class="rec-insp-body">
+                            <div class="rec-insp-section">
+                                <div class="rec-insp-head">Session</div>
+                                <div class="rec-insp-row"><span>File</span><span class="mono rec-insp-val" id="insp-filename">—</span></div>
+                                <div class="rec-insp-row"><span>Duration</span><span class="mono rec-insp-val" id="insp-duration">—</span></div>
+                                <div class="rec-insp-row"><span>Elapsed</span><span class="mono rec-insp-val" id="insp-elapsed">—</span></div>
+                                <div class="rec-insp-row"><span>Frames</span><span class="mono rec-insp-val" id="insp-frames">—</span></div>
+                                <div class="rec-insp-row"><span>Size</span><span class="mono rec-insp-val" id="insp-size">—</span></div>
+                                <div class="rec-insp-row"><span>Level</span><span class="mono rec-insp-val" id="insp-level">—</span></div>
+                            </div>
+                            <div class="rec-insp-section">
+                                <div class="rec-insp-head">Mission</div>
+                                <div class="rec-insp-row"><span>Status</span><span class="mono rec-insp-val" id="insp-status">—</span></div>
+                                <div class="rec-insp-row"><span>Targets</span><span class="mono rec-insp-val" id="insp-targets">—</span></div>
+                                <div class="rec-insp-row"><span>Map coverage</span><span class="mono rec-insp-val" id="insp-coverage">—</span></div>
+                                <div class="rec-insp-row rec-insp-crash"><span>Crash</span><span class="mono rec-insp-val" id="insp-crash">—</span></div>
+                            </div>
+                            <div class="rec-insp-section">
+                                <div class="rec-insp-head">Current frame</div>
+                                <div class="rec-insp-row"><span>Tick</span><span class="mono rec-insp-val" id="insp-tick">—</span></div>
+                                <div class="rec-insp-row"><span>SLAM</span><span class="mono rec-insp-val" id="insp-slam">—</span></div>
+                                <div class="rec-insp-row"><span>Position</span><span class="mono rec-insp-val" id="insp-pos">—</span></div>
+                                <div class="rec-insp-row"><span>Speed</span><span class="mono rec-insp-val" id="insp-speed">—</span></div>
+                            </div>
+                        </div>
+                    </aside>
                 </div>
             </div>
         </section>
@@ -615,6 +748,7 @@
     <script src="js/metrics.js"></script>
     <script src="js/hud.js"></script>
     <script src="js/charts.js"></script>
+    <script src="js/flight_control.js"></script>
     <script src="js/three_scene.js"></script>
     <script src="js/slam3d.js"></script>
     <script src="js/slam2d.js"></script>

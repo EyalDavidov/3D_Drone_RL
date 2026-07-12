@@ -227,6 +227,7 @@ class LiveDroneTelemetry:
 
         # Telemetry recording file
         self._record_file = None
+        self._record_header_written = False
         try:
             import os
             import atexit
@@ -357,6 +358,203 @@ class LiveDroneTelemetry:
         except Exception as e:
             print(f"[LiveTelemetry] Failed to extract blueprint: {e}")
             return []
+
+    def _build_flight_control(self, env) -> dict[str, Any]:
+        """LLC / tracking errors — same fields recorded in JSONL for playback."""
+        import numpy as np
+
+        fc: dict[str, Any] = {
+            "yaw_error_deg": 0.0,
+            "z_error_m": 0.0,
+            "xy_pos_err_m": 0.0,
+            "pos_err_b": [0.0, 0.0, 0.0],
+            "vel_err_b": [0.0, 0.0, 0.0],
+            "desired_vel_b": [0.0, 0.0, 0.0],
+            "lin_vel_b": [0.0, 0.0, 0.0],
+            "ang_vel_b": [0.0, 0.0, 0.0],
+            "ll_actions": [0.0, 0.0, 0.0, 0.0],
+            "ll_obs": [],
+        }
+        try:
+            robot = getattr(env, "_robot", None)
+            if robot is None:
+                return fc
+
+            yaw_err = getattr(env, "_last_yaw_err", None)
+            if yaw_err is not None:
+                fc["yaw_error_deg"] = round(
+                    float(np.degrees(float(yaw_err[0].item()))), 3
+                )
+
+            z_err = getattr(env, "_last_z_err", None)
+            if z_err is not None:
+                fc["z_error_m"] = round(float(z_err), 4)
+
+            lin_b = robot.data.root_lin_vel_b[0].cpu().numpy()
+            ang_b = robot.data.root_ang_vel_b[0].cpu().numpy()
+            fc["lin_vel_b"] = [round(float(v), 4) for v in lin_b]
+            fc["ang_vel_b"] = [round(float(v), 4) for v in ang_b]
+
+            desired = getattr(env, "_desired_vel_b", None)
+            if desired is not None:
+                dv = desired[0].cpu().numpy()
+                fc["desired_vel_b"] = [round(float(v), 4) for v in dv]
+
+            fc["vel_err_b"] = [
+                round(float(fc["desired_vel_b"][i] - fc["lin_vel_b"][i]), 4)
+                for i in range(3)
+            ]
+
+            desired_pos_w = getattr(env, "_desired_pos_w", None)
+            if desired_pos_w is not None:
+                try:
+                    from isaaclab.utils.math import subtract_frame_transforms
+
+                    pos_b, _ = subtract_frame_transforms(
+                        robot.data.root_pos_w[0:1],
+                        robot.data.root_quat_w[0:1],
+                        desired_pos_w[0:1],
+                    )
+                    pb = pos_b[0].detach().cpu().numpy()
+                    fc["pos_err_b"] = [round(float(v), 4) for v in pb]
+                    fc["xy_pos_err_m"] = round(
+                        float(np.hypot(float(pb[0]), float(pb[1]))), 4
+                    )
+                except Exception:
+                    pass
+
+            ll_actions = getattr(env, "_last_ll_actions", None)
+            if ll_actions is not None:
+                la = ll_actions[0].cpu().numpy()
+                fc["ll_actions"] = [round(float(v), 4) for v in la]
+
+            ll_obs = getattr(env, "_last_ll_obs", None)
+            if ll_obs is not None:
+                lo = ll_obs[0].cpu().numpy()
+                fc["ll_obs"] = [round(float(v), 4) for v in lo]
+        except Exception:
+            pass
+        return fc
+
+    def _build_brain_telemetry(self, env, brain) -> dict[str, Any]:
+        """High-level brain / mission planner state."""
+        import numpy as np
+
+        bt: dict[str, Any] = {
+            "state": "—",
+            "segment_idx": 0,
+            "segment_label": "",
+            "nav_target": None,
+            "waypoint_idx": 0,
+            "waypoint_total": 0,
+            "explore_steps": 0,
+            "stuck_steps": int(getattr(env, "_stuck_step_count", 0) or 0),
+            "stuck_ticks": 0,
+            "mission_finished": False,
+            "path_nodes": 0,
+        }
+        if brain is None:
+            return bt
+        try:
+            bt["state"] = str(getattr(brain, "state", "—"))
+            bt["segment_idx"] = int(getattr(brain, "segment_idx", 0))
+            if hasattr(brain, "get_segment_label"):
+                try:
+                    bt["segment_label"] = str(brain.get_segment_label())
+                except Exception:
+                    pass
+            nav = getattr(brain, "nav_target", None)
+            if nav is not None:
+                nav_arr = np.asarray(nav, dtype=np.float64).flatten()
+                bt["nav_target"] = [
+                    round(float(nav_arr[0]), 3),
+                    round(float(nav_arr[1]), 3),
+                    round(float(nav_arr[2]), 3) if nav_arr.size > 2 else 1.0,
+                ]
+            elif getattr(env, "active_frontier", None) is not None:
+                try:
+                    cw = env.active_frontier["centroid_world"]
+                    bt["nav_target"] = [
+                        round(float(cw[0]), 3),
+                        round(float(cw[1]), 3),
+                        1.0,
+                    ]
+                except Exception:
+                    pass
+            wps = getattr(brain, "waypoints", None) or []
+            bt["waypoint_idx"] = int(getattr(brain, "current_wp_idx", 0))
+            bt["waypoint_total"] = len(wps) if wps else 0
+            bt["explore_steps"] = int(getattr(brain, "explore_step_count", 0))
+            bt["stuck_ticks"] = int(getattr(brain, "_stuck_ticks", 0))
+            bt["mission_finished"] = bool(getattr(brain, "mission_finished", False))
+            astar_path = getattr(brain, "astar_path_world", None) or getattr(
+                env, "astar_path_world", None
+            ) or []
+            bt["path_nodes"] = len(astar_path)
+        except Exception:
+            pass
+        return bt
+
+    def _build_mission_status(
+        self, env, brain, spawn_info: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Operator-facing mission summary (header badge)."""
+        brain_state = str(getattr(brain, "state", "EXPLORE")) if brain else "EXPLORE"
+        stuck_steps = int(getattr(env, "_stuck_step_count", 0) or 0)
+        stuck_ticks = int(getattr(brain, "_stuck_ticks", 0)) if brain else 0
+        mission_finished = bool(getattr(brain, "mission_finished", False)) if brain else False
+        detected = int(spawn_info.get("detected", 0))
+        total = int(spawn_info.get("total", 0))
+
+        status = brain_state
+        detail = ""
+        crash_reason = None
+        crashed = False
+
+        last_died = getattr(env, "_last_died", None)
+        live_reason = getattr(env, "_env0_crash_reason", None)
+        if last_died is not None:
+            try:
+                if bool(last_died[0].item()) and live_reason:
+                    crashed = True
+                    crash_reason = str(live_reason)
+            except Exception:
+                pass
+
+        if not crashed:
+            persisted = getattr(env, "_telemetry_last_crash_reason", None)
+            crash_step = int(getattr(env, "_telemetry_crash_timestep", -1))
+            now_step = int(getattr(env, "_timestep", 0))
+            if persisted and crash_step >= 0 and (now_step - crash_step) <= 400:
+                crashed = True
+                crash_reason = str(persisted)
+
+        if crashed and crash_reason:
+            status = "CRASH"
+            detail = crash_reason
+        elif mission_finished or brain_state == "COMPLETE":
+            status = "COMPLETE"
+        elif stuck_steps > 200 or stuck_ticks >= 90:
+            status = "STUCK"
+            detail = f"steps={max(stuck_steps, stuck_ticks)}"
+        else:
+            ep_status = str(getattr(env, "_env0_last_episode_status", "") or "")
+            if ep_status.startswith("CRASHED"):
+                status = "CRASH"
+                detail = ep_status.replace("CRASHED (", "").rstrip(")")
+                crash_reason = detail
+                crashed = True
+
+        return {
+            "status": status,
+            "brain_state": brain_state,
+            "targets_found": f"{detected}/{total}",
+            "detected": detected,
+            "total": total,
+            "detail": detail,
+            "crashed": crashed,
+            "crash_reason": crash_reason or "",
+        }
 
     def push(self, env, elapsed_secs: float) -> None:
         """Extract live data from a running env instance and update snapshot."""
@@ -539,6 +737,10 @@ class LiveDroneTelemetry:
                 "coverage_required": 95.0,
             }
 
+            flight_control = self._build_flight_control(env)
+            brain_telemetry = self._build_brain_telemetry(env, brain)
+            mission_status = self._build_mission_status(env, brain, spawn_info)
+
             # ---- Assemble state dict -----------------------------------
             state: dict[str, Any] = {
                 "pos":        [round(float(v), 4) for v in pos_w],
@@ -579,13 +781,31 @@ class LiveDroneTelemetry:
                 "poles":            [],
                 "sim_running":      True,
                 "spawn_info":       spawn_info,
+                "flight_control":   flight_control,
+                "brain_telemetry":  brain_telemetry,
+                "mission_status":   mission_status,
             }
 
             # Save lightweight state and base64 images directly inside single telemetry.jsonl file
             if self._record_file is not None:
                 try:
                     import json
-                    
+
+                    if not self._record_header_written:
+                        header = {
+                            "_record_type": "session_header",
+                            "version": 1,
+                            "level": level,
+                            "started_at": time.time() - self._start_time,
+                            "fields_per_frame": [
+                                "pos", "lin_vel", "yaw", "llc_outputs", "map_explored_pct",
+                                "spawn_info", "mission_status", "flight_control",
+                                "brain_telemetry", "slam_state", "tick", "level_time",
+                            ],
+                        }
+                        self._record_file.write(json.dumps(header) + "\n")
+                        self._record_header_written = True
+
                     # Check if YOLO is actively tracking/detecting a person
                     yolo_active = False
                     if yolo_stats:
@@ -1036,6 +1256,7 @@ class LiveDroneTelemetry:
             person_found = False
             person_pos = None
             rescued_list = []
+            rescued_persons = []
             yolo_thresh = float(getattr(env.cfg, "yolo_person_conf_threshold", 0.70))
             if brain is not None:
                 rescued = getattr(brain, "rescued_people", None)
@@ -1045,7 +1266,17 @@ class LiveDroneTelemetry:
                         conf = float(rescued_conf[idx]) if idx < len(rescued_conf) else yolo_thresh
                         if conf < yolo_thresh:
                             continue
-                        rescued_list.append([round(float(p[0]), 3), round(float(p[1]), 3)])
+                        px = round(float(p[0]), 3)
+                        py = round(float(p[1]), 3)
+                        pz = round(float(p[2]), 3) if len(p) > 2 else 0.0
+                        rescued_list.append([px, py])
+                        rescued_persons.append({
+                            "x": px,
+                            "y": py,
+                            "z": pz,
+                            "conf": round(conf, 4),
+                            "label": f"Target {idx + 1}",
+                        })
                 if rescued_list:
                     person_found = True
                     person_pos = rescued_list[0]
@@ -1097,7 +1328,7 @@ class LiveDroneTelemetry:
                 "active":    active_data,
                 "path":      path_list,
                 "person":    person_data,
-                "persons":   rescued_list,
+                "persons":   rescued_persons if rescued_persons else rescued_list,
                 "spawned_targets": spawned_targets,
             }
 
@@ -1416,4 +1647,46 @@ class LiveDroneTelemetry:
             "room_bounds": ROOM_BOUNDS,
             "map_zones":   MAP_ZONES,
             "poles": [],
+            "flight_control": {
+                "yaw_error_deg": 0.0,
+                "z_error_m": 0.0,
+                "xy_pos_err_m": 0.0,
+                "pos_err_b": [0.0, 0.0, 0.0],
+                "vel_err_b": [0.0, 0.0, 0.0],
+                "desired_vel_b": [0.0, 0.0, 0.0],
+                "lin_vel_b": [0.0, 0.0, 0.0],
+                "ang_vel_b": [0.0, 0.0, 0.0],
+                "ll_actions": [0.0, 0.0, 0.0, 0.0],
+                "ll_obs": [],
+            },
+            "brain_telemetry": {
+                "state": "—",
+                "segment_idx": 0,
+                "segment_label": "",
+                "nav_target": None,
+                "waypoint_idx": 0,
+                "waypoint_total": 0,
+                "explore_steps": 0,
+                "stuck_steps": 0,
+                "stuck_ticks": 0,
+                "mission_finished": False,
+                "path_nodes": 0,
+            },
+            "mission_status": {
+                "status": "INIT",
+                "brain_state": "—",
+                "targets_found": "0/0",
+                "detected": 0,
+                "total": 0,
+                "detail": "",
+                "crashed": False,
+                "crash_reason": "",
+            },
+            "spawn_info": {
+                "active": False,
+                "total": 0,
+                "detected": 0,
+                "pending": None,
+                "coverage_required": 95.0,
+            },
         }

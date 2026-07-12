@@ -58,15 +58,38 @@ class _StaticHandler(SimpleHTTPRequestHandler):
                 if rec_dir.exists():
                     # Scan flight_*.jsonl files directly
                     for f in sorted(rec_dir.glob("flight_*.jsonl"), reverse=True):
-                        # Read last line to get summary stats
                         summary = {}
+                        first_summary = {}
+                        max_coverage = 0.0
+                        crash_reason = ""
+                        status = "—"
+                        frame_count = 0
                         try:
                             with open(f, "r", encoding="utf-8") as file_fh:
-                                lines = file_fh.readlines()
-                                if lines:
-                                    last_line = lines[-1].strip()
-                                    if last_line:
-                                        summary = json.loads(last_line)
+                                lines = [ln.strip() for ln in file_fh if ln.strip()]
+                            frame_count = len(lines)
+                            if lines:
+                                try:
+                                    first_summary = json.loads(lines[0])
+                                except Exception:
+                                    first_summary = {}
+                                try:
+                                    summary = json.loads(lines[-1])
+                                except Exception:
+                                    summary = {}
+                                step = max(1, frame_count // 80)
+                                for i in range(0, frame_count, step):
+                                    try:
+                                        d = json.loads(lines[i])
+                                        max_coverage = max(
+                                            max_coverage, float(d.get("map_explored_pct", 0) or 0)
+                                        )
+                                        ms = d.get("mission_status") or {}
+                                        if ms.get("crash_reason") and not crash_reason:
+                                            crash_reason = str(ms["crash_reason"])
+                                            status = "CRASH"
+                                    except Exception:
+                                        pass
                         except Exception:
                             pass
                         
@@ -87,16 +110,37 @@ class _StaticHandler(SimpleHTTPRequestHandler):
                         spawn_info = summary.get("spawn_info", {})
                         total_targets = spawn_info.get("total", 2)
                         detected_targets = spawn_info.get("detected", summary.get("people_found", 0))
-                        coverage = summary.get("map_explored_pct", 0.0)
+                        coverage = max(
+                            float(summary.get("map_explored_pct", 0) or 0),
+                            max_coverage,
+                        )
                         duration = summary.get("level_time", 0.0)
-                        
+                        ms = summary.get("mission_status") or {}
+                        if not crash_reason:
+                            crash_reason = str(ms.get("crash_reason") or "")
+                        if status == "—":
+                            status = str(ms.get("status") or summary.get("slam_state") or "—")
+                        level = summary.get("level", first_summary.get("level", 1))
+                        file_size = f.stat().st_size
+                        if file_size < 1024:
+                            size_str = f"{file_size} B"
+                        elif file_size < 1024 * 1024:
+                            size_str = f"{file_size / 1024:.1f} KB"
+                        else:
+                            size_str = f"{file_size / (1024 * 1024):.1f} MB"
+
                         recordings.append({
                             "filename": f.name,
                             "date": date_str,
                             "targets_total": total_targets,
                             "targets_found": detected_targets,
                             "coverage": coverage,
-                            "duration": duration
+                            "duration": duration,
+                            "frames": frame_count,
+                            "status": status,
+                            "crash_reason": crash_reason,
+                            "level": level,
+                            "file_size": size_str,
                         })
             except Exception as e:
                 print(f"[Dashboard Server] Error listing recordings: {e}")

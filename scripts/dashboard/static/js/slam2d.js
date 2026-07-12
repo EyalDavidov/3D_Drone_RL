@@ -334,32 +334,71 @@ class SlamMap2D {
         ctx.shadowBlur = 0;
     }
 
+    _normPerson(p) {
+        if (!p) return null;
+        if (Array.isArray(p)) return { x: p[0], y: p[1], conf: null, label: null };
+        return {
+            x: p.x,
+            y: p.y,
+            conf: p.conf != null ? p.conf : null,
+            label: p.label || null,
+        };
+    }
+
+    _personXY(p) {
+        const n = this._normPerson(p);
+        return n ? [n.x, n.y] : null;
+    }
+
+    _drawConfLabel(ctx, conf, yOff) {
+        if (conf == null) return;
+        const pct = Math.round(conf * 100);
+        ctx.font = 'bold 10px JetBrains Mono, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillText(`${pct}%`, 1, yOff + 1);
+        ctx.fillStyle = '#e8ffc8';
+        ctx.fillText(`${pct}%`, 0, yOff);
+    }
+
     _drawPerson(ctx, t, person) {
-        if (!person) return;
-        const [sx, sy] = this._toScreen(t, person[0], person[1]);
+        const p = this._normPerson(person);
+        if (!p) return;
+        const [sx, sy] = this._toScreen(t, p.x, p.y);
         ctx.save();
         ctx.translate(sx, sy);
         this._drawPersonPictogram(ctx, '#ff2d95', 'rgba(255,45,149,0.8)', 1);
+        this._drawConfLabel(ctx, p.conf, -22);
         ctx.restore();
     }
 
     _isSpawnTargetDetected(tgt, persons) {
         const pts = persons || [];
-        for (const p of pts) {
-            if (Math.hypot(p[0] - tgt[0], p[1] - tgt[1]) < 1.5) return true;
+        let bestConf = null;
+        for (const raw of pts) {
+            const p = this._normPerson(raw);
+            if (!p) continue;
+            if (Math.hypot(p.x - tgt[0], p.y - tgt[1]) < 1.5) {
+                if (p.conf != null) bestConf = Math.max(bestConf || 0, p.conf);
+                else return { detected: true, conf: null };
+            }
         }
-        return false;
+        if (bestConf != null) return { detected: true, conf: bestConf };
+        return { detected: false, conf: null };
     }
 
     _drawSpawnedTargets(ctx, t, targets, persons) {
         if (!targets || targets.length === 0) return;
-        for (const tgt of targets) {
+        for (let i = 0; i < targets.length; i++) {
+            const tgt = targets[i];
             const [sx, sy] = this._toScreen(t, tgt[0], tgt[1]);
-            const isDetected = this._isSpawnTargetDetected(tgt, persons);
+            const hit = this._isSpawnTargetDetected(tgt, persons);
+            const isDetected = hit.detected;
             ctx.save();
             ctx.translate(sx, sy);
             if (isDetected) {
                 this._drawPersonPictogram(ctx, '#22ff66', 'rgba(34,255,102,0.85)', 1.05);
+                this._drawConfLabel(ctx, hit.conf, -24);
             } else {
                 this._drawPersonPictogram(ctx, '#ff2d95', 'rgba(255,45,149,0.8)', 1);
             }

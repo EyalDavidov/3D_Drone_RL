@@ -25,6 +25,8 @@
     const metricsPanel = new MetricsPanel();
     const liveCharts = new LiveCharts();
     const navScene = new NavigationScene();
+    const flightControlPanel = document.getElementById('panel-flight-control')
+        ? new FlightControlPanel() : null;
     const attitudeHud = document.getElementById('canvas-hud') ? new AttitudeHUD() : null;
     const slam3dScene = new SlamScene3D('slam-3d-container');
     const slam2dMap = document.getElementById('slam2d-canvas') ? new SlamMap2D('slam2d-canvas') : null;
@@ -46,7 +48,119 @@
         astar:     document.getElementById('slam-astar-val'),
         dist:      document.getElementById('slam-dist-val'),
         level:     document.getElementById('slam-level-val'),
+        crash:     document.getElementById('slam-crash-val'),
     };
+
+    const brainEls = {
+        state:    document.getElementById('brain-state-val'),
+        segment:  document.getElementById('brain-seg-val'),
+        waypoint: document.getElementById('brain-wp-val'),
+        target:   document.getElementById('brain-target-val'),
+        stuck:    document.getElementById('brain-stuck-val'),
+        explore:  document.getElementById('brain-explore-val'),
+        mission:  document.getElementById('brain-mission-val'),
+    };
+
+    const missionEls = {
+        badge:   document.getElementById('mission-status'),
+        state:   document.getElementById('mission-state-val'),
+        detail:  document.getElementById('mission-detail-val'),
+        targets: document.getElementById('mission-targets-val'),
+    };
+
+    function updateMissionHeader(data) {
+        const ms = (data && data.mission_status) || {};
+        const spawn = (data && data.spawn_info) || {};
+        const status = ms.status || data.slam_state || '—';
+        const found = ms.targets_found
+            || `${spawn.detected || 0}/${spawn.total || 0}`;
+        const crashReason = ms.crash_reason || ms.detail || '';
+
+        if (missionEls.state) {
+            missionEls.state.textContent = status;
+            const col = status === 'COMPLETE' ? '#fbbf24'
+                : status === 'STUCK' ? '#fb923c'
+                : status === 'CRASH' ? '#f87171'
+                : status === 'EXPLORE' ? '#34d399'
+                : status === 'SCAN' ? '#22d3ee'
+                : '#e2e8f0';
+            missionEls.state.style.color = col;
+        }
+        if (missionEls.detail) {
+            if (status === 'CRASH' && crashReason) {
+                missionEls.detail.hidden = false;
+                missionEls.detail.textContent = crashReason;
+                missionEls.detail.style.color = '#fca5a5';
+            } else if (status === 'STUCK' && ms.detail) {
+                missionEls.detail.hidden = false;
+                missionEls.detail.textContent = ms.detail;
+                missionEls.detail.style.color = '#fdba74';
+            } else {
+                missionEls.detail.hidden = true;
+                missionEls.detail.textContent = '';
+            }
+        }
+        if (missionEls.targets) {
+            missionEls.targets.textContent = found;
+        }
+        if (missionEls.badge) {
+            const tip = status === 'CRASH' && crashReason
+                ? `MODE ${status} — ${crashReason} · FOUND ${found}`
+                : `MODE ${status} · FOUND ${found}`;
+            missionEls.badge.title = tip;
+        }
+    }
+
+    function updateBrainStats(data) {
+        const bt = (data && data.brain_telemetry) || {};
+        const ms = (data && data.mission_status) || {};
+        const b = brainEls;
+        if (b.state) {
+            b.state.textContent = bt.state || '—';
+            b.state.style.color = bt.state === 'COMPLETE' ? '#fbbf24'
+                : bt.state === 'EXPLORE' ? '#34d399'
+                : bt.state === 'SCAN' ? '#22d3ee' : '#f1f5f9';
+        }
+        if (b.segment) {
+            const lbl = bt.segment_label ? ` · ${bt.segment_label}` : '';
+            b.segment.textContent = `${bt.segment_idx ?? 0}${lbl}`;
+        }
+        if (b.waypoint) {
+            const total = bt.waypoint_total || bt.path_nodes || 0;
+            b.waypoint.textContent = total > 0
+                ? `${bt.waypoint_idx || 0} / ${total}`
+                : `${bt.path_nodes || 0} nodes`;
+        }
+        if (b.target) {
+            if (bt.nav_target && bt.nav_target.length >= 2) {
+                b.target.textContent = `(${bt.nav_target[0].toFixed(1)}, ${bt.nav_target[1].toFixed(1)})`;
+                b.target.style.color = '#2ff3ff';
+            } else if (data.slam_goal && data.slam_goal.length >= 2) {
+                b.target.textContent = `(${data.slam_goal[0].toFixed(1)}, ${data.slam_goal[1].toFixed(1)})`;
+                b.target.style.color = '#2ff3ff';
+            } else {
+                b.target.textContent = 'None';
+                b.target.style.color = '#94a3b8';
+            }
+        }
+        if (b.stuck) {
+            const stuck = Math.max(bt.stuck_steps || 0, bt.stuck_ticks || 0);
+            b.stuck.textContent = String(stuck);
+            b.stuck.style.color = stuck > 90 ? '#fb923c' : '#f1f5f9';
+        }
+        if (b.explore) b.explore.textContent = String(bt.explore_steps || 0);
+        if (b.mission) {
+            const crash = ms.crash_reason || '';
+            if (ms.status === 'CRASH' && crash) {
+                b.mission.textContent = crash;
+                b.mission.style.color = '#f87171';
+            } else {
+                b.mission.textContent = ms.status || (bt.mission_finished ? 'COMPLETE' : 'ACTIVE');
+                b.mission.style.color = (ms.status === 'COMPLETE' || bt.mission_finished)
+                    ? '#fbbf24' : '#34d399';
+            }
+        }
+    }
 
     function updateSlamStats(data) {
         if (!data) return;
@@ -54,7 +168,6 @@
         if (s.state)     s.state.textContent  = data.slam_state || '—';
         if (s.explored)  s.explored.textContent = (data.map_explored_pct || 0).toFixed(1) + '%';
         if (s.frontiers) s.frontiers.textContent = data.frontier_count || 0;
-        if (s.person)    s.person.textContent  = data.people_found ? 'FOUND' : 'Not found';
         if (data.pos) {
             if (s.x)   s.x.textContent   = data.pos[0].toFixed(2) + ' m';
             if (s.y)   s.y.textContent   = data.pos[1].toFixed(2) + ' m';
@@ -83,6 +196,17 @@
         if (s.astar) s.astar.textContent = data.astar_nodes != null ? data.astar_nodes : 0;
         if (s.dist)  s.dist.textContent  = (data.dist_to_goal != null ? data.dist_to_goal : 0).toFixed(2) + ' m';
         if (s.level) s.level.textContent = data.level || 1;
+        if (s.crash) {
+            const ms = (data && data.mission_status) || {};
+            const crash = ms.crash_reason || ms.detail || '';
+            if ((ms.status === 'CRASH' || ms.crashed) && crash) {
+                s.crash.textContent = crash;
+                s.crash.style.color = '#f87171';
+            } else {
+                s.crash.textContent = '—';
+                s.crash.style.color = '#64748b';
+            }
+        }
         // Colour-code state
         if (s.state) {
             const col = data.slam_state === 'SCAN' ? '#22d3ee'
@@ -92,7 +216,13 @@
             s.state.style.color = col;
         }
         if (s.person) {
-            s.person.style.color = data.people_found ? '#a78bfa' : '#94a3b8';
+            const spawn = data.spawn_info || {};
+            if (spawn.total > 0) {
+                s.person.textContent = `${spawn.detected || 0}/${spawn.total} found`;
+            } else {
+                s.person.textContent = data.people_found ? 'FOUND' : 'Not found';
+            }
+            s.person.style.color = (spawn.detected > 0 || data.people_found) ? '#a78bfa' : '#94a3b8';
         }
         if (s.explored) {
             s.explored.style.color = (data.map_explored_pct || 0) > 50 ? '#34d399' : '#eafcff';
@@ -128,6 +258,13 @@
 
             if (target === 'navigation') {
                 setTimeout(() => navScene._handleResize(), 50);
+            } else if (target === 'cameras') {
+                setTimeout(() => {
+                    if (cameraFeeds) {
+                        if (typeof cameraFeeds.resetToGrid === 'function') cameraFeeds.resetToGrid();
+                        else if (typeof cameraFeeds._onResize === 'function') cameraFeeds._onResize();
+                    }
+                }, 50);
             } else if (target === 'slam') {
                 setTimeout(() => {
                     slam3dScene._handleResize();
@@ -138,9 +275,10 @@
                     if (yoloHud && yoloHud._onResize) yoloHud._onResize();
                 }, 60);
             } else if (target === 'recordings') {
-                if (typeof loadRecordingsList === 'function') {
-                    loadRecordingsList();
-                }
+                if (typeof loadRecordingsList === 'function') loadRecordingsList();
+                setTimeout(() => {
+                    if (playbackFrames.length) drawFlightLogTimeline(playbackFrames, currentFrameIndex);
+                }, 80);
             }
         });
     });
@@ -248,9 +386,12 @@
 
     function renderTelemetryFrame(data, index = 0, isPlayback = false) {
         updateHeader(data);
+        updateMissionHeader(data);
         updateSpawnPanel(data);
         cameraFeeds.update(data.images);
         metricsPanel.update(data);
+        if (flightControlPanel) flightControlPanel.update(data);
+        updateBrainStats(data);
         
         if (isPlayback) {
             liveCharts.showHistory(playbackFrames, index);
@@ -339,115 +480,378 @@
     // Directory list elements
     const btnRefreshRecordings = document.getElementById('btn-refresh-recordings');
     const recordingsListBody = document.getElementById('recordings-list-body');
+    const recCountVal = document.getElementById('rec-count-val');
+    const recLoadedVal = document.getElementById('rec-loaded-val');
+    const recFramesVal = document.getElementById('rec-frames-val');
+    const recNowName = document.getElementById('rec-now-name');
+    const recDeckTime = document.getElementById('rec-deck-time');
+    const recFdrCanvas = document.getElementById('rec-fdr-canvas');
+    const recFdrAxis = document.getElementById('rec-fdr-axis');
+    const recFdrSource = document.getElementById('rec-fdr-source');
+    const recLiveEls = {
+        alt:   document.getElementById('rec-live-alt'),
+        gs:    document.getElementById('rec-live-gs'),
+        hdg:   document.getElementById('rec-live-hdg'),
+        mode:  document.getElementById('rec-live-mode'),
+        pos:   document.getElementById('rec-live-pos'),
+        event: document.getElementById('rec-live-event'),
+    };
+    const inspEls = {
+        filename: document.getElementById('insp-filename'),
+        duration: document.getElementById('insp-duration'),
+        frames:   document.getElementById('insp-frames'),
+        size:     document.getElementById('insp-size'),
+        level:    document.getElementById('insp-level'),
+        status:   document.getElementById('insp-status'),
+        targets:  document.getElementById('insp-targets'),
+        coverage: document.getElementById('insp-coverage'),
+        crash:    document.getElementById('insp-crash'),
+        tick:     document.getElementById('insp-tick'),
+        slam:     document.getElementById('insp-slam'),
+        pos:      document.getElementById('insp-pos'),
+        speed:    document.getElementById('insp-speed'),
+    };
+    let loadedRecordingMeta = null;
+    let loadedRecordingName = '';
 
-    // Load list from backend HTTP server
+    function statusClass(status) {
+        const s = (status || '').toUpperCase();
+        if (s === 'CRASH') return 'rec-st-crash';
+        if (s === 'COMPLETE') return 'rec-st-complete';
+        if (s === 'STUCK') return 'rec-st-stuck';
+        if (s === 'EXPLORE' || s === 'SCAN') return 'rec-st-active';
+        return 'rec-st-idle';
+    }
+
+    function _frameThrust(f) {
+        const llc = f.llc_outputs || {};
+        if (llc.thrust != null) return llc.thrust;
+        const fc = f.flight_control || {};
+        const la = fc.ll_actions || [];
+        if (la.length) return la[0];
+        const acts = f.actions || [];
+        return acts.length ? acts[0] : 0;
+    }
+
+    function _sampleFlightLog(frames) {
+        const channels = { alt: [], gs: [], map: [], thr: [], crash: [] };
+        const step = Math.max(1, Math.floor(frames.length / 320));
+        for (let i = 0; i < frames.length; i += step) {
+            const f = frames[i];
+            const alt = f.pos ? f.pos[2] : 0;
+            const gs = f.lin_vel ? Math.hypot(f.lin_vel[0], f.lin_vel[1], f.lin_vel[2]) : 0;
+            const map = f.map_explored_pct || 0;
+            const thr = _frameThrust(f);
+            const ms = f.mission_status || {};
+            const crashed = ms.status === 'CRASH' || ms.crashed;
+            channels.alt.push(alt);
+            channels.gs.push(gs);
+            channels.map.push(map);
+            channels.thr.push(thr);
+            channels.crash.push(crashed ? 1 : 0);
+        }
+        return channels;
+    }
+
+    function drawFlightLogTimeline(frames, playhead = 0) {
+        if (!recFdrCanvas || !frames || !frames.length) return;
+        const canvas = recFdrCanvas;
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+        canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const w = rect.width;
+        const h = rect.height;
+        const channels = _sampleFlightLog(frames);
+        const n = channels.alt.length;
+        if (!n) return;
+
+        const chH = h / 4;
+        const specs = [
+            { key: 'alt', color: '#38bdf8', label: 'ALT' },
+            { key: 'gs', color: '#34d399', label: 'GS' },
+            { key: 'map', color: '#a78bfa', label: 'MAP' },
+            { key: 'thr', color: '#fbbf24', label: 'THR' },
+        ];
+
+        ctx.fillStyle = '#0a0e14';
+        ctx.fillRect(0, 0, w, h);
+
+        specs.forEach((spec, ci) => {
+            const y0 = ci * chH;
+            const data = channels[spec.key];
+            const max = Math.max(...data, 0.001);
+            const min = Math.min(...data, 0);
+            const range = Math.max(max - min, 0.001);
+
+            ctx.fillStyle = 'rgba(255,255,255,0.02)';
+            ctx.fillRect(0, y0, w, chH);
+            for (let gy = y0; gy < y0 + chH; gy += chH / 4) {
+                ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+                ctx.beginPath();
+                ctx.moveTo(0, gy);
+                ctx.lineTo(w, gy);
+                ctx.stroke();
+            }
+
+            ctx.strokeStyle = spec.color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let i = 0; i < n; i++) {
+                const x = (i / Math.max(n - 1, 1)) * w;
+                const norm = (data[i] - min) / range;
+                const y = y0 + chH - 4 - norm * (chH - 8);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            for (let i = 0; i < n; i++) {
+                if (!channels.crash[i]) continue;
+                const x = (i / Math.max(n - 1, 1)) * w;
+                ctx.fillStyle = '#f87171';
+                ctx.beginPath();
+                ctx.moveTo(x, y0 + 4);
+                ctx.lineTo(x - 4, y0 + 12);
+                ctx.lineTo(x + 4, y0 + 12);
+                ctx.closePath();
+                ctx.fill();
+            }
+        });
+
+        const ph = (playhead / Math.max(frames.length - 1, 1)) * w;
+        ctx.strokeStyle = '#22d3ee';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(ph, 0);
+        ctx.lineTo(ph, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const frame = frames[playhead] || frames[0];
+        if (recFdrAxis && frame) {
+            recFdrAxis.textContent = `T+ ${formatTime(frame.level_time || 0)} · frame ${playhead + 1}/${frames.length}`;
+        }
+    }
+
+    function updateFlightLogReadouts(frame) {
+        if (!frame) return;
+        const r = recLiveEls;
+        if (r.alt && frame.pos) r.alt.textContent = frame.pos[2].toFixed(2) + ' m';
+        if (r.gs && frame.lin_vel) {
+            const [vx, vy, vz] = frame.lin_vel;
+            r.gs.textContent = Math.hypot(vx, vy, vz).toFixed(2);
+        }
+        if (r.hdg && frame.yaw != null) {
+            let deg = (frame.yaw * 180 / Math.PI) % 360;
+            if (deg < 0) deg += 360;
+            r.hdg.textContent = deg.toFixed(0) + '°';
+        }
+        const ms = frame.mission_status || {};
+        if (r.mode) {
+            r.mode.textContent = ms.status || frame.slam_state || '—';
+            r.mode.style.color = ms.status === 'CRASH' ? '#f87171'
+                : frame.slam_state === 'EXPLORE' ? '#34d399' : '#e2e8f0';
+        }
+        if (r.pos && frame.pos) {
+            r.pos.textContent = `${frame.pos[0].toFixed(1)}, ${frame.pos[1].toFixed(1)}`;
+        }
+        if (r.event) {
+            const crash = ms.crash_reason || '';
+            if ((ms.status === 'CRASH' || ms.crashed) && crash) {
+                r.event.textContent = crash;
+                r.event.style.color = '#f87171';
+            } else {
+                r.event.textContent = 'Nominal';
+                r.event.style.color = '#64748b';
+            }
+        }
+    }
+
+    function updateRecordingInspector(frame, index) {
+        const meta = loadedRecordingMeta || {};
+        const last = playbackFrames.length ? playbackFrames[playbackFrames.length - 1] : null;
+        const cur = frame || last;
+        const ms = (cur && cur.mission_status) || {};
+        const spawn = (cur && cur.spawn_info) || (last && last.spawn_info) || {};
+        const totalDur = last ? (last.level_time || 0) : 0;
+
+        if (inspEls.filename) inspEls.filename.textContent = loadedRecordingName || '—';
+        if (inspEls.duration) {
+            inspEls.duration.textContent = totalDur
+                ? formatTime(totalDur)
+                : '—';
+        }
+        if (inspEls.frames) inspEls.frames.textContent = playbackFrames.length ? String(playbackFrames.length) : '—';
+        if (inspEls.size) inspEls.size.textContent = meta.file_size || '—';
+        if (inspEls.level) inspEls.level.textContent = String((cur && cur.level) || (last && last.level) || 1);
+
+        const inspElapsed = document.getElementById('insp-elapsed');
+        if (inspElapsed) {
+            if (cur && totalDur) {
+                inspElapsed.textContent = `${formatTime(cur.level_time || 0)} / ${formatTime(totalDur)}`;
+            } else {
+                inspElapsed.textContent = '—';
+            }
+        }
+
+        if (inspEls.status) {
+            const st = ms.status || (cur && cur.slam_state) || '—';
+            inspEls.status.textContent = st;
+            inspEls.status.className = 'mono rec-insp-val ' + statusClass(st);
+        }
+        if (inspEls.targets) {
+            inspEls.targets.textContent = `${spawn.detected || 0} / ${spawn.total || 0}`;
+        }
+        if (inspEls.coverage && cur) {
+            inspEls.coverage.textContent = (cur.map_explored_pct || 0).toFixed(1) + '%';
+        }
+        if (inspEls.crash) {
+            const crash = ms.crash_reason || '';
+            if ((ms.status === 'CRASH' || ms.crashed) && crash) {
+                inspEls.crash.textContent = crash;
+                inspEls.crash.style.color = '#f87171';
+            } else {
+                inspEls.crash.textContent = 'None';
+                inspEls.crash.style.color = '#64748b';
+            }
+        }
+        if (cur) {
+            if (inspEls.tick) inspEls.tick.textContent = cur.tick != null ? String(cur.tick) : String(index);
+            if (inspEls.slam) inspEls.slam.textContent = cur.slam_state || '—';
+            if (inspEls.pos && cur.pos) {
+                inspEls.pos.textContent = `(${cur.pos[0].toFixed(1)}, ${cur.pos[1].toFixed(1)}, ${cur.pos[2].toFixed(1)})`;
+            }
+            if (inspEls.speed && cur.lin_vel) {
+                const [vx, vy, vz] = cur.lin_vel;
+                inspEls.speed.textContent = Math.hypot(vx, vy, vz).toFixed(2) + ' m/s';
+            }
+        }
+    }
+
+    function parseRecordingLines(text) {
+        const lines = text.split('\n');
+        const frames = [];
+        let sessionHeader = null;
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+                const obj = JSON.parse(line);
+                if (obj._record_type === 'session_header') {
+                    sessionHeader = obj;
+                    continue;
+                }
+                if (obj.pos || obj.tick != null || obj.level_time != null) {
+                    frames.push(obj);
+                }
+            } catch (err) { /* skip bad lines */ }
+        }
+        return { frames, sessionHeader };
+    }
+
+    function onRecordingLoaded(name, meta) {
+        loadedRecordingName = name;
+        loadedRecordingMeta = meta || null;
+        if (recLoadedVal) recLoadedVal.textContent = name.length > 22 ? name.slice(0, 20) + '…' : name;
+        if (recFramesVal) recFramesVal.textContent = String(playbackFrames.length);
+        if (recNowName) recNowName.textContent = name;
+        if (dropZone) {
+            dropZone.classList.add('rec-import-loaded');
+            const txt = dropZone.querySelector('.rec-import-text');
+            if (txt) txt.textContent = name;
+        }
+        drawFlightLogTimeline(playbackFrames, 0);
+        updateFlightLogReadouts(playbackFrames[0] || null);
+        updateRecordingInspector(playbackFrames[0] || null, 0);
+        if (recFdrSource) {
+            const n = playbackFrames.length;
+            const hasLlc = playbackFrames.some(f => f.llc_outputs && f.llc_outputs.thrust != null);
+            const hasMission = playbackFrames.some(f => f.mission_status);
+            recFdrSource.textContent = `Source: ${n} JSONL frames · ALT/GS/MAP/THR from log${hasLlc ? '' : ' (THR approx)'}${hasMission ? '' : ' · no mission_status'}`;
+        }
+    }
+
+    let recordingsCache = {};
+
     function loadRecordingsList() {
         if (!recordingsListBody) return;
-        recordingsListBody.innerHTML = `
-            <tr>
-                <td colspan="5" style="text-align: center; padding: 20px 0; color: rgba(255, 255, 255, 0.4);">Scanning recordings directory...</td>
-            </tr>
-        `;
-        
+        recordingsListBody.innerHTML = '<div class="rec-lib-empty">Scanning recordings directory…</div>';
+
         fetch('/api/recordings')
             .then(res => res.json())
             .then(data => {
+                recordingsCache = {};
+                if (recCountVal) recCountVal.textContent = String(data ? data.length : 0);
                 if (!data || data.length === 0) {
-                    recordingsListBody.innerHTML = `
-                        <tr>
-                            <td colspan="5" style="text-align: center; padding: 20px 0; color: rgba(255, 255, 255, 0.4);">No recorded flights found in recordings/ directory.</td>
-                        </tr>
-                    `;
+                    recordingsListBody.innerHTML = '<div class="rec-lib-empty">No recorded flights in recordings/</div>';
                     return;
                 }
-                
+
                 recordingsListBody.innerHTML = '';
                 data.forEach(rec => {
-                    const tr = document.createElement('tr');
-                    tr.style.borderBottom = '1px solid rgba(255, 255, 255, 0.05)';
-                    tr.style.color = 'rgba(255, 255, 255, 0.8)';
-                    
-                    const formattedDur = formatTime(rec.duration);
-                    const formattedCov = rec.coverage.toFixed(1) + '%';
-                    
-                    tr.innerHTML = `
-                        <td style="padding: 10px 8px; font-weight: 500;">${rec.date}</td>
-                        <td style="padding: 10px 8px; text-align: center;" class="mono">${rec.targets_found} / ${rec.targets_total}</td>
-                        <td style="padding: 10px 8px; text-align: center; color: #34d399;" class="mono">${formattedCov}</td>
-                        <td style="padding: 10px 8px; text-align: center;" class="mono">${formattedDur}</td>
-                        <td style="padding: 10px 8px; text-align: right;">
-                            <button class="action-btn play-remote-btn" data-file="${rec.filename}" style="
-                                background: rgba(255, 45, 149, 0.15);
-                                color: #ff2d95;
-                                border: 1px solid rgba(255, 45, 149, 0.35);
-                                padding: 4px 10px;
-                                border-radius: 4px;
-                                cursor: pointer;
-                                font-size: 0.8rem;
-                                font-weight: 600;
-                                font-family: inherit;
-                            ">Select & Play</button>
-                        </td>
+                    recordingsCache[rec.filename] = rec;
+                    const row = document.createElement('button');
+                    row.type = 'button';
+                    row.className = 'rec-lib-row play-remote-btn';
+                    row.dataset.file = rec.filename;
+                    if (loadedRecordingName === rec.filename) row.classList.add('rec-lib-row-active');
+
+                    const st = rec.status || '—';
+                    const crashTip = rec.crash_reason ? ` · ${rec.crash_reason}` : '';
+                    row.title = `${rec.filename} · ${st}${crashTip}`;
+
+                    row.innerHTML = `
+                        <span class="rec-lib-date">${rec.date}</span>
+                        <span class="rec-lib-status ${statusClass(st)}">${st}</span>
+                        <span class="rec-lib-found mono">${rec.targets_found}/${rec.targets_total}</span>
+                        <span class="rec-lib-cov mono">${rec.coverage.toFixed(1)}%</span>
+                        <span class="rec-lib-dur mono">${formatTime(rec.duration)}</span>
                     `;
-                    recordingsListBody.appendChild(tr);
+                    recordingsListBody.appendChild(row);
                 });
-                
-                // Add event listeners
-                document.querySelectorAll('.play-remote-btn').forEach(btn => {
+
+                recordingsListBody.querySelectorAll('.play-remote-btn').forEach(btn => {
                     btn.addEventListener('click', () => {
-                        const filename = btn.dataset.file;
-                        loadRemoteRecording(filename);
+                        loadRemoteRecording(btn.dataset.file);
                     });
                 });
             })
             .catch(err => {
                 console.error("[Playback] Failed to load recordings list:", err);
-                recordingsListBody.innerHTML = `
-                    <tr>
-                        <td colspan="5" style="text-align: center; padding: 20px 0; color: #f43f5e;">Failed to load list. Make sure python server is running.</td>
-                    </tr>
-                `;
+                recordingsListBody.innerHTML = '<div class="rec-lib-empty rec-lib-error">Failed to load — is server.py running?</div>';
             });
     }
 
     function loadRemoteRecording(filename) {
         if (recordingsListBody) {
             recordingsListBody.querySelectorAll('.play-remote-btn').forEach(b => {
-                b.disabled = true;
-                if (b.dataset.file === filename) {
-                    b.textContent = 'Loading...';
-                }
+                b.classList.toggle('rec-lib-loading', b.dataset.file === filename);
             });
         }
-        
+
         fetch(`/api/recording?file=${encodeURIComponent(filename)}`)
             .then(res => {
                 if (!res.ok) throw new Error("Server returned error status " + res.status);
                 return res.text();
             })
             .then(text => {
-                const lines = text.split('\n');
-                playbackFrames = [];
-                for (let line of lines) {
-                    if (line.trim()) {
-                        try {
-                            playbackFrames.push(JSON.parse(line));
-                        } catch (err) {}
-                    }
-                }
-                
+                const parsed = parseRecordingLines(text);
+                playbackFrames = parsed.frames;
+
                 if (playbackFrames.length === 0) {
                     alert("No valid telemetry frames found in this recording.");
-                    loadRecordingsList(); // reset buttons
+                    loadRecordingsList();
                     return;
                 }
-                
+
                 console.log(`[Playback] Loaded remote file ${filename} with ${playbackFrames.length} frames.`);
                 playbackMode = true;
                 currentFrameIndex = 0;
                 stopPlaybackTimer();
-                
-                // Suspend WebSocket
+
                 if (ws) {
                     try { ws.close(); } catch(e) {}
                 }
@@ -462,28 +866,31 @@
                     playbackStatusBadge.style.borderColor = 'rgba(255, 45, 149, 0.4)';
                     playbackStatusBadge.style.background = 'rgba(255, 45, 149, 0.1)';
                 }
-                
+
                 if (timelineSlider) {
                     timelineSlider.min = 0;
                     timelineSlider.max = playbackFrames.length - 1;
                     timelineSlider.value = 0;
                 }
-                
+
                 if (globalTimelineSlider) {
                     globalTimelineSlider.min = 0;
                     globalTimelineSlider.max = playbackFrames.length - 1;
                     globalTimelineSlider.value = 0;
                 }
-                
+
                 if (globalPlaybackBar) globalPlaybackBar.style.display = 'block';
-                if (playbackControls) playbackControls.style.display = 'block';
-                if (dropZone) {
-                    dropZone.style.borderColor = '#22ff66';
-                    dropZone.querySelector('p').textContent = `Loaded: ${filename}`;
-                }
-                
+                if (playbackControls) playbackControls.style.display = 'flex';
+
+                const cached = recordingsCache[filename] || {};
+                const meta = {
+                    ...cached,
+                    file_size: cached.file_size || formatFileSize(new Blob([text]).size),
+                    session_header: parsed.sessionHeader,
+                };
+                onRecordingLoaded(filename, meta);
                 renderFrame(0);
-                loadRecordingsList(); // refresh list buttons to normal state
+                loadRecordingsList();
             })
             .catch(err => {
                 alert("Failed to load recording: " + err.message);
@@ -526,19 +933,16 @@
         
         dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
-            dropZone.style.background = 'rgba(255, 45, 149, 0.08)';
-            dropZone.style.borderColor = '#ff2d95';
+            dropZone.classList.add('rec-import-hover');
         });
 
         dropZone.addEventListener('dragleave', () => {
-            dropZone.style.background = 'rgba(255, 45, 149, 0.02)';
-            dropZone.style.borderColor = 'rgba(255, 45, 149, 0.45)';
+            dropZone.classList.remove('rec-import-hover');
         });
 
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
-            dropZone.style.background = 'rgba(255, 45, 149, 0.02)';
-            dropZone.style.borderColor = 'rgba(255, 45, 149, 0.45)';
+            dropZone.classList.remove('rec-import-hover');
             if (e.dataTransfer.files.length > 0) {
                 loadRecordingFile(e.dataTransfer.files[0]);
             }
@@ -557,17 +961,8 @@
         const reader = new FileReader();
         reader.onload = function(evt) {
             const text = evt.target.result;
-            const lines = text.split('\n');
-            playbackFrames = [];
-            for (let line of lines) {
-                if (line.trim()) {
-                    try {
-                        playbackFrames.push(JSON.parse(line));
-                    } catch (err) {
-                        // ignore parse errors
-                    }
-                }
-            }
+            const parsed = parseRecordingLines(text);
+            playbackFrames = parsed.frames;
             if (playbackFrames.length === 0) {
                 alert("No valid telemetry frames found in this file.");
                 return;
@@ -607,35 +1002,57 @@
             }
             
             if (globalPlaybackBar) globalPlaybackBar.style.display = 'block';
-            if (playbackControls) playbackControls.style.display = 'block';
-            if (dropZone) {
-                dropZone.style.borderColor = '#22ff66';
-                dropZone.querySelector('p').textContent = `Loaded: ${file.name}`;
-            }
-            
+            if (playbackControls) playbackControls.style.display = 'flex';
+            onRecordingLoaded(file.name, {
+                file_size: formatFileSize(file.size),
+                session_header: parsed.sessionHeader,
+            });
             renderFrame(0);
         };
         reader.readAsText(file);
+    }
+
+    function formatFileSize(bytes) {
+        if (!bytes || bytes < 1024) return bytes ? bytes + ' B' : '—';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
     function renderFrame(index) {
         if (index < 0 || index >= playbackFrames.length) return;
         const frame = playbackFrames[index];
         renderTelemetryFrame(frame, index, true);
-        
+
         if (timelineSlider) timelineSlider.value = index;
         if (globalTimelineSlider) globalTimelineSlider.value = index;
-        
+
         const totalDuration = playbackFrames[playbackFrames.length - 1].level_time || 0;
         const formatted = `${formatTime(frame.level_time)} / ${formatTime(totalDuration)}`;
         if (timelineTime) timelineTime.textContent = formatted;
         if (globalTimelineTime) globalTimelineTime.textContent = formatted;
+        if (recDeckTime) recDeckTime.textContent = formatted;
+        drawFlightLogTimeline(playbackFrames, index);
+        updateFlightLogReadouts(frame);
+        updateRecordingInspector(frame, index);
+    }
+
+    function seekBySeconds(deltaSec) {
+        if (!playbackFrames.length) return;
+        const cur = playbackFrames[currentFrameIndex] || playbackFrames[0];
+        const target = Math.max(0, (cur.level_time || 0) + deltaSec);
+        let best = 0;
+        for (let i = 0; i < playbackFrames.length; i++) {
+            if ((playbackFrames[i].level_time || 0) <= target) best = i;
+            else break;
+        }
+        currentFrameIndex = best;
+        renderFrame(best);
     }
 
     function startPlaybackTimer() {
         stopPlaybackTimer();
         if (btnPlay) btnPlay.style.display = 'none';
-        if (btnPause) btnPause.style.display = 'inline-block';
+        if (btnPause) btnPause.style.display = 'inline-flex';
         if (globalBtnPlay) globalBtnPlay.style.display = 'none';
         if (globalBtnPause) globalBtnPause.style.display = 'inline-block';
         
@@ -647,7 +1064,7 @@
             if (currentFrameIndex >= playbackFrames.length) {
                 stopPlaybackTimer();
                 currentFrameIndex = playbackFrames.length - 1;
-                if (btnPlay) btnPlay.style.display = 'inline-block';
+                if (btnPlay) btnPlay.style.display = 'inline-flex';
                 if (btnPause) btnPause.style.display = 'none';
                 if (globalBtnPlay) globalBtnPlay.style.display = 'inline-block';
                 if (globalBtnPause) globalBtnPause.style.display = 'none';
@@ -661,7 +1078,7 @@
             clearInterval(playbackIntervalId);
             playbackIntervalId = null;
         }
-        if (btnPlay) btnPlay.style.display = 'inline-block';
+        if (btnPlay) btnPlay.style.display = 'inline-flex';
         if (btnPause) btnPause.style.display = 'none';
         if (globalBtnPlay) globalBtnPlay.style.display = 'inline-block';
         if (globalBtnPause) globalBtnPause.style.display = 'none';
@@ -720,14 +1137,28 @@
             liveCharts.reset();
         }
         
-        if (playbackControls) playbackControls.style.display = 'none';
+        if (playbackControls) playbackControls.style.display = 'flex';
         if (dropZone) {
-            dropZone.style.borderColor = 'rgba(255, 45, 149, 0.45)';
-            dropZone.querySelector('p').textContent = 'Drag & Drop flight recording file here (.jsonl)';
+            dropZone.classList.remove('rec-import-loaded');
+            const txt = dropZone.querySelector('.rec-import-text');
+            if (txt) txt.textContent = 'Import flight log (.jsonl)';
         }
-        
+        loadedRecordingName = '';
+        loadedRecordingMeta = null;
+        if (recLoadedVal) recLoadedVal.textContent = 'None';
+        if (recFramesVal) recFramesVal.textContent = '—';
+        if (recNowName) recNowName.textContent = '—';
+        if (recFdrAxis) recFdrAxis.textContent = 'T+ 0:00';
+        drawFlightLogTimeline([], 0);
+
         connect();
     }
+
+    const btnRewind = document.getElementById('btn-rewind');
+    const btnFfwd = document.getElementById('btn-ffwd');
+
+    if (btnRewind) btnRewind.addEventListener('click', () => { stopPlaybackTimer(); seekBySeconds(-10); });
+    if (btnFfwd) btnFfwd.addEventListener('click', () => { stopPlaybackTimer(); seekBySeconds(10); });
 
     if (btnStop) btnStop.addEventListener('click', stopPlaybackAndReconnect);
     if (globalBtnStop) globalBtnStop.addEventListener('click', stopPlaybackAndReconnect);
@@ -749,6 +1180,12 @@
                 currentFrameIndex++;
                 renderFrame(currentFrameIndex);
             }
+        });
+    }
+
+    if (recFdrCanvas) {
+        window.addEventListener('resize', () => {
+            if (playbackFrames.length) drawFlightLogTimeline(playbackFrames, currentFrameIndex);
         });
     }
 

@@ -148,6 +148,9 @@ class MockDroneTelemetry:
         self.moment_x = 0.0
         self.moment_y = 0.0
         self.moment_z = 0.0
+        self._mock_yaw_err = 0.0
+        self._mock_z_err = 0.0
+        self._mock_explore = 0
 
         # Image caches
         self._img_counter = 0
@@ -350,6 +353,12 @@ class MockDroneTelemetry:
         self.ppo_vy = max(-1, min(1, self.vel[1] / 1.0))
         self.ppo_vz = max(-1, min(1, self.vel[2] / 0.5))
         self.ppo_yaw_rate = max(-1, min(1, yaw_err * 2.0))
+        dx = target[0] - self.pos[0]
+        dy = target[1] - self.pos[1]
+        dz = target[2] - self.pos[2]
+        self._mock_yaw_err = yaw_err
+        self._mock_z_err = dz
+        self._mock_explore += 1
 
         hover_thrust = 0.27 * 9.81
         self.thrust = hover_thrust + 0.3 * self.vel[2] + 0.1 * math.sin(self.t * 4.0)
@@ -357,9 +366,6 @@ class MockDroneTelemetry:
         self.moment_y = 0.005 * self.pitch + 0.002 * math.cos(self.t * 4.5)
         self.moment_z = 0.003 * yaw_err
 
-        dx = target[0] - self.pos[0]
-        dy = target[1] - self.pos[1]
-        dz = target[2] - self.pos[2]
         dist_to_goal = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         # Generate images every 8 ticks
@@ -407,6 +413,67 @@ class MockDroneTelemetry:
             "map_zones":   MAP_ZONES,
             "poles": [(round(p[0], 2), round(p[1], 2), round(p[2], 2))
                       for p in self.pole_positions],
+
+            "flight_control": {
+                "yaw_error_deg": round(math.degrees(self._mock_yaw_err), 3),
+                "z_error_m": round(self._mock_z_err, 4),
+                "xy_pos_err_m": round(math.hypot(dx, dy), 4),
+                "pos_err_b": [round(dx, 4), round(dy, 4), round(dz, 4)],
+                "vel_err_b": [
+                    round(self.ppo_vx * 1.0 - self.vel[0], 4),
+                    round(self.ppo_vy * 1.0 - self.vel[1], 4),
+                    round(self.ppo_vz * 0.5 - self.vel[2], 4),
+                ],
+                "desired_vel_b": [
+                    round(self.ppo_vx * 1.0, 4),
+                    round(self.ppo_vy * 1.0, 4),
+                    round(self.ppo_vz * 0.5, 4),
+                ],
+                "lin_vel_b": [round(v, 4) for v in self.vel],
+                "ang_vel_b": [round(v, 4) for v in self.ang_vel],
+                "ll_actions": [
+                    round(self.thrust / (0.27 * 9.81 * 2) - 0.5, 4),
+                    round(self.moment_x * 100, 4),
+                    round(self.moment_y * 100, 4),
+                    round(self.moment_z * 100, 4),
+                ],
+                "ll_obs": [0.0] * 13,
+            },
+            "brain_telemetry": {
+                "state": "EXPLORE",
+                "segment_idx": self.level,
+                "segment_label": f"Level {self.level + 1}",
+                "nav_target": [round(target[0], 3), round(target[1], 3), round(target[2], 3)],
+                "waypoint_idx": 0,
+                "waypoint_total": 0,
+                "explore_steps": self._mock_explore,
+                "stuck_steps": 0,
+                "stuck_ticks": 0,
+                "mission_finished": False,
+                "path_nodes": 0,
+            },
+            "mission_status": {
+                "status": "EXPLORE",
+                "brain_state": "EXPLORE",
+                "targets_found": "0/2",
+                "detected": 0,
+                "total": 2,
+                "detail": "",
+                "crashed": False,
+                "crash_reason": "",
+            },
+            "spawn_info": {
+                "active": False,
+                "total": 2,
+                "detected": 0,
+                "pending": None,
+                "coverage_required": 95.0,
+            },
+            "slam_state": "EXPLORE",
+            "map_explored_pct": min(99.0, self.t * 2.5),
+            "frontier_count": 3,
+            "people_found": 0,
+            "sim_running": False,
         }
 
         self.t += self.dt

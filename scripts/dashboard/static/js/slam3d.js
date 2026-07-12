@@ -355,9 +355,14 @@ class SlamScene3D {
 
     _updatePerson(person) {
         if (!this._personGroup) return;
-        if (person) {
-            this._personGroup.position.set(-person[0], 0, person[1]);
+        const p = this._normPerson(person);
+        if (p) {
+            this._personGroup.position.set(-p.x, 0, p.y);
             this._personGroup.visible = true;
+            const oldLabel = this._personGroup.children.find(c => c.isSprite);
+            if (oldLabel) this._personGroup.remove(oldLabel);
+            const label = this._makeConfSprite(p.conf);
+            if (label) this._personGroup.add(label);
         } else {
             this._personGroup.visible = false;
         }
@@ -502,12 +507,65 @@ class SlamScene3D {
         this._scene.add(this._personGroup);
     }
 
+    _normPerson(p) {
+        if (!p) return null;
+        if (Array.isArray(p)) return { x: p[0], y: p[1], conf: null, label: null };
+        return { x: p.x, y: p.y, conf: p.conf, label: p.label };
+    }
+
+    _makeConfSprite(conf) {
+        if (conf == null) return null;
+        const pct = Math.round(conf * 100);
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 24;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(0, 0, 64, 24);
+        ctx.font = 'bold 14px monospace';
+        ctx.fillStyle = '#e8ffc8';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${pct}%`, 32, 12);
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+        const sprite = new THREE.Sprite(mat);
+        sprite.scale.set(0.55, 0.2, 1);
+        sprite.position.y = 1.05;
+        return sprite;
+    }
+
     _isSpawnTargetDetected(tgt, persons) {
         const pts = persons || [];
-        for (const p of pts) {
-            if (Math.hypot(p[0] - tgt[0], p[1] - tgt[1]) < 1.5) return true;
+        let bestConf = null;
+        for (const raw of pts) {
+            const p = this._normPerson(raw);
+            if (!p) continue;
+            if (Math.hypot(p.x - tgt[0], p.y - tgt[1]) < 1.5) {
+                if (p.conf != null) bestConf = Math.max(bestConf || 0, p.conf);
+                else return { detected: true, conf: null };
+            }
         }
-        return false;
+        if (bestConf != null) return { detected: true, conf: bestConf };
+        return { detected: false, conf: null };
+    }
+
+    _updateSpawnedTargets(targets, persons) {
+        for (const m of this._spawnedTargetMeshes) this._scene.remove(m);
+        this._spawnedTargetMeshes = [];
+        if (!targets || targets.length === 0) return;
+        for (const tgt of targets) {
+            const hit = this._isSpawnTargetDetected(tgt, persons);
+            const isDetected = hit.detected;
+            const col = isDetected ? 0x22ff66 : 0xff2d95;
+            const emCol = isDetected ? 0x0a6630 : 0x880044;
+            const g = this._buildMiniPersonFigure(col, emCol);
+            g.position.set(-tgt[0], 0, tgt[1]);
+            const label = this._makeConfSprite(hit.conf);
+            if (label) g.add(label);
+            this._scene.add(g);
+            this._spawnedTargetMeshes.push(g);
+        }
     }
 
     _buildMiniPersonFigure(col, emCol) {
@@ -552,22 +610,6 @@ class SlamScene3D {
 
         g.userData.isMiniPerson = true;
         return g;
-    }
-
-    _updateSpawnedTargets(targets, persons) {
-        // Remove old meshes
-        for (const m of this._spawnedTargetMeshes) this._scene.remove(m);
-        this._spawnedTargetMeshes = [];
-        if (!targets || targets.length === 0) return;
-        for (const tgt of targets) {
-            const isDetected = this._isSpawnTargetDetected(tgt, persons);
-            const col = isDetected ? 0x22ff66 : 0xff2d95;
-            const emCol = isDetected ? 0x0a6630 : 0x880044;
-            const g = this._buildMiniPersonFigure(col, emCol);
-            g.position.set(-tgt[0], 0, tgt[1]);
-            this._scene.add(g);
-            this._spawnedTargetMeshes.push(g);
-        }
     }
 
     // ---------------------------------------------------------------

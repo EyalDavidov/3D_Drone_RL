@@ -169,6 +169,9 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         self._last_obstacle_scan_mode = False
         self._last_person_found = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._last_person_world_xyz = torch.zeros((self.num_envs, 3), device=self.device)
+        self._last_z_err = 0.0
+        self._telemetry_last_crash_reason: str | None = None
+        self._telemetry_crash_timestep: int = -1
         self._segment_crash_counts: dict[int, int] = {}
         self._final_rescue_person_prim = None
         self._final_center_person_prim = None
@@ -1831,14 +1834,17 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         died = hit_obstacle | hit_bounds
 
         if self.num_envs > 0:
+            reason = None
             if hit_bounds[0].item() and relative_z[0].item() < 0.1:
-                self._env0_crash_reason = "Floor Bounds Collision"
+                reason = "Floor Bounds Collision"
             elif hit_bounds[0].item():
-                self._env0_crash_reason = "Ceiling Bounds Collision"
+                reason = "Ceiling Bounds Collision"
             elif hit_obstacle[0].item():
-                self._env0_crash_reason = "Obstacle Collision"
-            else:
-                self._env0_crash_reason = None
+                reason = "Obstacle Collision"
+            self._env0_crash_reason = reason
+            if died[0].item() and reason:
+                self._telemetry_last_crash_reason = reason
+                self._telemetry_crash_timestep = int(getattr(self, "_timestep", 0))
 
         self._last_died = died
         if getattr(self.cfg, "brain_reset_on_crash", True):
@@ -2269,7 +2275,15 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             # Proportional height-holding controller to prevent vertical drift
             # Target height is specified in self._desired_pos_w[:, 2] (typically 1.0m)
             z_err = self._desired_pos_w[:, 2] - self._robot.data.root_pos_w[:, 2]
+            self._last_z_err = float(z_err[0].item())
             ppo_actions[:, 2] = torch.clamp(1.8 * z_err, -0.45, 0.45)
+        else:
+            try:
+                self._last_z_err = float(
+                    (self._desired_pos_w[0, 2] - self._robot.data.root_pos_w[0, 2]).item()
+                )
+            except Exception:
+                pass
 
         # 7. Step the parent environment with the PPO-generated actions
         obs, rewards, terminated, truncated, info = super().step(ppo_actions)
