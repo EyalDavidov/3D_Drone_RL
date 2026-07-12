@@ -82,6 +82,37 @@
         </div>
     </header>
 
+    <!-- Global Playback Control Bar (Visible across all tabs during Playback mode) -->
+    <div id="global-playback-bar" class="global-playback-bar" style="display: none;">
+        <div class="playback-controls-inner">
+            <div class="control-group-left">
+                <span class="playback-badge">PLAYBACK</span>
+                <span id="global-timeline-time" class="time-display mono">0.00s / 0.00s</span>
+            </div>
+            
+            <div class="control-group-center">
+                <button id="global-btn-prev" class="ctrl-btn" title="Previous Frame">⏮</button>
+                <button id="global-btn-play" class="ctrl-btn play-btn" title="Play">▶</button>
+                <button id="global-btn-pause" class="ctrl-btn play-btn" title="Pause" style="display: none;">⏸</button>
+                <button id="global-btn-next" class="ctrl-btn" title="Next Frame">⏭</button>
+                <button id="global-btn-stop" class="ctrl-btn stop-btn" title="Stop Playback & Reconnect">⏹</button>
+                
+                <input type="range" id="global-timeline-slider" class="timeline-slider" min="0" value="0">
+            </div>
+            
+            <div class="control-group-right">
+                <span class="speed-label">SPEED</span>
+                <select id="global-playback-speed" class="speed-select">
+                    <option value="1">1x</option>
+                    <option value="2">2x</option>
+                    <option value="5">5x</option>
+                    <option value="10" selected>10x</option>
+                    <option value="20">20x</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
     <!-- ===== TAB CONTENT ===== -->
     <main id="dashboard-main">
 

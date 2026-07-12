@@ -241,8 +241,8 @@
             }
         });
 
-        if (data.level_time !== undefined) episodeTimeEl.textContent = data.level_time.toFixed(2) + 's';
-        if (data.level_duration !== undefined) episodeDurationEl.textContent = data.level_duration.toFixed(2) + 's';
+        if (data.level_time !== undefined) episodeTimeEl.textContent = formatTime(data.level_time, true);
+        if (data.level_duration !== undefined) episodeDurationEl.textContent = formatTime(data.level_duration, false);
         if (data.tick !== undefined) tickCounterEl.textContent = data.tick.toLocaleString();
     }
 
@@ -324,6 +324,17 @@
     const timelineTime = document.getElementById('timeline-time');
     const playbackSpeedSelect = document.getElementById('playback-speed');
     const playbackStatusBadge = document.getElementById('playback-status-badge');
+
+    // Global Playback Controls
+    const globalPlaybackBar = document.getElementById('global-playback-bar');
+    const globalBtnPlay = document.getElementById('global-btn-play');
+    const globalBtnPause = document.getElementById('global-btn-pause');
+    const globalBtnStop = document.getElementById('global-btn-stop');
+    const globalBtnPrev = document.getElementById('global-btn-prev');
+    const globalBtnNext = document.getElementById('global-btn-next');
+    const globalTimelineSlider = document.getElementById('global-timeline-slider');
+    const globalTimelineTime = document.getElementById('global-timeline-time');
+    const globalPlaybackSpeed = document.getElementById('global-playback-speed');
 
     // Directory list elements
     const btnRefreshRecordings = document.getElementById('btn-refresh-recordings');
@@ -458,6 +469,13 @@
                     timelineSlider.value = 0;
                 }
                 
+                if (globalTimelineSlider) {
+                    globalTimelineSlider.min = 0;
+                    globalTimelineSlider.max = playbackFrames.length - 1;
+                    globalTimelineSlider.value = 0;
+                }
+                
+                if (globalPlaybackBar) globalPlaybackBar.style.display = 'block';
                 if (playbackControls) playbackControls.style.display = 'block';
                 if (dropZone) {
                     dropZone.style.borderColor = '#22ff66';
@@ -480,12 +498,26 @@
         });
     }
 
-    // Time formatter MM:SS
-    function formatTime(seconds) {
-        if (isNaN(seconds) || seconds === null) return '0:00';
-        const m = Math.floor(seconds / 60);
-        const s = Math.floor(seconds % 60);
-        return `${m}:${s < 10 ? '0' : ''}${s}`;
+    // Time formatter HH:MM:SS or MM:SS (with optional decimals)
+    function formatTime(seconds, includeDecimals = false) {
+        if (isNaN(seconds) || seconds === null) return includeDecimals ? '0:00.00' : '0:00';
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = Math.floor(seconds % 60);
+        
+        let timeStr = '';
+        if (hrs > 0) {
+            timeStr += hrs + ':' + (mins < 10 ? '0' : '') + mins + ':';
+        } else {
+            timeStr += mins + ':';
+        }
+        timeStr += (secs < 10 ? '0' : '') + secs;
+        
+        if (includeDecimals) {
+            const decs = Math.floor((seconds % 1) * 100);
+            timeStr += '.' + (decs < 10 ? '0' : '') + decs;
+        }
+        return timeStr;
     }
 
     // Drag-and-drop handlers
@@ -568,6 +600,13 @@
                 timelineSlider.value = 0;
             }
             
+            if (globalTimelineSlider) {
+                globalTimelineSlider.min = 0;
+                globalTimelineSlider.max = playbackFrames.length - 1;
+                globalTimelineSlider.value = 0;
+            }
+            
+            if (globalPlaybackBar) globalPlaybackBar.style.display = 'block';
             if (playbackControls) playbackControls.style.display = 'block';
             if (dropZone) {
                 dropZone.style.borderColor = '#22ff66';
@@ -585,16 +624,20 @@
         renderTelemetryFrame(frame, index, true);
         
         if (timelineSlider) timelineSlider.value = index;
+        if (globalTimelineSlider) globalTimelineSlider.value = index;
+        
         const totalDuration = playbackFrames[playbackFrames.length - 1].level_time || 0;
-        if (timelineTime) {
-            timelineTime.textContent = `${formatTime(frame.level_time)} / ${formatTime(totalDuration)}`;
-        }
+        const formatted = `${formatTime(frame.level_time)} / ${formatTime(totalDuration)}`;
+        if (timelineTime) timelineTime.textContent = formatted;
+        if (globalTimelineTime) globalTimelineTime.textContent = formatted;
     }
 
     function startPlaybackTimer() {
         stopPlaybackTimer();
         if (btnPlay) btnPlay.style.display = 'none';
         if (btnPause) btnPause.style.display = 'inline-block';
+        if (globalBtnPlay) globalBtnPlay.style.display = 'none';
+        if (globalBtnPause) globalBtnPause.style.display = 'inline-block';
         
         const baseInterval = 100; // 10Hz base tick rate
         const delay = baseInterval / playbackSpeed;
@@ -606,6 +649,8 @@
                 currentFrameIndex = playbackFrames.length - 1;
                 if (btnPlay) btnPlay.style.display = 'inline-block';
                 if (btnPause) btnPause.style.display = 'none';
+                if (globalBtnPlay) globalBtnPlay.style.display = 'inline-block';
+                if (globalBtnPause) globalBtnPause.style.display = 'none';
             }
             renderFrame(currentFrameIndex);
         }, delay);
@@ -618,10 +663,21 @@
         }
         if (btnPlay) btnPlay.style.display = 'inline-block';
         if (btnPause) btnPause.style.display = 'none';
+        if (globalBtnPlay) globalBtnPlay.style.display = 'inline-block';
+        if (globalBtnPause) globalBtnPause.style.display = 'none';
     }
 
     if (btnPlay) {
         btnPlay.addEventListener('click', () => {
+            if (currentFrameIndex >= playbackFrames.length - 1) {
+                currentFrameIndex = 0;
+            }
+            startPlaybackTimer();
+        });
+    }
+
+    if (globalBtnPlay) {
+        globalBtnPlay.addEventListener('click', () => {
             if (currentFrameIndex >= playbackFrames.length - 1) {
                 currentFrameIndex = 0;
             }
@@ -635,64 +691,107 @@
         });
     }
 
-    if (btnStop) {
-        btnStop.addEventListener('click', () => {
+    if (globalBtnPause) {
+        globalBtnPause.addEventListener('click', () => {
             stopPlaybackTimer();
-            playbackMode = false;
-            playbackFrames = [];
-            currentFrameIndex = 0;
-            
-            if (playbackStatusBadge) {
-                playbackStatusBadge.textContent = 'OFFLINE';
-                playbackStatusBadge.style.color = 'rgba(255, 255, 255, 0.6)';
-                playbackStatusBadge.style.borderColor = 'rgba(255, 255, 255, 0.15)';
-                playbackStatusBadge.style.background = 'rgba(255, 255, 255, 0.08)';
-            }
-            
-            document.querySelectorAll('.panel-badge.live').forEach(badge => {
-                badge.textContent = 'LIVE';
-            });
-            
-            if (liveCharts && typeof liveCharts.reset === 'function') {
-                liveCharts.reset();
-            }
-            
-            if (playbackControls) playbackControls.style.display = 'none';
-            if (dropZone) {
-                dropZone.style.borderColor = 'rgba(255, 45, 149, 0.45)';
-                dropZone.querySelector('p').textContent = 'Drag & Drop flight recording file here (.jsonl)';
-            }
-            
-            connect();
         });
+    }
+
+    function stopPlaybackAndReconnect() {
+        stopPlaybackTimer();
+        playbackMode = false;
+        playbackFrames = [];
+        currentFrameIndex = 0;
+        
+        if (globalPlaybackBar) globalPlaybackBar.style.display = 'none';
+        
+        if (playbackStatusBadge) {
+            playbackStatusBadge.textContent = 'OFFLINE';
+            playbackStatusBadge.style.color = 'rgba(255, 255, 255, 0.6)';
+            playbackStatusBadge.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+            playbackStatusBadge.style.background = 'rgba(255, 255, 255, 0.08)';
+        }
+        
+        document.querySelectorAll('.panel-badge.live').forEach(badge => {
+            badge.textContent = 'LIVE';
+        });
+        
+        if (liveCharts && typeof liveCharts.reset === 'function') {
+            liveCharts.reset();
+        }
+        
+        if (playbackControls) playbackControls.style.display = 'none';
+        if (dropZone) {
+            dropZone.style.borderColor = 'rgba(255, 45, 149, 0.45)';
+            dropZone.querySelector('p').textContent = 'Drag & Drop flight recording file here (.jsonl)';
+        }
+        
+        connect();
+    }
+
+    if (btnStop) btnStop.addEventListener('click', stopPlaybackAndReconnect);
+    if (globalBtnStop) globalBtnStop.addEventListener('click', stopPlaybackAndReconnect);
+
+    if (globalBtnPrev) {
+        globalBtnPrev.addEventListener('click', () => {
+            stopPlaybackTimer();
+            if (currentFrameIndex > 0) {
+                currentFrameIndex--;
+                renderFrame(currentFrameIndex);
+            }
+        });
+    }
+
+    if (globalBtnNext) {
+        globalBtnNext.addEventListener('click', () => {
+            stopPlaybackTimer();
+            if (currentFrameIndex < playbackFrames.length - 1) {
+                currentFrameIndex++;
+                renderFrame(currentFrameIndex);
+            }
+        });
+    }
+
+    function handleSliderScrub(e) {
+        if (playbackIntervalId) {
+            wasPlayingBeforeDrag = true;
+            stopPlaybackTimer();
+        } else {
+            wasPlayingBeforeDrag = false;
+        }
+        currentFrameIndex = parseInt(e.target.value);
+        renderFrame(currentFrameIndex);
+    }
+
+    function handleSliderRelease() {
+        if (wasPlayingBeforeDrag) {
+            startPlaybackTimer();
+        }
     }
 
     if (timelineSlider) {
-        timelineSlider.addEventListener('input', (e) => {
-            if (playbackIntervalId) {
-                wasPlayingBeforeDrag = true;
-                stopPlaybackTimer();
-            } else {
-                wasPlayingBeforeDrag = false;
-            }
-            currentFrameIndex = parseInt(e.target.value);
-            renderFrame(currentFrameIndex);
-        });
+        timelineSlider.addEventListener('input', handleSliderScrub);
+        timelineSlider.addEventListener('change', handleSliderRelease);
+    }
+    if (globalTimelineSlider) {
+        globalTimelineSlider.addEventListener('input', handleSliderScrub);
+        globalTimelineSlider.addEventListener('change', handleSliderRelease);
+    }
 
-        timelineSlider.addEventListener('change', () => {
-            if (wasPlayingBeforeDrag) {
-                startPlaybackTimer();
-            }
-        });
+    function handleSpeedChange(e) {
+        playbackSpeed = parseFloat(e.target.value);
+        if (playbackSpeedSelect) playbackSpeedSelect.value = playbackSpeed;
+        if (globalPlaybackSpeed) globalPlaybackSpeed.value = playbackSpeed;
+        if (playbackIntervalId) {
+            startPlaybackTimer();
+        }
     }
 
     if (playbackSpeedSelect) {
-        playbackSpeedSelect.addEventListener('change', (e) => {
-            playbackSpeed = parseFloat(e.target.value);
-            if (playbackIntervalId) {
-                startPlaybackTimer();
-            }
-        });
+        playbackSpeedSelect.addEventListener('change', handleSpeedChange);
+    }
+    if (globalPlaybackSpeed) {
+        globalPlaybackSpeed.addEventListener('change', handleSpeedChange);
     }
 
     // ---- Resize & Minimize ----
