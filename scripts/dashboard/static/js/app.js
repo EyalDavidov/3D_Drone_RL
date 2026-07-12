@@ -5,8 +5,11 @@
 (function () {
     'use strict';
 
-    const WS_PORT = 8001;
-    const WS_URL = `ws://${window.location.hostname || 'localhost'}:${WS_PORT}`;
+    const qs = new URLSearchParams(window.location.search);
+    const wsPortQuery = Number.parseInt(qs.get('ws_port') || '', 10);
+    const WS_PORT = Number.isFinite(wsPortQuery) && wsPortQuery > 0 ? wsPortQuery : 8001;
+    const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const WS_URL = `${WS_PROTOCOL}://${window.location.hostname || 'localhost'}:${WS_PORT}`;
     const RECONNECT_DELAY = 2000;
 
     // ---- DOM ----
@@ -787,9 +790,15 @@
     function loadRecordingsList() {
         if (!recordingsListBody) return;
         recordingsListBody.innerHTML = '<div class="rec-lib-empty">Scanning recordings directory…</div>';
-
-        fetch('/api/recordings')
-            .then(res => res.json())
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        fetch('/api/recordings', { signal: controller.signal })
+            .then(res => {
+                if (!res.ok) {
+                    throw new Error(`Server returned error status ${res.status}`);
+                }
+                return res.json();
+            })
             .then(data => {
                 recordingsCache = {};
                 if (recCountVal) recCountVal.textContent = String(data ? data.length : 0);
@@ -829,81 +838,164 @@
             })
             .catch(err => {
                 console.error("[Playback] Failed to load recordings list:", err);
-                recordingsListBody.innerHTML = '<div class="rec-lib-empty rec-lib-error">Failed to load — is server.py running?</div>';
+                const timedOut = err && err.name === 'AbortError';
+                recordingsListBody.innerHTML = timedOut
+                    ? '<div class="rec-lib-empty rec-lib-error">Loading recordings timed out — check recordings path/server logs.</div>'
+                    : '<div class="rec-lib-empty rec-lib-error">Failed to load — is server.py running?</div>';
+            })
+            .finally(() => {
+                clearTimeout(timeoutId);
             });
     }
 
-    function loadRemoteRecording(filename) {
+    async function loadRemoteRecording(filename) {
         if (recordingsListBody) {
             recordingsListBody.querySelectorAll('.play-remote-btn').forEach(b => {
                 b.classList.toggle('rec-lib-loading', b.dataset.file === filename);
+                b.style.removeProperty('--load-progress');
             });
         }
 
-        fetch(`/api/recording?file=${encodeURIComponent(filename)}`)
-            .then(res => {
-                if (!res.ok) throw new Error("Server returned error status " + res.status);
-                return res.text();
-            })
-            .then(text => {
-                const parsed = parseRecordingLines(text);
-                playbackFrames = parsed.frames;
+        const loadBtn = recordingsListBody ? recordingsListBody.querySelector(`.play-remote-btn[data-file="${filename}"]`) : null;
+        const statusSpan = loadBtn ? loadBtn.querySelector('.rec-lib-status') : null;
+        if (statusSpan) {
+            statusSpan.textContent = '0%';
+        }
 
-                if (playbackFrames.length === 0) {
-                    alert("No valid telemetry frames found in this recording.");
-                    loadRecordingsList();
-                    return;
+        const cached = recordingsCache[filename] || {};
+        let estimatedTotalBytes = 0;
+        if (cached.file_size) {
+            const num = parseFloat(cached.file_size);
+            if (cached.file_size.includes("MB")) estimatedTotalBytes = num * 1024 * 1024;
+            else if (cached.file_size.includes("KB")) estimatedTotalBytes = num * 1024;
+            else estimatedTotalBytes = num;
+        }
+
+        try {
+            const response = await fetch(`/api/recording?file=${encodeURIComponent(filename)}`);
+            if (!response.ok) throw new Error("Server returned error status " + response.status);
+
+            const reader = response.body.getReader();
+            
+            let receivedLength = 0;
+            const decoder = new TextDecoder("utf-8");
+            let partialLine = "";
+            const frames = [];
+            let sessionHeader = null;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                receivedLength += value.length;
+
+                let percent = 0;
+                if (estimatedTotalBytes > 0) {
+                    percent = Math.min(99, Math.round((receivedLength / estimatedTotalBytes) * 100));
                 }
 
-                console.log(`[Playback] Loaded remote file ${filename} with ${playbackFrames.length} frames.`);
-                playbackMode = true;
-                currentFrameIndex = 0;
-                stopPlaybackTimer();
-
-                if (ws) {
-                    try { ws.close(); } catch(e) {}
-                }
-                setStatus('playback');
-                document.querySelectorAll('.panel-badge.live').forEach(badge => {
-                    badge.textContent = 'OFFLINE';
-                });
-
-                if (playbackStatusBadge) {
-                    playbackStatusBadge.textContent = 'PLAYBACK';
-                    playbackStatusBadge.style.color = '#ff2d95';
-                    playbackStatusBadge.style.borderColor = 'rgba(255, 45, 149, 0.4)';
-                    playbackStatusBadge.style.background = 'rgba(255, 45, 149, 0.1)';
+                if (loadBtn) {
+                    loadBtn.style.setProperty('--load-progress', `${percent}%`);
+                    if (statusSpan) {
+                        const mb = (receivedLength / (1024 * 1024)).toFixed(1);
+                        statusSpan.textContent = percent > 0 ? `${percent}%` : `${mb}MB`;
+                    }
                 }
 
-                if (timelineSlider) {
-                    timelineSlider.min = 0;
-                    timelineSlider.max = playbackFrames.length - 1;
-                    timelineSlider.value = 0;
+                // Decode chunk and split line-by-line progressively
+                const chunkStr = decoder.decode(value, { stream: true });
+                const combined = partialLine + chunkStr;
+                const lines = combined.split('\n');
+                partialLine = lines.pop(); // Save the last incomplete line for next iteration
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const obj = JSON.parse(line);
+                        if (obj._record_type === 'session_header') {
+                            sessionHeader = obj;
+                        } else if (obj.pos || obj.tick != null || obj.level_time != null) {
+                            frames.push(obj);
+                        }
+                    } catch (e) {}
                 }
+            }
 
-                if (globalTimelineSlider) {
-                    globalTimelineSlider.min = 0;
-                    globalTimelineSlider.max = playbackFrames.length - 1;
-                    globalTimelineSlider.value = 0;
-                }
+            // Parse the final remaining line
+            if (partialLine.trim()) {
+                try {
+                    const obj = JSON.parse(partialLine);
+                    if (obj._record_type === 'session_header') {
+                        sessionHeader = obj;
+                    } else if (obj.pos || obj.tick != null || obj.level_time != null) {
+                        frames.push(obj);
+                    }
+                } catch (e) {}
+            }
 
-                if (globalPlaybackBar) globalPlaybackBar.style.display = 'block';
-                if (playbackControls) playbackControls.style.display = 'flex';
+            playbackFrames = frames;
 
-                const cached = recordingsCache[filename] || {};
-                const meta = {
-                    ...cached,
-                    file_size: cached.file_size || formatFileSize(new Blob([text]).size),
-                    session_header: parsed.sessionHeader,
-                };
-                onRecordingLoaded(filename, meta);
-                renderFrame(0);
+            if (playbackFrames.length === 0) {
+                alert("No valid telemetry frames found in this recording.");
                 loadRecordingsList();
-            })
-            .catch(err => {
-                alert("Failed to load recording: " + err.message);
-                loadRecordingsList();
+                return;
+            }
+
+            console.log(`[Playback] Loaded remote file ${filename} with ${playbackFrames.length} frames.`);
+            playbackMode = true;
+            currentFrameIndex = 0;
+            stopPlaybackTimer();
+
+            if (ws) {
+                try { ws.close(); } catch(e) {}
+            }
+            setStatus('playback');
+            document.querySelectorAll('.panel-badge.live').forEach(badge => {
+                badge.textContent = 'OFFLINE';
             });
+
+            if (playbackStatusBadge) {
+                playbackStatusBadge.textContent = 'PLAYBACK';
+                playbackStatusBadge.style.color = '#ff2d95';
+                playbackStatusBadge.style.borderColor = 'rgba(255, 45, 149, 0.4)';
+                playbackStatusBadge.style.background = 'rgba(255, 45, 149, 0.1)';
+            }
+
+            if (timelineSlider) {
+                timelineSlider.min = 0;
+                timelineSlider.max = playbackFrames.length - 1;
+                timelineSlider.value = 0;
+            }
+
+            if (globalTimelineSlider) {
+                globalTimelineSlider.min = 0;
+                globalTimelineSlider.max = playbackFrames.length - 1;
+                globalTimelineSlider.value = 0;
+            }
+
+            if (globalPlaybackBar) globalPlaybackBar.style.display = 'block';
+            if (playbackControls) playbackControls.style.display = 'flex';
+
+            const cached = recordingsCache[filename] || {};
+            const meta = {
+                ...cached,
+                file_size: cached.file_size || formatFileSize(receivedLength),
+                session_header: sessionHeader,
+            };
+            onRecordingLoaded(filename, meta);
+            renderFrame(0);
+            loadRecordingsList();
+
+        } catch (err) {
+            console.error("[Playback] Failed to load remote recording:", err);
+            alert("Failed to load recording: " + err.message);
+            loadRecordingsList();
+        } finally {
+            if (loadBtn) {
+                loadBtn.classList.remove('rec-lib-loading');
+                // The button text will be reset when loadRecordingsList() runs and re-renders the rows.
+            }
+        }
     }
 
     if (btnRefreshRecordings) {

@@ -382,7 +382,7 @@ def main():
             start_dashboard_server(
                 http_port=8000, ws_port=8001,
                 telemetry_source=_telemetry,
-                open_browser=True,
+                open_browser=False,
                 blocking=False,
             )
             print("[Dashboard] Live dashboard at http://localhost:8000 (perf mode: OpenCV off)")

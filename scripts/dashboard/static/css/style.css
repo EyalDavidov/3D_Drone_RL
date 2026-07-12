@@ -1642,12 +1642,32 @@ body { display: flex; flex-direction: column; }
 .panel { animation: fadeIn 0.4s ease-out backwards; }
 
 /* ========== RESPONSIVE & LAYOUT CONTROLS ========== */
-@media (max-width: 1360px) {
+@media (max-width: 1680px) {
+    .logo h1 {
+        display: none !important;
+    }
+    #dashboard-header {
+        padding: 0 8px;
+        gap: 6px;
+    }
+    .header-left, .header-right {
+        gap: 6px;
+    }
+    .tab {
+        padding: 8px 10px;
+        font-size: 11px;
+    }
+    .spawn-status {
+        max-width: 80px;
+    }
+}
+
+@media (max-width: 1480px) {
     #dashboard-header {
         height: auto;
         flex-direction: column;
         align-items: stretch;
-        padding: 8px 14px;
+        padding: 8px 12px;
         gap: 8px;
     }
     .header-left, .header-right {
@@ -2452,3 +2472,19 @@ body { display: flex; flex-direction: column; }
     .rec-inspector { border-top: 1px solid rgba(255,255,255,0.05); }
     .rec-live-strip { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* Progressive green loading meter for remote recording buttons */
+.play-remote-btn.rec-lib-loading {
+    position: relative;
+    border-color: rgba(16, 185, 129, 0.5) !important;
+    background: linear-gradient(to right, rgba(16, 185, 129, 0.22) var(--load-progress, 0%), rgba(17, 24, 39, 0.8) var(--load-progress, 0%)) !important;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.15) !important;
+    transition: background 0.1s ease, border-color 0.2s ease;
+}
+.play-remote-btn.rec-lib-loading .rec-lib-status {
+    background: rgba(16, 185, 129, 0.3) !important;
+    color: #e6fffa !important;
+    border-color: #10b981 !important;
+    font-weight: bold;
+}
+
