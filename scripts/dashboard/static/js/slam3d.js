@@ -95,6 +95,7 @@ class SlamScene3D {
         this._buildTarget();
         this._buildPerson();
         this._spawnedTargetMeshes = [];
+        this._personConfThreshold = 0.7;
 
         // ---- Shared geometry for frontier pillars ----
         this._fCylGeo = new THREE.CylinderGeometry(0.08, 0.12, 0.8, 8);
@@ -142,6 +143,9 @@ class SlamScene3D {
         this._updateFrontiers(slam3d.frontiers, slam3d.active);
         this._updateTarget(slam3d.active);
         this._updatePath(slam3d.path);
+        this._personConfThreshold = (typeof slam3d.person_conf_threshold === 'number')
+            ? slam3d.person_conf_threshold
+            : 0.7;
         this._updateSpawnedTargets(slam3d.spawned_targets, slam3d.persons);
         if (!slam3d.spawned_targets || slam3d.spawned_targets.length === 0) {
             this._updatePerson(slam3d.person);
@@ -513,17 +517,17 @@ class SlamScene3D {
         return { x: p.x, y: p.y, conf: p.conf, label: p.label };
     }
 
-    _makeConfSprite(conf) {
+    _makeConfSprite(conf, isDetected = true) {
         if (conf == null) return null;
         const pct = Math.round(conf * 100);
         const canvas = document.createElement('canvas');
         canvas.width = 64;
         canvas.height = 24;
         const ctx = canvas.getContext('2d');
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillStyle = isDetected ? 'rgba(0,0,0,0.55)' : 'rgba(24, 7, 24, 0.72)';
         ctx.fillRect(0, 0, 64, 24);
         ctx.font = 'bold 14px monospace';
-        ctx.fillStyle = '#e8ffc8';
+        ctx.fillStyle = isDetected ? '#e8ffc8' : '#ffc7f1';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(`${pct}%`, 32, 12);
@@ -537,16 +541,26 @@ class SlamScene3D {
 
     _isSpawnTargetDetected(tgt, persons) {
         const pts = persons || [];
-        let bestConf = null;
+        let bestAboveThreshold = null;
+        let bestAnyConf = null;
+        let hasUnscoredHit = false;
         for (const raw of pts) {
             const p = this._normPerson(raw);
             if (!p) continue;
             if (Math.hypot(p.x - tgt[0], p.y - tgt[1]) < 1.5) {
-                if (p.conf != null) bestConf = Math.max(bestConf || 0, p.conf);
-                else return { detected: true, conf: null };
+                if (p.conf != null) {
+                    bestAnyConf = Math.max(bestAnyConf || 0, p.conf);
+                    if (p.conf >= this._personConfThreshold) {
+                        bestAboveThreshold = Math.max(bestAboveThreshold || 0, p.conf);
+                    }
+                } else {
+                    hasUnscoredHit = true;
+                }
             }
         }
-        if (bestConf != null) return { detected: true, conf: bestConf };
+        if (bestAboveThreshold != null) return { detected: true, conf: bestAboveThreshold };
+        if (hasUnscoredHit) return { detected: true, conf: bestAnyConf };
+        if (bestAnyConf != null) return { detected: false, conf: bestAnyConf };
         return { detected: false, conf: null };
     }
 
@@ -561,7 +575,7 @@ class SlamScene3D {
             const emCol = isDetected ? 0x0a6630 : 0x880044;
             const g = this._buildMiniPersonFigure(col, emCol);
             g.position.set(-tgt[0], 0, tgt[1]);
-            const label = this._makeConfSprite(hit.conf);
+            const label = this._makeConfSprite(hit.conf, isDetected);
             if (label) g.add(label);
             this._scene.add(g);
             this._spawnedTargetMeshes.push(g);

@@ -72,8 +72,16 @@
         const ms = (data && data.mission_status) || {};
         const spawn = (data && data.spawn_info) || {};
         const status = ms.status || data.slam_state || '—';
-        const found = ms.targets_found
-            || `${spawn.detected || 0}/${spawn.total || 0}`;
+        let found = (ms.targets_found != null && ms.targets_found !== '')
+            ? String(ms.targets_found)
+            : `${spawn.detected || 0}/${spawn.total || 0}`;
+        if (playbackMode && loadedRecordingMeta) {
+            const metaTotal = Number(loadedRecordingMeta.targets_total);
+            const metaFound = Number(loadedRecordingMeta.targets_found);
+            if (Number.isFinite(metaTotal) && Number.isFinite(metaFound) && metaTotal >= 0) {
+                found = `${metaFound}/${metaTotal}`;
+            }
+        }
         const crashReason = ms.crash_reason || ms.detail || '';
 
         if (missionEls.state) {

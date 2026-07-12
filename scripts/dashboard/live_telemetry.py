@@ -1289,6 +1289,7 @@ class LiveDroneTelemetry:
             person_pos = None
             rescued_list = []
             rescued_persons = []
+            rescued_persons_all = []
             yolo_thresh = float(getattr(env.cfg, "yolo_person_conf_threshold", 0.70))
             if brain is not None:
                 rescued = getattr(brain, "rescued_people", None)
@@ -1296,11 +1297,18 @@ class LiveDroneTelemetry:
                 if rescued:
                     for idx, p in enumerate(rescued):
                         conf = float(rescued_conf[idx]) if idx < len(rescued_conf) else yolo_thresh
-                        if conf < yolo_thresh:
-                            continue
                         px = round(float(p[0]), 3)
                         py = round(float(p[1]), 3)
                         pz = round(float(p[2]), 3) if len(p) > 2 else 0.0
+                        rescued_persons_all.append({
+                            "x": px,
+                            "y": py,
+                            "z": pz,
+                            "conf": round(conf, 4),
+                            "label": f"Target {idx + 1}",
+                        })
+                        if conf < yolo_thresh:
+                            continue
                         rescued_list.append([px, py])
                         rescued_persons.append({
                             "x": px,
@@ -1360,7 +1368,8 @@ class LiveDroneTelemetry:
                 "active":    active_data,
                 "path":      path_list,
                 "person":    person_data,
-                "persons":   rescued_persons if rescued_persons else rescued_list,
+                "persons":   rescued_persons_all if rescued_persons_all else (rescued_persons if rescued_persons else rescued_list),
+                "person_conf_threshold": round(yolo_thresh, 4),
                 "spawned_targets": spawned_targets,
             }
 
