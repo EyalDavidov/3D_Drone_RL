@@ -120,16 +120,28 @@ class YoloHud {
 
     updateFrames(frontB64, leftB64, rightB64) {
         if (frontB64) {
-            const mime = frontB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-            this._img.src = `data:${mime};base64,` + frontB64;
+            if (frontB64.startsWith('/recordings') || frontB64.startsWith('http')) {
+                this._img.src = frontB64;
+            } else {
+                const mime = frontB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+                this._img.src = `data:${mime};base64,` + frontB64;
+            }
         }
         if (leftB64) {
-            const mime = leftB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-            this._imgLeft.src = `data:${mime};base64,` + leftB64;
+            if (leftB64.startsWith('/recordings') || leftB64.startsWith('http')) {
+                this._imgLeft.src = leftB64;
+            } else {
+                const mime = leftB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+                this._imgLeft.src = `data:${mime};base64,` + leftB64;
+            }
         }
         if (rightB64) {
-            const mime = rightB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-            this._imgRight.src = `data:${mime};base64,` + rightB64;
+            if (rightB64.startsWith('/recordings') || rightB64.startsWith('http')) {
+                this._imgRight.src = rightB64;
+            } else {
+                const mime = rightB64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+                this._imgRight.src = `data:${mime};base64,` + rightB64;
+            }
         }
     }
 

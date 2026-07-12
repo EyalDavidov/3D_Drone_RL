@@ -167,7 +167,16 @@ def _norm_depth_gray_b64(depth_norm) -> str:
         import cv2
         import numpy as np
 
-        norm = np.clip(1.0 - depth_norm, 0.0, 1.0)
+        min_val = np.min(depth_norm)
+        max_val = np.max(depth_norm)
+        diff = max_val - min_val
+        if diff > 1e-5:
+            norm = (depth_norm - min_val) / diff
+        else:
+            norm = np.zeros_like(depth_norm)
+            
+        # Invert so close = pure white (255), far/background = pure black (0)
+        norm = 1.0 - norm
         gray = (norm * 255).astype("uint8")
         bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         bgr = cv2.resize(bgr, (512, 288), interpolation=cv2.INTER_CUBIC)
@@ -216,6 +225,24 @@ class LiveDroneTelemetry:
         self._tick_count = 0
         self._start_time = time.time()
 
+        # Telemetry recording file
+        self._record_file = None
+        try:
+            import os
+            import atexit
+            from datetime import datetime
+            
+            rec_dir = "D:\\isaac\\3D_Drone_RL\\recordings"
+            os.makedirs(rec_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = os.path.join(rec_dir, f"flight_{timestamp}.jsonl")
+            self._record_file = open(filepath, "w", encoding="utf-8")
+            print(f"[LiveTelemetry] Recording telemetry to: {filepath}")
+            atexit.register(self.close)
+        except Exception as e:
+            print(f"[LiveTelemetry] Failed to initialize recording file: {e}")
+
         # Image cache — regenerated every N pushes to keep CPU load low
         self._image_cache: dict = {}
         self._slam3d_cache: dict = {}
@@ -252,6 +279,17 @@ class LiveDroneTelemetry:
         state["timestamp"] = time.time() - self._start_time
         state["tick"] = self._tick_count
         return state
+
+    def close(self) -> None:
+        """Close the recording file descriptor."""
+        with self._lock:
+            if self._record_file is not None:
+                try:
+                    self._record_file.close()
+                    print("[LiveTelemetry] Closed recording file successfully.")
+                except Exception as e:
+                    print(f"[LiveTelemetry] Error closing recording file: {e}")
+                self._record_file = None
 
     def _reset_to_level(self, lv: int):
         """No-op — level is determined automatically from drone position."""
@@ -323,6 +361,10 @@ class LiveDroneTelemetry:
     def push(self, env, elapsed_secs: float) -> None:
         """Extract live data from a running env instance and update snapshot."""
         import numpy as np
+
+        if not hasattr(self, "_push_count"):
+            self._push_count = 0
+        self._push_count += 1
 
         try:
             robot = getattr(env, "_robot", None)
@@ -477,8 +519,20 @@ class LiveDroneTelemetry:
             spawn_detected, spawn_total = (0, 0)
             if hasattr(env, "count_spawned_targets_detected"):
                 spawn_detected, spawn_total = env.count_spawned_targets_detected()
+            
+            # Default to 2 static/pre-placed targets if no dynamic ones have been spawned
+            if spawn_total == 0:
+                rescued_count = 0
+                if brain and hasattr(brain, "rescued_people") and hasattr(brain, "rescued_people_conf"):
+                    thresh = float(getattr(env.cfg, "yolo_person_conf_threshold", 0.70))
+                    for conf in brain.rescued_people_conf:
+                        if float(conf) >= thresh:
+                            rescued_count += 1
+                spawn_total = 2
+                spawn_detected = min(2, rescued_count)
+
             spawn_info = {
-                "active": bool(getattr(env, "dynamic_spawn_active", False)),
+                "active": bool(getattr(env, "dynamic_spawn_active", False) or spawn_total > 2),
                 "total": int(spawn_total),
                 "detected": int(spawn_detected),
                 "pending": getattr(self, "pending_spawn_count", None),
@@ -519,12 +573,57 @@ class LiveDroneTelemetry:
                 "level_duration":   999.0,
                 "level_mode":       "auto",
                 "status":           "running",
+                "tick":             self._push_count,
                 "room_bounds":      ROOM_BOUNDS,
                 "map_zones":        self._get_map_zones(env),
                 "poles":            [],
                 "sim_running":      True,
                 "spawn_info":       spawn_info,
             }
+
+            # Save lightweight state and base64 images directly inside single telemetry.jsonl file
+            if self._record_file is not None:
+                try:
+                    import json
+                    
+                    # Check if YOLO is actively tracking/detecting a person
+                    yolo_active = False
+                    if yolo_stats:
+                        status = yolo_stats.get("status", "idle")
+                        if status in ("seen", "detected", "confirmed") or yolo_stats.get("person_found", False):
+                            yolo_active = True
+                            
+                    rec_images = {}
+                    if "images" in state:
+                        # 1. During active YOLO detection: save HUD frame overlays on every step
+                        if yolo_active:
+                            for k in ["yolo_frame", "yolo_frame_left", "yolo_frame_right"]:
+                                if k in state["images"]:
+                                    rec_images[k] = state["images"][k]
+                        else:
+                            # Save YOLO frames at 1 Hz for background context slideshow
+                            if self._push_count % 10 == 0:
+                                for k in ["yolo_frame", "yolo_frame_left", "yolo_frame_right"]:
+                                    if k in state["images"]:
+                                        rec_images[k] = state["images"][k]
+                                    
+                        # 2. Background context: save FPV/depth cameras at 1 Hz (once every 10 steps) or on YOLO detection
+                        if self._push_count % 10 == 0 or yolo_active:
+                            for k in ["rgb_first_person", "rgb_third_1", "rgb_third_2", "rgb_third_3", "depth", "ae_recon", "depth_saliency"]:
+                                if k in state["images"]:
+                                    rec_images[k] = state["images"][k]
+                    
+                    # Create lightweight copy of state
+                    rec_state = {k: v for k, v in state.items() if k != "images"}
+                    rec_state["images"] = rec_images
+                    
+                    # Add current timestamp relative to start time
+                    rec_state["timestamp"] = time.time() - self._start_time
+                    
+                    self._record_file.write(json.dumps(rec_state) + "\n")
+                    self._record_file.flush()
+                except Exception as e:
+                    print(f"[LiveTelemetry] Failed to write to recording file: {e}")
 
             with self._lock:
                 self._state = state

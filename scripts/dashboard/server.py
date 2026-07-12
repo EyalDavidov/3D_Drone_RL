@@ -36,6 +36,98 @@ class _StaticHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
+    def do_GET(self):
+        try:
+            self._handle_get_route()
+        except (ConnectionAbortedError, ConnectionResetError):
+            # Quietly ignore aborted/reset connections from browser page refreshes
+            pass
+        except Exception as e:
+            print(f"[Dashboard Server] Error in do_GET: {e}")
+
+    def _handle_get_route(self):
+        if self.path == "/api/recordings":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            
+            recordings = []
+            try:
+                import json
+                rec_dir = Path(r"D:\isaac\3D_Drone_RL\recordings")
+                if rec_dir.exists():
+                    # Scan flight_*.jsonl files directly
+                    for f in sorted(rec_dir.glob("flight_*.jsonl"), reverse=True):
+                        # Read last line to get summary stats
+                        summary = {}
+                        try:
+                            with open(f, "r", encoding="utf-8") as file_fh:
+                                lines = file_fh.readlines()
+                                if lines:
+                                    last_line = lines[-1].strip()
+                                    if last_line:
+                                        summary = json.loads(last_line)
+                        except Exception:
+                            pass
+                        
+                        # Extract date from filename: flight_20260712_141600.jsonl
+                        name_stem = f.stem
+                        date_str = name_stem.replace("flight_", "")
+                        try:
+                            # format 20260712_141600 as 12/07/2026 14:16
+                            parts = date_str.split("_")
+                            if len(parts) == 2:
+                                d_part, t_part = parts[0], parts[1]
+                                y, m, d = d_part[:4], d_part[4:6], d_part[6:]
+                                hh, mm = t_part[:2], t_part[2:4]
+                                date_str = f"{d}/{m}/{y} {hh}:{mm}"
+                        except Exception:
+                            pass
+                        
+                        spawn_info = summary.get("spawn_info", {})
+                        total_targets = spawn_info.get("total", 2)
+                        detected_targets = spawn_info.get("detected", summary.get("people_found", 0))
+                        coverage = summary.get("map_explored_pct", 0.0)
+                        duration = summary.get("level_time", 0.0)
+                        
+                        recordings.append({
+                            "filename": f.name,
+                            "date": date_str,
+                            "targets_total": total_targets,
+                            "targets_found": detected_targets,
+                            "coverage": coverage,
+                            "duration": duration
+                        })
+            except Exception as e:
+                print(f"[Dashboard Server] Error listing recordings: {e}")
+                
+            self.wfile.write(json.dumps(recordings).encode("utf-8"))
+            return
+            
+        elif self.path.startswith("/api/recording?file="):
+            from urllib.parse import parse_qs, urlparse
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            filename = params.get("file", [None])[0]
+            
+            if not filename or ".." in filename or "/" in filename or "\\" in filename:
+                self.send_error(400, "Invalid filename")
+                return
+                
+            file_path = Path(r"D:\isaac\3D_Drone_RL\recordings") / filename
+            if not file_path.exists():
+                self.send_error(404, "Recording not found")
+                return
+                
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            with open(file_path, "rb") as f:
+                self.wfile.write(f.read())
+            return
+            
+        super().do_GET()
+
 
 def _run_http_server(port: int):
     server = HTTPServer(("0.0.0.0", port), _StaticHandler)

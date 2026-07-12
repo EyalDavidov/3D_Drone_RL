@@ -64,8 +64,11 @@ class CameraFeeds {
         // Primary feeds
         for (const [key] of Object.entries(this._feedMap)) {
             if (images[key] && this._images[key]) {
-                // Images from the server can be JPEG or PNG; both work with data URI
-                this._images[key].src = 'data:image/jpeg;base64,' + images[key];
+                if (images[key].startsWith('/recordings') || images[key].startsWith('http')) {
+                    this._images[key].src = images[key];
+                } else {
+                    this._images[key].src = 'data:image/jpeg;base64,' + images[key];
+                }
             }
         }
 
@@ -73,7 +76,11 @@ class CameraFeeds {
         for (const [canvasId, entry] of Object.entries(this._mirrorImgs)) {
             const src = images[entry.sourceKey];
             if (src) {
-                entry.img.src = 'data:image/jpeg;base64,' + src;
+                if (src.startsWith('/recordings') || src.startsWith('http')) {
+                    entry.img.src = src;
+                } else {
+                    entry.img.src = 'data:image/jpeg;base64,' + src;
+                }
             }
         }
     }

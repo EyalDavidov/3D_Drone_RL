@@ -146,6 +146,63 @@ class LiveCharts {
         }
     }
 
+    reset() {
+        this.tickCount = 0;
+        this.ppoChart.data.labels = [];
+        this.ppoChart.data.datasets.forEach(ds => ds.data = []);
+        this.llcChart.data.labels = [];
+        this.llcChart.data.datasets.forEach(ds => ds.data = []);
+        this.ppoChart.update('none');
+        this.llcChart.update('none');
+    }
+
+    showHistory(frames, currentIndex) {
+        // Clear current data
+        this.ppoChart.data.labels = [];
+        this.ppoChart.data.datasets.forEach(ds => ds.data = []);
+        this.llcChart.data.labels = [];
+        this.llcChart.data.datasets.forEach(ds => ds.data = []);
+
+        const start = Math.max(0, currentIndex - 100);
+        for (let idx = start; idx <= currentIndex; idx++) {
+            const frame = frames[idx];
+            const label = idx.toString();
+            
+            // PPO
+            if (frame.ppo_actions) {
+                const ppo = frame.ppo_actions;
+                this.ppoChart.data.labels.push(label);
+                this.ppoChart.data.datasets[0].data.push(ppo.vx);
+                this.ppoChart.data.datasets[1].data.push(ppo.vy);
+                this.ppoChart.data.datasets[2].data.push(ppo.vz);
+                this.ppoChart.data.datasets[3].data.push(ppo.yaw_rate);
+            }
+            
+            // LLC
+            if (frame.llc_outputs) {
+                const llc = frame.llc_outputs;
+                this.llcChart.data.labels.push(label);
+                this.llcChart.data.datasets[0].data.push(llc.thrust);
+                this.llcChart.data.datasets[1].data.push(llc.moment_x);
+                this.llcChart.data.datasets[2].data.push(llc.moment_y);
+                this.llcChart.data.datasets[3].data.push(llc.moment_z);
+            }
+        }
+        
+        // Cap to maxPoints
+        while (this.ppoChart.data.labels.length > this.maxPoints) {
+            this.ppoChart.data.labels.shift();
+            this.ppoChart.data.datasets.forEach(ds => ds.data.shift());
+        }
+        while (this.llcChart.data.labels.length > this.maxPoints) {
+            this.llcChart.data.labels.shift();
+            this.llcChart.data.datasets.forEach(ds => ds.data.shift());
+        }
+        
+        this.ppoChart.update('none');
+        this.llcChart.update('none');
+    }
+
     _pushData(chart, label, values) {
         chart.data.labels.push(label);
         values.forEach((v, i) => {
