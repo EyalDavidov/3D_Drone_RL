@@ -1993,16 +1993,19 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         if not getattr(self, "_person_materials_bound", False) and getattr(self.cfg, "brain_person_override_textures", False):
             from pxr import Usd, UsdGeom
             bound_count = 0
-            if hasattr(self, "_room3_rescue_person_prim") and self._room3_rescue_person_prim is not None:
-                self._ensure_person_textures(self._room3_rescue_person_prim)
-                for prim in Usd.PrimRange(self._room3_rescue_person_prim):
-                    if prim.IsA(UsdGeom.Mesh):
-                        bound_count += 1
-            if hasattr(self, "_final_rescue_person_prim") and self._final_rescue_person_prim is not None:
-                self._ensure_person_textures(self._final_rescue_person_prim)
-                for prim in Usd.PrimRange(self._final_rescue_person_prim):
-                    if prim.IsA(UsdGeom.Mesh):
-                        bound_count += 1
+            for p_attr in ("_room3_rescue_person_prim", "_final_rescue_person_prim"):
+                prim = getattr(self, p_attr, None)
+                if prim is not None and prim.IsValid():
+                    self._ensure_person_textures(prim)
+                    for p in Usd.PrimRange(prim):
+                        if p.IsA(UsdGeom.Mesh):
+                            bound_count += 1
+            for prim in getattr(self, "_dynamic_spawn_prims", []):
+                if prim is not None and prim.IsValid():
+                    self._ensure_person_textures(prim)
+                    for p in Usd.PrimRange(prim):
+                        if p.IsA(UsdGeom.Mesh):
+                            bound_count += 1
             if bound_count > 0:
                 self._person_materials_bound = True
                 self._refresh_static_person_target_height()
@@ -2569,6 +2572,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         self._dynamic_spawn_prims = prims
         self.spawned_targets_local = confirmed
         self.dynamic_spawn_active = True
+        self._person_materials_bound = False
 
         # Drone gets no GPS hints to spawn positions — operator map markers only.
         if hasattr(self, "_perception") and self._perception is not None:

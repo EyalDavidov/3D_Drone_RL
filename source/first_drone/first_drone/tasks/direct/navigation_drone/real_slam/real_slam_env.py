@@ -541,6 +541,19 @@ class SlamBrainModule(BrainModule):
 
     def _is_backtrack_target(self, frontier, d_pos_w, came_from=None) -> bool:
         """True if committing to this frontier means revisiting explored ground."""
+        # 1. Segment-based backtracking: block targets in previously cleared rooms
+        seq = getattr(self.env.cfg, "brain_spawn_sequence", None)
+        max_reached = int(getattr(self, "max_segment_reached", 0))
+        if seq and len(seq) > 0 and max_reached > 0:
+            env_origin = self.env._terrain.env_origins[0].cpu().numpy()
+            c_world = frontier.get("centroid_world")
+            if c_world is not None:
+                f_xy = np.array([float(c_world[0]) - float(env_origin[0]), float(c_world[1]) - float(env_origin[1])])
+                distances = [np.linalg.norm(f_xy - np.array(pt[:2])) for pt in seq]
+                f_segment_idx = int(np.argmin(distances))
+                if f_segment_idx < max_reached:
+                    return True
+
         goal = frontier.get("goal_grid")
         fwd_h, dist = self._frontier_fwd_dot_heading(frontier, d_pos_w)
         unk = self._unknown_ahead(frontier)
