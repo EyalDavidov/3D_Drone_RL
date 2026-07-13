@@ -314,21 +314,43 @@ class PerceptionModule:
     def _match_rescue_person_slot(
         self, xyz: tuple[float, float, float] | None
     ) -> dict | None:
-        """Map a detection to one of the fixed rescue-person slots (max 3 entries)."""
-        if xyz is None or not self._rescue_person_slots:
+        """Map a detection to one of the rescue-person slots (dynamically created if none matches)."""
+        if xyz is None:
             return None
+        
+        # Convert detection coordinates to GPS lat/lon
+        lat, lon = self._local_xyz_to_gps(float(xyz[0]), float(xyz[1]))
+        
         best_slot = None
-        # Reduce match radius for dynamic targets to avoid merging different people
-        limit_radius = 1.2 if len(self._rescue_person_slots) > 3 else self._person_match_radius
-        best_dist = float(limit_radius) + 1.0
-        x, y = float(xyz[0]), float(xyz[1])
-        for slot in self._rescue_person_slots:
-            sx, sy = float(slot["xyz"][0]), float(slot["xyz"][1])
-            dist = math.hypot(x - sx, y - sy)
-            if dist <= limit_radius and dist < best_dist:
-                best_dist = dist
-                best_slot = slot
-        return best_slot
+        # Match if the GPS coordinates are within 0.0001 degrees (4 decimal places)
+        limit_gps = 0.0001
+        best_diff = limit_gps + 0.00001
+        
+        if self._rescue_person_slots:
+            for slot in self._rescue_person_slots:
+                slat, slon = self._local_xyz_to_gps(float(slot["xyz"][0]), float(slot["xyz"][1]))
+                lat_diff = abs(lat - slat)
+                lon_diff = abs(lon - slon)
+                if lat_diff < limit_gps and lon_diff < limit_gps:
+                    total_diff = lat_diff + lon_diff
+                    if total_diff < best_diff:
+                        best_diff = total_diff
+                        best_slot = slot
+                        
+        if best_slot is not None:
+            return best_slot
+            
+        # Create a new dynamic slot
+        new_idx = len(self._rescue_person_slots) + 1
+        new_slot = {
+            "id": f"person_{new_idx}",
+            "xyz": (float(xyz[0]), float(xyz[1]), float(xyz[2])),
+            "label": f"Person {new_idx}"
+        }
+        self._rescue_person_slots.append(new_slot)
+        return new_slot
+
+
 
     def _person_log_key_from_world_xy(self, x: float, y: float) -> str:
         """Stable log id for a distinct world position (~2 m cells)."""

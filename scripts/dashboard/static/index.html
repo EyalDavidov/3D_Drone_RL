@@ -94,17 +94,17 @@
                 <span class="playback-badge">PLAYBACK</span>
                 <span id="global-timeline-time" class="time-display mono">0.00s / 0.00s</span>
             </div>
-            
+
             <div class="control-group-center">
                 <button id="global-btn-prev" class="ctrl-btn" title="Previous Frame">⏮</button>
                 <button id="global-btn-play" class="ctrl-btn play-btn" title="Play">▶</button>
                 <button id="global-btn-pause" class="ctrl-btn play-btn" title="Pause" style="display: none;">⏸</button>
                 <button id="global-btn-next" class="ctrl-btn" title="Next Frame">⏭</button>
                 <button id="global-btn-stop" class="ctrl-btn stop-btn" title="Stop Playback & Reconnect">⏹</button>
-                
+
                 <input type="range" id="global-timeline-slider" class="timeline-slider" min="0" value="0">
             </div>
-            
+
             <div class="control-group-right">
                 <span class="speed-label">SPEED</span>
                 <select id="global-playback-speed" class="speed-select">
@@ -125,7 +125,8 @@
         <section class="tab-content active" id="tab-cameras">
             <div class="cam-main-wrap">
                 <div class="cam-solo-bar" id="cam-solo-bar" hidden>
-                    <button type="button" class="cam-solo-exit" id="cam-solo-exit" title="Back to 4-up grid">⊞ 4-up</button>
+                    <button type="button" class="cam-solo-exit" id="cam-solo-exit" title="Back to 4-up grid">⊞
+                        4-up</button>
                     <span class="cam-solo-hint">Solo view — switch:</span>
                     <div class="cam-solo-picks">
                         <button type="button" class="cam-solo-pick" data-cam-id="fp">FPV</button>
@@ -135,47 +136,51 @@
                     </div>
                 </div>
                 <div class="cam-wall" id="cam-wall">
-                <div class="panel cam-wall-cell cam-wall-fp" data-cam-id="fp">
-                    <div class="panel-header cam-wall-header">
-                        <span class="panel-icon">🎥</span>
-                        <span class="panel-title">Front · FPV</span>
-                        <span class="panel-badge live">LIVE</span>
-                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
-                        <button class="minimize-btn" title="Minimize">−</button>
+                    <div class="panel cam-wall-cell cam-wall-fp" data-cam-id="fp">
+                        <div class="panel-header cam-wall-header">
+                            <span class="panel-icon">🎥</span>
+                            <span class="panel-title">Front · FPV</span>
+                            <span class="panel-badge live">LIVE</span>
+                            <button type="button" class="cam-solo-btn" title="Solo view"
+                                aria-label="Solo view">👁</button>
+                            <button class="minimize-btn" title="Minimize">−</button>
+                        </div>
+                        <div class="panel-body cam-wall-body"><canvas id="cam-fp"></canvas></div>
                     </div>
-                    <div class="panel-body cam-wall-body"><canvas id="cam-fp"></canvas></div>
-                </div>
-                <div class="panel cam-wall-cell" data-cam-id="t1">
-                    <div class="panel-header cam-wall-header">
-                        <span class="panel-icon">📷</span>
-                        <span class="panel-title">Rear · Chase</span>
-                        <span class="panel-badge dim">REAR</span>
-                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
-                        <button class="minimize-btn" title="Minimize">−</button>
+                    <div class="panel cam-wall-cell" data-cam-id="t1">
+                        <div class="panel-header cam-wall-header">
+                            <span class="panel-icon">📷</span>
+                            <span class="panel-title">Rear · Chase</span>
+                            <span class="panel-badge dim">REAR</span>
+                            <button type="button" class="cam-solo-btn" title="Solo view"
+                                aria-label="Solo view">👁</button>
+                            <button class="minimize-btn" title="Minimize">−</button>
+                        </div>
+                        <div class="panel-body cam-wall-body"><canvas id="cam-t1"></canvas></div>
                     </div>
-                    <div class="panel-body cam-wall-body"><canvas id="cam-t1"></canvas></div>
-                </div>
-                <div class="panel cam-wall-cell" data-cam-id="t2">
-                    <div class="panel-header cam-wall-header">
-                        <span class="panel-icon">◧</span>
-                        <span class="panel-title">Port · Left</span>
-                        <span class="panel-badge dim">LEFT</span>
-                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
-                        <button class="minimize-btn" title="Minimize">−</button>
+                    <div class="panel cam-wall-cell" data-cam-id="t2">
+                        <div class="panel-header cam-wall-header">
+                            <span class="panel-icon">◧</span>
+                            <span class="panel-title">Port · Left</span>
+                            <span class="panel-badge dim">LEFT</span>
+                            <button type="button" class="cam-solo-btn" title="Solo view"
+                                aria-label="Solo view">👁</button>
+                            <button class="minimize-btn" title="Minimize">−</button>
+                        </div>
+                        <div class="panel-body cam-wall-body"><canvas id="cam-t2"></canvas></div>
                     </div>
-                    <div class="panel-body cam-wall-body"><canvas id="cam-t2"></canvas></div>
-                </div>
-                <div class="panel cam-wall-cell" data-cam-id="t3">
-                    <div class="panel-header cam-wall-header">
-                        <span class="panel-icon">◨</span>
-                        <span class="panel-title">Starboard · Right</span>
-                        <span class="panel-badge dim">RIGHT</span>
-                        <button type="button" class="cam-solo-btn" title="Solo view" aria-label="Solo view">👁</button>
-                        <button class="minimize-btn" title="Minimize">−</button>
+                    <div class="panel cam-wall-cell" data-cam-id="t3">
+                        <div class="panel-header cam-wall-header">
+                            <span class="panel-icon">◨</span>
+                            <span class="panel-title">Starboard · Right</span>
+                            <span class="panel-badge dim">RIGHT</span>
+                            <button type="button" class="cam-solo-btn" title="Solo view"
+                                aria-label="Solo view">👁</button>
+                            <button class="minimize-btn" title="Minimize">−</button>
+                        </div>
+                        <div class="panel-body cam-wall-body"><canvas id="cam-t3"></canvas></div>
                     </div>
-                    <div class="panel-body cam-wall-body"><canvas id="cam-t3"></canvas></div>
                 </div>
-            </div>
             </div>
             <div class="cam-sensors-strip">
                 <div class="cam-sensors-label">Neural sensor feeds · Depth · Saliency · AE</div>
@@ -240,11 +245,16 @@
                     <span class="fc-sum-title">Flight Controller</span>
                     <span class="fc-sum-badge">LLC · body</span>
                     <span class="fc-chips">
-                        <span class="fc-chip"><span class="fc-chip-lbl">Yaw</span><span class="mono fc-chip-val" id="fc-yaw-err">—</span></span>
-                        <span class="fc-chip"><span class="fc-chip-lbl">Z</span><span class="mono fc-chip-val" id="fc-z-err">—</span></span>
-                        <span class="fc-chip"><span class="fc-chip-lbl">XY</span><span class="mono fc-chip-val" id="fc-xy-pos-err">—</span></span>
-                        <span class="fc-chip"><span class="fc-chip-lbl">εVx</span><span class="mono fc-chip-val" id="fc-vel-err-x">—</span></span>
-                        <span class="fc-chip"><span class="fc-chip-lbl">εVy</span><span class="mono fc-chip-val" id="fc-vel-err-y">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">Yaw</span><span class="mono fc-chip-val"
+                                id="fc-yaw-err">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">Z</span><span class="mono fc-chip-val"
+                                id="fc-z-err">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">XY</span><span class="mono fc-chip-val"
+                                id="fc-xy-pos-err">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">εVx</span><span class="mono fc-chip-val"
+                                id="fc-vel-err-x">—</span></span>
+                        <span class="fc-chip"><span class="fc-chip-lbl">εVy</span><span class="mono fc-chip-val"
+                                id="fc-vel-err-y">—</span></span>
                     </span>
                 </summary>
                 <div class="fc-expanded">
@@ -263,7 +273,8 @@
                         </div>
                         <div class="fc-mini-block fc-mini-wide">
                             <div class="fc-mini-head">LLC actions</div>
-                            <div class="fc-mini-row fc-actions-row"><span class="mono fc-actions-val" id="fc-ll-actions">—</span></div>
+                            <div class="fc-mini-row fc-actions-row"><span class="mono fc-actions-val"
+                                    id="fc-ll-actions">—</span></div>
                             <details class="fc-obs-details">
                                 <summary class="fc-obs-summary">LLC Obs (13D) — debug</summary>
                                 <div class="fc-obs-grid" id="fc-ll-obs-grid"></div>
@@ -317,8 +328,10 @@
                             <span><i style="background:#1f9c8c"></i>Obstacle</span>
                             <span><i style="background:#ff8800"></i>Frontier</span>
                             <span><i class="smap-legend-drone"></i>Drone</span>
-                            <span><i style="background:#ff00cc; width:6px; height:12px; border-radius:2px; box-shadow:0 0 6px #ff00cc; margin-left:2px; margin-right:2px;"></i>Person</span>
-                            <span><i style="background:#00d4ff; width:6px; height:12px; border-radius:2px; box-shadow:0 0 6px #00d4ff; margin-left:2px; margin-right:2px;"></i>Goal</span>
+                            <span><i
+                                    style="background:#ff00cc; width:6px; height:12px; border-radius:2px; box-shadow:0 0 6px #ff00cc; margin-left:2px; margin-right:2px;"></i>Person</span>
+                            <span><i
+                                    style="background:#00d4ff; width:6px; height:12px; border-radius:2px; box-shadow:0 0 6px #00d4ff; margin-left:2px; margin-right:2px;"></i>Goal</span>
                         </div>
                     </div>
                 </div>
@@ -411,7 +424,8 @@
                                 <span><i class="smap-legend-drone"></i>Drone</span>
                                 <span><i class="smap-legend-person"></i>Person</span>
                                 <span><i class="smap-legend-person found"></i>Found</span>
-                                <span><i style="background:#2ff3ff; border-radius:50%; box-shadow:0 0 6px #2ff3ff;"></i>Goal</span>
+                                <span><i
+                                        style="background:#2ff3ff; border-radius:50%; box-shadow:0 0 6px #2ff3ff;"></i>Goal</span>
                             </div>
 
                             <div class="smap-hud">
@@ -574,8 +588,11 @@
                         <div class="glass-header">
                             <span class="glass-title"><span class="glass-title-icon">📸</span> Captured Frames</span>
                         </div>
-                        <div class="glass-body" id="yolo-gallery" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px; max-height: 180px; overflow-y: auto;">
-                            <div id="yolo-gallery-empty" style="grid-column: span 2; text-align: center; color: rgba(255, 255, 255, 0.4); font-size: 0.8rem; padding: 16px 0;">NO FRAMES SAVED</div>
+                        <div class="glass-body" id="yolo-gallery"
+                            style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px; max-height: 180px; overflow-y: auto;">
+                            <div id="yolo-gallery-empty"
+                                style="grid-column: span 2; text-align: center; color: rgba(255, 255, 255, 0.4); font-size: 0.8rem; padding: 16px 0;">
+                                NO FRAMES SAVED</div>
                         </div>
                     </div>
                     <div class="glass-panel">
@@ -591,8 +608,18 @@
                                     class="mono glass-stat-val" id="yolo-thresh-val">70%</span></div>
                             <div class="glass-stat-row"><span class="glass-stat-label">Detections</span><span
                                     class="mono glass-stat-val" id="yolo-boxes-val">0</span></div>
-                            <div class="glass-stat-row"><span class="glass-stat-label">Person</span><span
-                                    class="mono glass-stat-val" id="yolo-person-val">Not found</span></div>
+                            <div class="glass-stat-row"
+                                style="flex-direction: column; align-items: flex-start; gap: 8px; border-bottom: none; padding-bottom: 0;">
+                                <span class="glass-stat-label"
+                                    style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Persons
+                                    Detected</span>
+                                <div id="yolo-person-list"
+                                    style="display: flex; flex-direction: column; gap: 6px; width: 100%; margin-top: 4px;">
+                                    <div
+                                        style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.4); text-align: center; width: 100%; padding: 8px 0;">
+                                        None</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -611,9 +638,12 @@
                         </div>
                     </div>
                     <div class="rec-header-stats">
-                        <div class="rec-hstat"><span class="rec-hstat-lbl">Sessions</span><span class="mono rec-hstat-val" id="rec-count-val">—</span></div>
-                        <div class="rec-hstat"><span class="rec-hstat-lbl">Loaded</span><span class="mono rec-hstat-val" id="rec-loaded-val">None</span></div>
-                        <div class="rec-hstat"><span class="rec-hstat-lbl">Frames</span><span class="mono rec-hstat-val" id="rec-frames-val">—</span></div>
+                        <div class="rec-hstat"><span class="rec-hstat-lbl">Sessions</span><span
+                                class="mono rec-hstat-val" id="rec-count-val">—</span></div>
+                        <div class="rec-hstat"><span class="rec-hstat-lbl">Loaded</span><span class="mono rec-hstat-val"
+                                id="rec-loaded-val">None</span></div>
+                        <div class="rec-hstat"><span class="rec-hstat-lbl">Frames</span><span class="mono rec-hstat-val"
+                                id="rec-frames-val">—</span></div>
                     </div>
                     <span id="playback-status-badge" class="rec-status-badge mono">OFFLINE</span>
                 </header>
@@ -659,25 +689,33 @@
                             </div>
                             <div class="rec-fdr-charts">
                                 <canvas id="rec-fdr-canvas" class="rec-fdr-canvas"></canvas>
-                                <input type="range" id="timeline-slider" class="rec-fdr-scrubber" min="0" max="100" value="0">
+                                <input type="range" id="timeline-slider" class="rec-fdr-scrubber" min="0" max="100"
+                                    value="0">
                                 <div class="rec-fdr-axis mono" id="rec-fdr-axis">T+ 0:00</div>
                             </div>
                         </div>
 
                         <div class="rec-live-strip">
-                            <div class="rec-live-item"><span class="rec-live-lbl">ALT</span><span class="mono rec-live-val" id="rec-live-alt">—</span></div>
-                            <div class="rec-live-item"><span class="rec-live-lbl">GS</span><span class="mono rec-live-val" id="rec-live-gs">—</span></div>
-                            <div class="rec-live-item"><span class="rec-live-lbl">HDG</span><span class="mono rec-live-val" id="rec-live-hdg">—</span></div>
-                            <div class="rec-live-item"><span class="rec-live-lbl">MODE</span><span class="mono rec-live-val" id="rec-live-mode">—</span></div>
-                            <div class="rec-live-item"><span class="rec-live-lbl">POS</span><span class="mono rec-live-val" id="rec-live-pos">—</span></div>
-                            <div class="rec-live-item rec-live-crash"><span class="rec-live-lbl">EVENT</span><span class="mono rec-live-val" id="rec-live-event">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">ALT</span><span
+                                    class="mono rec-live-val" id="rec-live-alt">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">GS</span><span
+                                    class="mono rec-live-val" id="rec-live-gs">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">HDG</span><span
+                                    class="mono rec-live-val" id="rec-live-hdg">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">MODE</span><span
+                                    class="mono rec-live-val" id="rec-live-mode">—</span></div>
+                            <div class="rec-live-item"><span class="rec-live-lbl">POS</span><span
+                                    class="mono rec-live-val" id="rec-live-pos">—</span></div>
+                            <div class="rec-live-item rec-live-crash"><span class="rec-live-lbl">EVENT</span><span
+                                    class="mono rec-live-val" id="rec-live-event">—</span></div>
                         </div>
 
                         <div class="rec-transport rec-transport-flight" id="playback-controls">
                             <div class="rec-transport-btns">
                                 <button class="rec-fbtn" id="btn-rewind" title="Back 10s">−10s</button>
                                 <button class="rec-fbtn rec-fbtn-primary" id="btn-play" title="Replay">▶ Replay</button>
-                                <button class="rec-fbtn rec-fbtn-warn" id="btn-pause" title="Hold" style="display:none">⏸ Hold</button>
+                                <button class="rec-fbtn rec-fbtn-warn" id="btn-pause" title="Hold"
+                                    style="display:none">⏸ Hold</button>
                                 <button class="rec-fbtn" id="btn-stop" title="Eject log">■ Eject</button>
                                 <button class="rec-fbtn" id="btn-ffwd" title="Forward 10s">+10s</button>
                             </div>
@@ -710,26 +748,40 @@
                         <div class="rec-insp-body">
                             <div class="rec-insp-section">
                                 <div class="rec-insp-head">Session</div>
-                                <div class="rec-insp-row"><span>File</span><span class="mono rec-insp-val" id="insp-filename">—</span></div>
-                                <div class="rec-insp-row"><span>Duration</span><span class="mono rec-insp-val" id="insp-duration">—</span></div>
-                                <div class="rec-insp-row"><span>Elapsed</span><span class="mono rec-insp-val" id="insp-elapsed">—</span></div>
-                                <div class="rec-insp-row"><span>Frames</span><span class="mono rec-insp-val" id="insp-frames">—</span></div>
-                                <div class="rec-insp-row"><span>Size</span><span class="mono rec-insp-val" id="insp-size">—</span></div>
-                                <div class="rec-insp-row"><span>Level</span><span class="mono rec-insp-val" id="insp-level">—</span></div>
+                                <div class="rec-insp-row"><span>File</span><span class="mono rec-insp-val"
+                                        id="insp-filename">—</span></div>
+                                <div class="rec-insp-row"><span>Duration</span><span class="mono rec-insp-val"
+                                        id="insp-duration">—</span></div>
+                                <div class="rec-insp-row"><span>Elapsed</span><span class="mono rec-insp-val"
+                                        id="insp-elapsed">—</span></div>
+                                <div class="rec-insp-row"><span>Frames</span><span class="mono rec-insp-val"
+                                        id="insp-frames">—</span></div>
+                                <div class="rec-insp-row"><span>Size</span><span class="mono rec-insp-val"
+                                        id="insp-size">—</span></div>
+                                <div class="rec-insp-row"><span>Level</span><span class="mono rec-insp-val"
+                                        id="insp-level">—</span></div>
                             </div>
                             <div class="rec-insp-section">
                                 <div class="rec-insp-head">Mission</div>
-                                <div class="rec-insp-row"><span>Status</span><span class="mono rec-insp-val" id="insp-status">—</span></div>
-                                <div class="rec-insp-row"><span>Targets</span><span class="mono rec-insp-val" id="insp-targets">—</span></div>
-                                <div class="rec-insp-row"><span>Map coverage</span><span class="mono rec-insp-val" id="insp-coverage">—</span></div>
-                                <div class="rec-insp-row rec-insp-crash"><span>Crash</span><span class="mono rec-insp-val" id="insp-crash">—</span></div>
+                                <div class="rec-insp-row"><span>Status</span><span class="mono rec-insp-val"
+                                        id="insp-status">—</span></div>
+                                <div class="rec-insp-row"><span>Targets</span><span class="mono rec-insp-val"
+                                        id="insp-targets">—</span></div>
+                                <div class="rec-insp-row"><span>Map coverage</span><span class="mono rec-insp-val"
+                                        id="insp-coverage">—</span></div>
+                                <div class="rec-insp-row rec-insp-crash"><span>Crash</span><span
+                                        class="mono rec-insp-val" id="insp-crash">—</span></div>
                             </div>
                             <div class="rec-insp-section">
                                 <div class="rec-insp-head">Current frame</div>
-                                <div class="rec-insp-row"><span>Tick</span><span class="mono rec-insp-val" id="insp-tick">—</span></div>
-                                <div class="rec-insp-row"><span>SLAM</span><span class="mono rec-insp-val" id="insp-slam">—</span></div>
-                                <div class="rec-insp-row"><span>Position</span><span class="mono rec-insp-val" id="insp-pos">—</span></div>
-                                <div class="rec-insp-row"><span>Speed</span><span class="mono rec-insp-val" id="insp-speed">—</span></div>
+                                <div class="rec-insp-row"><span>Tick</span><span class="mono rec-insp-val"
+                                        id="insp-tick">—</span></div>
+                                <div class="rec-insp-row"><span>SLAM</span><span class="mono rec-insp-val"
+                                        id="insp-slam">—</span></div>
+                                <div class="rec-insp-row"><span>Position</span><span class="mono rec-insp-val"
+                                        id="insp-pos">—</span></div>
+                                <div class="rec-insp-row"><span>Speed</span><span class="mono rec-insp-val"
+                                        id="insp-speed">—</span></div>
                             </div>
                         </div>
                     </aside>

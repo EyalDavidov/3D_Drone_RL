@@ -546,12 +546,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
     def _build_rescue_person_log_slots(self) -> list[dict]:
         """Fixed YOLO log slots — one row per physical rescue person."""
-        room3 = getattr(self.cfg, "brain_room3_person_local", (0.0, -10.0, 0.0))
-        final_a = getattr(self.cfg, "brain_final_person_local", (-4.0, -20.0, 0.0))
-        return [
-            {"id": "room3", "xyz": tuple(room3), "label": "Room 3 person"},
-            {"id": "final_a", "xyz": tuple(final_a), "label": "Final room"},
-        ]
+        return []
 
     def _build_dynamic_spawn_log_slots(
         self, local_positions: list[tuple[float, float, float]]
@@ -1277,10 +1272,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
     def _capture_brain_mission(self):
         if not hasattr(self, "_brain"):
             return None
-        # For SLAM brain, skip mission capture if people have been found (no need to re-rescue)
-        found = getattr(self._brain, "found_person", False) or len(getattr(self._brain, "rescued_people", [])) > 0
-        if found:
-            return None
+        is_slam = getattr(self.cfg, "brain_real_slam_mode", False)
+        if not is_slam:
+            # For non-SLAM brain, skip mission capture if people have been found (no need to re-rescue)
+            found = getattr(self._brain, "found_person", False) or len(getattr(self._brain, "rescued_people", [])) > 0
+            if found:
+                return None
         if not getattr(self.cfg, "brain_preserve_mission_on_crash", True):
             return None
         snap = self._brain.capture_mission_snapshot()

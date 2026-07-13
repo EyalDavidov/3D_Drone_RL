@@ -44,6 +44,7 @@ class YoloHud {
         this._boxesRight = [];
         this._state = 'idle';
         this._threshold = 0.7;
+        this._selectedPersonKey = null;
 
         // Smoothed / animated values
         this._dispBoxes = [];       // eased box geometry for smooth motion
@@ -79,7 +80,7 @@ class YoloHud {
             liveVal:     document.getElementById('yolo-live-val'),
             threshVal:   document.getElementById('yolo-thresh-val'),
             boxesVal:    document.getElementById('yolo-boxes-val'),
-            personVal:   document.getElementById('yolo-person-val'),
+            personList:  document.getElementById('yolo-person-list'),
             log:         document.getElementById('yolo-log'),
             logEmpty:    document.getElementById('yolo-log-empty'),
             logCount:    document.getElementById('yolo-log-count'),
@@ -188,16 +189,56 @@ class YoloHud {
         // Intel card
         this._updateIntel(stats.intel);
 
-        // Sidebar telemetry
-        if (this.el.confVal)  this.el.confVal.textContent = bestPct.toFixed(1) + '%';
-        if (this.el.liveVal)  this.el.liveVal.textContent = (live * 100).toFixed(1) + '%';
+        // Sidebar telemetry based on selected person
+        const logEntries = stats.rescue_log || [];
+        if (logEntries.length > 0 && (!this._selectedPersonKey || !logEntries.some(p => p.key === this._selectedPersonKey))) {
+            this._selectedPersonKey = logEntries[0].key;
+        }
+
+        const selectedPerson = logEntries.find(p => p.key === this._selectedPersonKey);
+        let activeBest = 0;
+        let activeLive = 0;
+        if (selectedPerson) {
+            activeBest = selectedPerson.conf;
+            const frameDiff = stats.detection_count - selectedPerson.frame;
+            if (frameDiff >= 0 && frameDiff <= 3) {
+                activeLive = selectedPerson.conf;
+            }
+        }
+
+        if (this.el.confVal)  this.el.confVal.textContent = (activeBest * 100).toFixed(1) + '%';
+        if (this.el.liveVal)  this.el.liveVal.textContent = (activeLive * 100).toFixed(1) + '%';
         if (this.el.threshVal) this.el.threshVal.textContent = (this._threshold * 100).toFixed(0) + '%';
         if (this.el.boxesVal) this.el.boxesVal.textContent = this._boxes.length + this._boxesLeft.length + this._boxesRight.length;
-        const personActive = stats.person_found || stats.person_seen
-            || state === 'detected' || state === 'confirmed' || state === 'seen';
-        if (this.el.personVal) {
-            this.el.personVal.textContent = personActive ? 'DETECTED' : 'Not found';
-            this.el.personVal.dataset.state = personActive ? 'confirmed' : 'idle';
+
+        // Update Persons list in sidebar
+        const listContainer = this.el.personList;
+        if (listContainer) {
+            listContainer.innerHTML = '';
+            if (logEntries.length === 0) {
+                listContainer.innerHTML = '<div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.4); text-align: center; width: 100%; padding: 8px 0;">None</div>';
+            } else {
+                for (const entry of logEntries) {
+                    const row = document.createElement('div');
+                    row.className = 'person-row';
+                    if (entry.key === this._selectedPersonKey) {
+                        row.classList.add('active');
+                    }
+                    const tier = entry.conf >= this._threshold ? 'confirmed'
+                               : entry.conf >= (this._threshold * 0.7) ? 'noted' : 'low';
+                    const statusText = entry.conf >= this._threshold ? 'CONFIRMED' : 'DETECTED';
+
+                    row.innerHTML = `
+                        <span class="person-name">${entry.label || 'Person'}</span>
+                        <span class="person-badge" data-state="${tier}">${statusText}</span>
+                    `;
+                    row.addEventListener('click', () => {
+                        this._selectedPersonKey = entry.key;
+                        this.update(this._stats);
+                    });
+                    listContainer.appendChild(row);
+                }
+            }
         }
 
         // Alert overlay
@@ -254,7 +295,7 @@ class YoloHud {
             : filtered.length;
         if (this.el.logCount) this.el.logCount.textContent = logCount;
 
-        const sig = filtered.map(e => `${e.key}:${e.conf}`).join('|');
+        const sig = filtered.map(e => `${e.key}:${e.conf}`).join('|') + `|sel:${this._selectedPersonKey}`;
         if (sig === this._logSig) return;   // no change → skip DOM churn
         this._logSig = sig;
 
@@ -273,6 +314,13 @@ class YoloHud {
             card.dataset.tier = tier;
             card.style.setProperty('--accent', col.stroke);
             card.style.setProperty('--accent-glow', col.glow);
+            card.style.cursor = 'pointer';
+
+            if (entry.key === this._selectedPersonKey) {
+                card.classList.add('active');
+                card.style.border = `1px solid ${col.stroke}`;
+                card.style.boxShadow = `0 0 10px ${col.glow}`;
+            }
 
             const hasGps = entry.gps_lat != null && entry.gps_lon != null;
             const xyz = Array.isArray(entry.xyz) ? entry.xyz : null;
@@ -300,6 +348,12 @@ class YoloHud {
                     <div class="yhud-log-bar"><div class="yhud-log-bar-fill" style="width:${this._clampPct(conf * 100)}%"></div></div>
                     ${coordsHtml}
                 </div>`;
+
+            card.addEventListener('click', () => {
+                this._selectedPersonKey = entry.key;
+                this.update(this._stats);
+            });
+
             host.appendChild(card);
         }
     }

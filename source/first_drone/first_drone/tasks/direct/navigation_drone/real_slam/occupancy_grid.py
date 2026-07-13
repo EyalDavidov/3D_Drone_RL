@@ -342,6 +342,16 @@ class OccupancyGridMapper:
                     dq.append((nr, nc))
         return reachable
 
+    def get_collision_grid(self, safety_margin=0.35):
+        """Binary grid representing walls and obstacles inflated by safety_margin (meters) for lookahead safety."""
+        wall_mask, obstacle_mask = self.get_wall_obstacle_masks(use_walkable=False)
+        safety_cells = max(1, int(np.round(safety_margin / self.cell_size)))
+        k_size = 2 * safety_cells + 1
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+        inflated_walls = cv2.dilate(wall_mask, k, iterations=1)
+        inflated_obs = cv2.dilate(obstacle_mask, k, iterations=1)
+        return ((inflated_walls > 0) | (inflated_obs > 0)).astype(np.uint8)
+
     def segment_hits_wall(self, x0, y0, x1, y1, blocked=None) -> bool:
         """True if the straight world segment (x0,y0)->(x1,y1) crosses a blocked cell.
 
@@ -349,16 +359,21 @@ class OccupancyGridMapper:
         mapped wall toward a frontier sitting in a dead-end corridor behind it.
         """
         if blocked is None:
-            blocked = self.get_planning_grid()
+            blocked = self.get_collision_grid(safety_margin=0.35)
         r0, c0 = self.world_to_grid(x0, y0)
         r1, c1 = self.world_to_grid(x1, y1)
         n = int(max(abs(r1 - r0), abs(c1 - c0))) + 1
         rs = np.linspace(r0, r1, n).round().astype(int)
         cs = np.linspace(c0, c1, n).round().astype(int)
-        for r, c in zip(rs, cs):
+        
+        # Skip the first few cells near the start position (0.20m radius around drone)
+        # to prevent self-blocking when the drone is flying close to a wall.
+        skip_cells = max(1, int(np.round(0.20 / self.cell_size)))
+        for r, c in zip(rs[skip_cells:], cs[skip_cells:]):
             if self.is_in_bounds(int(r), int(c)) and blocked[int(r), int(c)]:
                 return True
         return False
+
 
     def segment_is_known_free(self, x0, y0, x1, y1, tail_cells: int = 6) -> bool:
         """True only if the straight segment runs through OBSERVED-FREE space.
