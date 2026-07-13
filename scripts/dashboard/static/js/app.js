@@ -336,7 +336,7 @@
         } else if (spawn.active && spawn.total > 0) {
             spawnStatusEl.textContent = `${spawn.detected}/${spawn.total} found · ${Math.round(data.map_explored_pct || 0)}% map`;
         } else if (canSpawn) {
-            spawnStatusEl.textContent = 'Ready — click Spawn';
+            spawnStatusEl.textContent = '';
         } else {
             spawnStatusEl.textContent = 'Connect to sim';
         }
@@ -391,7 +391,9 @@
         });
 
         if (data.level_time !== undefined) episodeTimeEl.textContent = formatTime(data.level_time, true);
-        if (data.level_duration !== undefined) episodeDurationEl.textContent = formatTime(data.level_duration, false);
+        if (data.level_duration !== undefined && episodeDurationEl) {
+            episodeDurationEl.textContent = formatTime(data.level_duration, false);
+        }
         if (data.tick !== undefined) tickCounterEl.textContent = data.tick.toLocaleString();
     }
 
@@ -570,6 +572,10 @@
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
+        
+        // Guard against zero-dimension layout when the tab is hidden
+        if (rect.width === 0 || rect.height === 0) return;
+        
         canvas.width = Math.max(1, Math.floor(rect.width * dpr));
         canvas.height = Math.max(1, Math.floor(rect.height * dpr));
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -621,12 +627,25 @@
 
             for (let i = 0; i < n; i++) {
                 if (!channels.crash[i]) continue;
+                // Only draw the marker at the onset of the crash state to prevent drawing contiguous blocks that cover the graphs.
+                if (i > 0 && channels.crash[i - 1]) continue;
+
                 const x = (i / Math.max(n - 1, 1)) * w;
+                
+                // Draw a thin vertical indicator line
+                ctx.strokeStyle = 'rgba(248, 113, 113, 0.35)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x, y0);
+                ctx.lineTo(x, y0 + chH);
+                ctx.stroke();
+
+                // Draw a clean small triangle at the top
                 ctx.fillStyle = '#f87171';
                 ctx.beginPath();
-                ctx.moveTo(x, y0 + 4);
-                ctx.lineTo(x - 4, y0 + 12);
-                ctx.lineTo(x + 4, y0 + 12);
+                ctx.moveTo(x, y0 + 2);
+                ctx.lineTo(x - 3, y0 + 8);
+                ctx.lineTo(x + 3, y0 + 8);
                 ctx.closePath();
                 ctx.fill();
             }
@@ -822,7 +841,6 @@
 
                     row.innerHTML = `
                         <span class="rec-lib-date">${rec.date}</span>
-                        <span class="rec-lib-status ${statusClass(st)}">${st}</span>
                         <span class="rec-lib-found mono">${rec.targets_found}/${rec.targets_total}</span>
                         <span class="rec-lib-cov mono">${rec.coverage.toFixed(1)}%</span>
                         <span class="rec-lib-dur mono">${formatTime(rec.duration)}</span>

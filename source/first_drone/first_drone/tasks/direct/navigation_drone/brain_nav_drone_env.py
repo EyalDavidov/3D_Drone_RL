@@ -1548,6 +1548,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         super()._reset_idx(env_ids)
         self._apply_brain_spawn_and_goal(env_ids, mission_snapshot=mission)
         self._stuck_step_count = 0
+        self._telemetry_last_crash_reason = None
+        self._telemetry_crash_timestep = -1
         if env_ids.shape[0] > 0:
             self._prev_drone_pos_xy = self._robot.data.root_pos_w[0, :2].clone()
             self._randomize_obstacles(env_ids)
@@ -2544,6 +2546,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         The drone brain is NOT given these coordinates — YOLO must find them.
         Replaces static room-3 / final persons when triggered.
         """
+        self._telemetry_last_crash_reason = None
+        self._telemetry_crash_timestep = -1
         count = max(1, min(15, int(count)))
         placed = self._sample_dynamic_spawn_positions(count)
         if not placed:

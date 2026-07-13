@@ -171,8 +171,8 @@ body { display: flex; flex-direction: column; }
     align-items: center;
     gap: 2px;
     height: 100%;
-    flex: 1;
-    min-width: 0;
+    flex: 0 1 auto;
+    min-width: min-content;
     justify-content: center;
 }
 
@@ -1662,12 +1662,44 @@ body { display: flex; flex-direction: column; }
     }
 }
 
-@media (max-width: 1480px) {
+@media (max-width: 1600px) {
     #dashboard-header {
         height: auto;
+        display: grid;
+        grid-template-areas: 
+            "left right"
+            "tabs tabs";
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        padding: 8px 12px;
+        gap: 8px 16px;
+    }
+    .header-left {
+        grid-area: left;
+        justify-content: flex-start;
+        width: auto;
+    }
+    .header-right {
+        grid-area: right;
+        justify-content: flex-end;
+        width: auto;
+    }
+    .tab-bar {
+        grid-area: tabs;
+        justify-content: center;
+        border-top: 1px solid var(--glass-border);
+        border-bottom: none;
+        padding-top: 6px;
+        padding-bottom: 0;
+        width: 100%;
+    }
+}
+
+@media (max-width: 1200px) {
+    #dashboard-header {
+        display: flex;
         flex-direction: column;
         align-items: stretch;
-        padding: 8px 12px;
         gap: 8px;
     }
     .header-left, .header-right {
@@ -1675,13 +1707,11 @@ body { display: flex; flex-direction: column; }
         width: 100%;
     }
     .tab-bar {
-        justify-content: center;
+        border-top: none;
         border-bottom: 1px solid var(--glass-border);
-        padding-bottom: 4px;
+        padding-top: 0;
+        padding-bottom: 6px;
     }
-}
-
-@media (max-width: 1200px) {
     .tab {
         padding: 6px 12px;
         font-size: 11px;
@@ -2046,7 +2076,7 @@ body { display: flex; flex-direction: column; }
 
 .rec-lib-cols {
     display: grid;
-    grid-template-columns: 1.4fr 0.8fr 0.7fr 0.6fr 0.6fr;
+    grid-template-columns: 1.5fr 1fr 1fr 1fr;
     gap: 4px;
     padding: 5px 10px;
     font-size: 9px;
@@ -2076,7 +2106,7 @@ body { display: flex; flex-direction: column; }
 
 .rec-lib-row {
     display: grid;
-    grid-template-columns: 1.4fr 0.8fr 0.7fr 0.6fr 0.6fr;
+    grid-template-columns: 1.5fr 1fr 1fr 1fr;
     gap: 4px;
     align-items: center;
     width: 100%;

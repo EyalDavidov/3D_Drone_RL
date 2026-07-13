@@ -217,7 +217,11 @@ class CameraFeeds {
 
         // 1) Ambient blur fill (broadcast / Netflix / FaceTime style)
         ctx.save();
-        ctx.filter = 'blur(32px) brightness(0.5) saturate(1.2)';
+        let blurFilter = 'blur(32px) brightness(0.5) saturate(1.2)';
+        if (key === 'depth') {
+            blurFilter += ' invert(1)';
+        }
+        ctx.filter = blurFilter;
         const cover = Math.max(w / nw, h / nh);
         const bw = nw * cover;
         const bh = nh * cover;
@@ -228,7 +232,12 @@ class CameraFeeds {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
         const { dx, dy, dw, dh } = this._containRect(w, h, nw, nh);
+        ctx.save();
+        if (key === 'depth') {
+            ctx.filter = 'invert(1)';
+        }
         ctx.drawImage(img, dx, dy, dw, dh);
+        ctx.restore();
 
         // 3) Soft vignette on gutter zones
         this._drawLetterboxVignette(ctx, w, h, dx, dy, dw, dh);

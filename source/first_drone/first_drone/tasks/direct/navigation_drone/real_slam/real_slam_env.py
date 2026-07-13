@@ -95,6 +95,8 @@ class SlamBrainModule(BrainModule):
 
         self.active_frontier = None
         self.astar_path_world = []
+        self.waypoints = []
+        self.current_wp_idx = 0
         self.last_drone_yaw = None
         self.explore_step_count = 0
         self.last_scan_pos = None
@@ -106,6 +108,8 @@ class SlamBrainModule(BrainModule):
         # Highest room-checkpoint index reached (bookkeeping only; frontier choice is
         # now pure-SLAM via the heading-biased scorer, no USD room gating).
         self.max_segment_reached = 0
+        self.dynamic_room_nodes = []
+        self._start_pos_xy = None
         # PURE-SLAM anti-backtrack: grid of cells the drone has physically flown
         # near. Frontiers inside this mask are rejected so the drone never turns
         # around to re-target a room/corridor it already crossed. Uses only the
@@ -119,7 +123,7 @@ class SlamBrainModule(BrainModule):
         # flying all the way back across the map into rooms it already explored.
         self.BACKTRACK_MAX_M = 5.0
         # Minimum unknown-region area touching a frontier (filters shadow pockets).
-        self.MIN_UNKNOWN_GAIN = 10
+        self.MIN_UNKNOWN_GAIN = 4
         self._hold_log_ticks = 0
         self._frontier_lock_ticks = 0
         self._stuck_ref_pos = None
@@ -167,6 +171,8 @@ class SlamBrainModule(BrainModule):
         self.max_segment_reached = 0
         self.active_frontier = None
         self.astar_path_world = []
+        self.waypoints = []
+        self.current_wp_idx = 0
         self.explore_step_count = 0
         self.last_scan_pos = None
         self.rescued_people = []
@@ -175,6 +181,8 @@ class SlamBrainModule(BrainModule):
         self.active_frontier_ticks = 0
         self.scanned_rooms = set()
         self.max_segment_reached = 0
+        self.dynamic_room_nodes = []
+        self._start_pos_xy = None
         self.visited_mask = None  # fresh trajectory on a full restart
         self._prev_stamp_xy = None
         self._prev_pos_xy = None
@@ -190,19 +198,38 @@ class SlamBrainModule(BrainModule):
         snap["rescued_people"] = [p.copy() for p in self.rescued_people]
         snap["rescued_people_conf"] = [float(c) for c in getattr(self, "rescued_people_conf", [])]
         snap["scanned_rooms"] = set(self.scanned_rooms)
-        # Preserve the frontier blacklist across the crash, and blacklist the target
-        # the drone was chasing when it crashed — otherwise it re-picks the same
-        # unreachable frontier after respawn and crashes again (reset loop).
         blk = [list(b) for b in getattr(self, "blacklisted_frontiers", [])]
         af = getattr(self, "active_frontier", None)
         if af is not None and af.get("centroid_world") is not None:
-            blk.append(list(af["centroid_world"]))
+            # Smart Blacklist: Do not blacklist a major pathway (large unknown gain)
+            # if the crash occurred far from it. Mid-corridor collisions/control failures en-route
+            # should not block the pathway; only targets where the drone crashed/got stuck directly at
+            # the target location (within 1.5m) should be blacklisted.
+            d_pos_w = self.env._robot.data.root_pos_w[0].cpu().numpy()
+            centroid = np.array(af["centroid_world"])
+            dist = np.linalg.norm(d_pos_w[:2] - centroid[:2])
+            unknown_gain = int(af.get("unknown_gain", 0))
+
+            if dist >= 1.5 and unknown_gain >= 12:
+                print(
+                    f"\n[SLAM Brain] Drone crashed en-route to major target ({dist:.2f}m away, gain {unknown_gain}). "
+                    "Skipping blacklist to preserve this pathway."
+                )
+            else:
+                print(
+                    f"\n[SLAM Brain] Blacklisting unreachable/dead-end target centroid {af['centroid_world']} "
+                    f"({dist:.2f}m away, gain {unknown_gain})."
+                )
+                blk.append(list(af["centroid_world"]))
         snap["blacklisted_frontiers"] = blk
         if self.last_scan_pos is not None:
             snap["last_scan_pos"] = self.last_scan_pos.copy()
         if getattr(self, "visited_mask", None) is not None:
             snap["visited_mask"] = self.visited_mask.copy()
             
+        snap["dynamic_room_nodes"] = [node.tolist() for node in getattr(self, "dynamic_room_nodes", [])]
+        snap["start_pos_xy"] = self._start_pos_xy.tolist() if getattr(self, "_start_pos_xy", None) is not None else None
+
         return snap
 
     def restore_mission_snapshot(self, snap):
@@ -228,12 +255,18 @@ class SlamBrainModule(BrainModule):
         self.state = "EXPLORE"
         self.active_frontier = None
         self.astar_path_world = []
+        self.waypoints = []
+        self.current_wp_idx = 0
         self.explore_step_count = 50  # force immediate path generation
         # Keep the blacklist (incl. the frontier we just crashed on) so recovery
         # doesn't re-select it and loop.
         self.blacklisted_frontiers = [np.array(b) for b in snap.get("blacklisted_frontiers", [])]
         if snap.get("visited_mask") is not None:
             self.visited_mask = np.array(snap["visited_mask"], dtype=bool)
+        if "dynamic_room_nodes" in snap:
+            self.dynamic_room_nodes = [np.array(node) for node in snap["dynamic_room_nodes"]]
+        if "start_pos_xy" in snap and snap["start_pos_xy"] is not None:
+            self._start_pos_xy = np.array(snap["start_pos_xy"])
         self.active_frontier_ticks = 0
         self._stuck_ref_pos = None
         self._stuck_ticks = 0
@@ -541,20 +574,42 @@ class SlamBrainModule(BrainModule):
             return False
         return self.mapper.is_narrow_frontier(goal)
 
-    def _is_backtrack_target(self, frontier, d_pos_w, came_from=None) -> bool:
+    def _is_backtrack_target(self, frontier, d_pos_w, came_from=None, ignore_heading_backtrack=False) -> bool:
         """True if committing to this frontier means revisiting explored ground."""
-        # 1. Segment-based backtracking: block targets in previously cleared rooms
-        seq = getattr(self.env.cfg, "brain_spawn_sequence", None)
+        # 1. Segment-based backtracking: block targets in previously cleared rooms/areas
         max_reached = int(getattr(self, "max_segment_reached", 0))
-        if seq and len(seq) > 0 and max_reached > 0:
+        if hasattr(self, "dynamic_room_nodes") and len(self.dynamic_room_nodes) > 0 and max_reached > 0:
             env_origin = self.env._terrain.env_origins[0].cpu().numpy()
             c_world = frontier.get("centroid_world")
             if c_world is not None:
+                # Get frontier coordinates relative to environment origin to match our dynamic nodes
                 f_xy = np.array([float(c_world[0]) - float(env_origin[0]), float(c_world[1]) - float(env_origin[1])])
-                distances = [np.linalg.norm(f_xy - np.array(pt[:2])) for pt in seq]
+                distances = [np.linalg.norm(f_xy - node) for node in self.dynamic_room_nodes]
                 f_segment_idx = int(np.argmin(distances))
+                
                 if f_segment_idx < max_reached:
-                    return True
+                    # Map drone current relative position
+                    drone_xy = d_pos_w[:2] - env_origin[:2]
+                    dist_to_frontier = np.linalg.norm(f_xy - drone_xy)
+                    
+                    # Local backtrack: allow targets that are nearby (within 6.0m) or in the immediate parent segment (max_reached - 1)
+                    if dist_to_frontier > 6.0 and f_segment_idx < (max_reached - 1):
+                        # Global backtrack: block if the frontier is in the opposite direction of the overall exploration path
+                        if getattr(self, "_start_pos_xy", None) is not None:
+                            expl_vec = drone_xy - self._start_pos_xy
+                            to_frontier_vec = f_xy - drone_xy
+                            norm_expl = float(np.linalg.norm(expl_vec))
+                            norm_tf = float(np.linalg.norm(to_frontier_vec))
+                            if norm_expl > 1.0 and norm_tf > 1.0:
+                                dot_val = float(np.dot(expl_vec / norm_expl, to_frontier_vec / norm_tf))
+                                # If the target is clearly behind the general exploration direction, block it
+                                if dot_val < -0.2:
+                                    return True
+                        # If start_pos_xy is not set or direction check is inconclusive, block anyway if segment is too old
+                        return True
+
+        if ignore_heading_backtrack:
+            return False
 
         goal = frontier.get("goal_grid")
         fwd_h, dist = self._frontier_fwd_dot_heading(frontier, d_pos_w)
@@ -580,9 +635,9 @@ class SlamBrainModule(BrainModule):
             return True
         return False
 
-    def is_explorable_frontier(self, frontier, d_pos_w, came_from=None) -> bool:
+    def is_explorable_frontier(self, frontier, d_pos_w, came_from=None, ignore_heading_backtrack=False) -> bool:
         """True if this frontier is not a genuine backtrack into explored rooms."""
-        return not self._is_backtrack_target(frontier, d_pos_w, came_from=came_from)
+        return not self._is_backtrack_target(frontier, d_pos_w, came_from=came_from, ignore_heading_backtrack=ignore_heading_backtrack)
 
     def _prepare_commit_frontier(self, frontier, came_from, start_grid):
         """Copy frontier dict and push the goal to the deepest corridor dead-end."""
@@ -778,12 +833,31 @@ class SlamBrainModule(BrainModule):
         self._prev_pos_xy = self._last_drone_xy.copy()
 
         # Update segment_idx dynamically to match the current room of the drone
-        seq = getattr(self.env.cfg, "brain_spawn_sequence", None)
-        if seq and len(seq) > 0:
-            drone_xy = d_pos_w[:2] - env_origin[:2]
-            distances = [np.linalg.norm(drone_xy - np.array(pt[:2])) for pt in seq]
-            self.segment_idx = int(np.argmin(distances))
-            # Never let the "furthest room reached" go down → no backtracking.
+        env_origin = self.env._terrain.env_origins[0].cpu().numpy()
+        drone_xy = d_pos_w[:2] - env_origin[:2]
+        
+        if getattr(self, "_start_pos_xy", None) is None:
+            self._start_pos_xy = drone_xy.copy()
+            
+        if not hasattr(self, "dynamic_room_nodes") or self.dynamic_room_nodes is None:
+            self.dynamic_room_nodes = []
+
+        if len(self.dynamic_room_nodes) == 0:
+            self.dynamic_room_nodes.append(drone_xy.copy())
+            self.segment_idx = 0
+            self.max_segment_reached = 0
+        else:
+            distances = [np.linalg.norm(drone_xy - node) for node in self.dynamic_room_nodes]
+            closest_idx = int(np.argmin(distances))
+            min_d = distances[closest_idx]
+            
+            # If the drone moves at least 6.0 meters from all existing nodes,
+            # spawn a new dynamic node.
+            if min_d > 6.0:
+                self.dynamic_room_nodes.append(drone_xy.copy())
+                closest_idx = len(self.dynamic_room_nodes) - 1
+                
+            self.segment_idx = closest_idx
             self.max_segment_reached = max(
                 int(getattr(self, "max_segment_reached", 0)), self.segment_idx
             )
@@ -1124,7 +1198,7 @@ class SlamBrainModule(BrainModule):
                     gain = max(float(f.get("unknown_gain", 1)), 1.0)
                     return dist / gain
 
-                def _commit(frontier, label):
+                def _commit(frontier, label, ignore_heading_backtrack=False, ignore_substantial=False):
                     frontier = self._prepare_commit_frontier(
                         frontier, came_from, (start_r, start_c)
                     )
@@ -1137,13 +1211,18 @@ class SlamBrainModule(BrainModule):
                         return False
                     if not self.mapper.is_cell_frontier(goal, radius=1):
                         return False
-                    if not _substantial(frontier):
+                    if not ignore_substantial and not _substantial(frontier):
                         return False
-                    if not self.is_explorable_frontier(
+                    
+                    # Strictly prevent backtracking to previous rooms/segments at all times.
+                    if self._is_backtrack_target(frontier, d_pos_w, came_from=came_from, ignore_heading_backtrack=True):
+                        return False
+
+                    if not ignore_heading_backtrack and not self.is_explorable_frontier(
                         frontier, d_pos_w, came_from=came_from
                     ):
                         return False
-                    if (
+                    if not ignore_heading_backtrack and (
                         self._path_ends_in_visited(came_from, goal)
                         and self._unknown_ahead(frontier) < 30
                     ):
@@ -1151,7 +1230,7 @@ class SlamBrainModule(BrainModule):
                     is_back = self._is_backtrack_target(
                         frontier, d_pos_w, came_from=came_from
                     )
-                    REVISIT_MAX = 0.40
+                    REVISIT_MAX = 0.40 if not ignore_heading_backtrack else 1.0
                     world_path = self.mapper.plan_path_centered(
                         (start_r, start_c), goal
                     )
@@ -1216,7 +1295,7 @@ class SlamBrainModule(BrainModule):
                     self.blacklisted_frontiers = []
                     candidates = [
                         f for f in bfs_frontiers
-                        if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) > 1.0
+                        if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) > 0.35
                         and _substantial(f)
                         and _is_real_frontier(f)
                         and not self._is_backtrack_target(
@@ -1234,6 +1313,31 @@ class SlamBrainModule(BrainModule):
                             if _commit(probe, "Target frontier (corridor probe recovery)"):
                                 committed = True
                                 break
+
+                if not committed:
+                    # Third resort: allow backtrack targets (heading backtracking only) if no other choice exists
+                    candidates = [
+                        f for f in bfs_frontiers
+                        if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) > 0.35
+                        and _substantial(f)
+                        and _is_real_frontier(f)
+                    ]
+                    for f in sorted(candidates, key=_frontier_score):
+                        if _commit(f, "Target frontier (backtrack recovery)", ignore_heading_backtrack=True):
+                            committed = True
+                            break
+
+                if not committed:
+                    # Final resort: allow any real reachable frontier regardless of gain or backtracking (heading backtracking only)
+                    candidates = [
+                        f for f in bfs_frontiers
+                        if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) > 0.35
+                        and _is_real_frontier(f)
+                    ]
+                    for f in sorted(candidates, key=_frontier_score):
+                        if _commit(f, "Target frontier (low-gain/backtrack recovery)", ignore_heading_backtrack=True, ignore_substantial=True):
+                            committed = True
+                            break
 
                 if not committed:
                     visited, total = self.coverage_stats()
@@ -1332,6 +1436,8 @@ class SlamBrainModule(BrainModule):
             if self.astar_path_world:
                 d_pos_2d = d_pos_w[:2]
                 closest_idx = self._get_closest_path_index(d_pos_w)
+                self.current_wp_idx = closest_idx
+                self.waypoints = self.astar_path_world
 
                 # Look ahead along the path, but make sure we do not beeline through a wall corner!
                 next_target = self.astar_path_world[closest_idx]
@@ -1350,6 +1456,8 @@ class SlamBrainModule(BrainModule):
                 )
             else:
                 desired_pos_w[:] = d_pos_w
+                self.current_wp_idx = 0
+                self.waypoints = []
                 if need_target and self.state != "COMPLETE":
                     self.active_frontier = None
                     # Spin slightly faster in place to scan and map the room quickly
@@ -1479,6 +1587,8 @@ class RealSlamDroneEnv(BrainNavDroneEnv):
 
     def _reset_idx(self, env_ids: torch.Tensor | None = None):
         self._allow_obstacle_randomization = True
+        if hasattr(self, "_brain") and self._brain is not None:
+            self._brain.blacklisted_frontiers = []
         super()._reset_idx(env_ids)
 
     def _obstacle_half_extents(self, obstacle) -> tuple[float, float]:

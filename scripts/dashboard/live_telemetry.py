@@ -549,7 +549,7 @@ class LiveDroneTelemetry:
             persisted = getattr(env, "_telemetry_last_crash_reason", None)
             crash_step = int(getattr(env, "_telemetry_crash_timestep", -1))
             now_step = int(getattr(env, "_timestep", 0))
-            if persisted and crash_step >= 0 and (now_step - crash_step) <= 400:
+            if persisted and crash_step >= 0 and 0 <= (now_step - crash_step) <= 400:
                 crashed = True
                 crash_reason = str(persisted)
 
@@ -563,11 +563,14 @@ class LiveDroneTelemetry:
         # while state stays EXPLORE. See brain_telemetry.stuck_steps / stuck_ticks.
         else:
             ep_status = str(getattr(env, "_env0_last_episode_status", "") or "")
-            if ep_status.startswith("CRASHED"):
+            persisted = getattr(env, "_telemetry_last_crash_reason", None)
+            if ep_status.startswith("CRASHED") and persisted is not None:
                 status = "CRASH"
                 detail = ep_status.replace("CRASHED (", "").rstrip(")")
                 crash_reason = detail
                 crashed = True
+            else:
+                status = brain_state
 
         return {
             "status": status,
