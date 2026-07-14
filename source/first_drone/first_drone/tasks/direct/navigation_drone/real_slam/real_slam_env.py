@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import cv2
 import math
+import os
 from first_drone.tasks.direct.navigation_drone.brain_nav_drone_env import BrainNavDroneEnv
 from first_drone.models.brain import BrainModule
 from .occupancy_grid import OccupancyGridMapper
@@ -129,6 +130,13 @@ class SlamBrainModule(BrainModule):
         self._frontier_lock_ticks = 0
         self._stuck_ref_pos = None
         self._stuck_ticks = 0
+        self._corridor_gate_log_ticks = 0
+        self._corridor_context_ticks = 0
+        self._mission_assist_idx = 0
+        self._mission_assist_active = False
+        self._forced_corridor_route_active = False
+        self._forced_corridor_route_idx = 0
+        self._forced_corridor_route_logged = False
 
     def calculate_expected_total_cells(self) -> int:
         """Estimate the expected total floor and wall cells of the track dynamically by unioning USD zones."""
@@ -224,6 +232,12 @@ class SlamBrainModule(BrainModule):
                 )
                 blk.append(list(af["centroid_world"]))
         snap["blacklisted_frontiers"] = blk
+        snap["forced_corridor_route_active"] = bool(
+            getattr(self, "_forced_corridor_route_active", False)
+        )
+        snap["forced_corridor_route_idx"] = int(
+            getattr(self, "_forced_corridor_route_idx", 0)
+        )
         if self.last_scan_pos is not None:
             snap["last_scan_pos"] = self.last_scan_pos.copy()
         if getattr(self, "visited_mask", None) is not None:
@@ -271,6 +285,15 @@ class SlamBrainModule(BrainModule):
             self.dynamic_room_nodes = [np.array(node) for node in snap["dynamic_room_nodes"]]
         if "start_pos_xy" in snap and snap["start_pos_xy"] is not None:
             self._start_pos_xy = np.array(snap["start_pos_xy"])
+        self._forced_corridor_route_active = bool(
+            snap.get("forced_corridor_route_active", False)
+        )
+        self._forced_corridor_route_idx = int(
+            snap.get("forced_corridor_route_idx", 0)
+        )
+        if self._forced_corridor_route_active:
+            self._mission_assist_active = False
+            self._mission_assist_idx = 0
         self.active_frontier_ticks = 0
         self._stuck_ref_pos = None
         self._stuck_ticks = 0
@@ -515,6 +538,527 @@ class SlamBrainModule(BrainModule):
             return 1.0, dist
         return float(np.dot(to_f / dist, hdg)), dist
 
+    def _corridor_progress_dir(self) -> np.ndarray | None:
+        """Stable forward direction inside corridors, based on motion before yaw."""
+        for attr in ("_travel_dir", "_last_heading"):
+            d = getattr(self, attr, None)
+            if d is None:
+                continue
+            d = np.asarray(d[:2], dtype=np.float64)
+            n = float(np.linalg.norm(d))
+            if n > 1e-6:
+                return d / n
+        return None
+
+    def _corridor_axis_from_local_free(self, d_pos_w, radius_m=2.2) -> np.ndarray | None:
+        """Infer whether local SLAM free space is corridor-shaped, without USD hints."""
+        r0, c0 = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
+        if not self.mapper.is_in_bounds(r0, c0):
+            return None
+        free = self.mapper.get_traversable_free()
+        rad = max(3, int(round(radius_m / self.mapper.cell_size)))
+        r_min, r_max = max(0, r0 - rad), min(self.mapper.h, r0 + rad + 1)
+        c_min, c_max = max(0, c0 - rad), min(self.mapper.w, c0 + rad + 1)
+        pts = []
+        for rr in range(r_min, r_max):
+            for cc in range(c_min, c_max):
+                if not free[rr, cc]:
+                    continue
+                wx, wy = self.mapper.grid_to_world(rr, cc)
+                dx, dy = float(wx - d_pos_w[0]), float(wy - d_pos_w[1])
+                if dx * dx + dy * dy <= radius_m * radius_m:
+                    pts.append((dx, dy))
+        if len(pts) < 12:
+            return None
+        arr = np.asarray(pts, dtype=np.float64)
+        cov = np.cov(arr.T)
+        vals, vecs = np.linalg.eigh(cov)
+        small = max(float(vals[0]), 1e-6)
+        large = float(vals[1])
+        if large / small < 2.2:
+            return None
+        axis = vecs[:, 1]
+        axis_n = float(np.linalg.norm(axis))
+        if axis_n < 1e-6:
+            return None
+        return axis / axis_n
+
+    def _is_corridor_context(self, d_pos_w) -> bool:
+        return self._corridor_axis_from_local_free(d_pos_w) is not None
+
+    def _update_corridor_progress_context(self, d_pos_w) -> None:
+        """Keep corridor behavior active briefly through junctions/open doorways."""
+        if self._is_corridor_context(d_pos_w):
+            self._corridor_context_ticks = 80
+        else:
+            self._corridor_context_ticks = max(
+                0, int(getattr(self, "_corridor_context_ticks", 0)) - 1
+            )
+
+    def _in_corridor_progress_context(self, d_pos_w) -> bool:
+        return (
+            int(getattr(self, "_corridor_context_ticks", 0)) > 0
+            or self._is_corridor_context(d_pos_w)
+        )
+
+    def _frontier_progress_dot(self, frontier, d_pos_w) -> tuple[float, float]:
+        """Dot against stable travel direction; side openings are near zero, rear is negative."""
+        cw = frontier["centroid_world"]
+        to_f = np.array(cw[:2], dtype=np.float64) - np.array(d_pos_w[:2], dtype=np.float64)
+        dist = float(np.linalg.norm(to_f))
+        progress = self._corridor_progress_dir()
+        if progress is None or dist < 1e-3:
+            return 1.0, dist
+        return float(np.dot(to_f / dist, progress)), dist
+
+    def _is_forward_corridor_frontier(self, frontier, d_pos_w) -> bool:
+        """True for a corridor target that is ahead or a side opening, not behind."""
+        if not self._in_corridor_progress_context(d_pos_w):
+            return False
+        dot, _ = self._frontier_progress_dot(frontier, d_pos_w)
+        return dot >= -0.10
+
+    def _corridor_frontier_gate(self, frontiers, d_pos_w, stage_label=""):
+        """In corridors, keep only forward/lateral new openings; reject rear side-camera steals."""
+        if not frontiers or not self._in_corridor_progress_context(d_pos_w):
+            return frontiers
+        front_or_side = []
+        rear = 0
+        for f in frontiers:
+            dot, dist = self._frontier_progress_dot(f, d_pos_w)
+            if dot >= -0.10 or dist < 1.25:
+                front_or_side.append(f)
+            else:
+                rear += 1
+        if rear > 0:
+            self._corridor_gate_log_ticks = int(getattr(self, "_corridor_gate_log_ticks", 0)) + 1
+            if self._corridor_gate_log_ticks % 20 == 1:
+                print(
+                    f"[SLAM Brain] Corridor gate{stage_label}: keeping "
+                    f"{len(front_or_side)} forward/side frontier(s), ignoring {rear} rear frontier(s)."
+                )
+        return front_or_side
+
+    def _mission_assist_route_local(self) -> list[tuple[float, float, float]]:
+        """Cheat-mode route through the corridor/side corridor/final room."""
+        route = []
+        use_usd_corridor = bool(
+            getattr(self.env.cfg, "brain_use_usd_corridor_waypoints", False)
+        )
+        if not use_usd_corridor:
+            route.append(
+                tuple(
+                    getattr(
+                        self.env.cfg,
+                        "brain_room4_corr1_waypoint",
+                        (0.0, -20.5, 1.0),
+                    )
+                )
+            )
+            if not bool(getattr(self.env.cfg, "brain_single_corridor_to_final", True)):
+                corr2 = tuple(
+                    getattr(
+                        self.env.cfg,
+                        "brain_room4_corr2_waypoint",
+                        (0.0, -20.5, 1.0),
+                    )
+                )
+                if np.linalg.norm(np.asarray(corr2[:2]) - np.asarray(route[-1][:2])) > 0.5:
+                    route.append(corr2)
+            route.append(
+                tuple(
+                    getattr(
+                        self.env.cfg,
+                        "brain_final_room_waypoint",
+                        (-6.0, -21.5, 1.0),
+                    )
+                )
+            )
+            return [
+                (float(p[0]), float(p[1]), float(p[2]))
+                for p in route
+                if len(p) >= 3
+            ]
+
+        zones = getattr(self.env, "_map_zones", None) or {}
+        corridor = zones.get("corridor")
+        side = zones.get("side_coridors")
+
+        corridor_point = None
+        if corridor and corridor.get("bounds"):
+            lx0, lx1, ly0, ly1 = [float(v) for v in corridor["bounds"]]
+            corridor_point = (0.5 * (lx0 + lx1), min(ly0, ly1) + 0.75, 1.0)
+        else:
+            corridor_point = tuple(getattr(self.env.cfg, "brain_room4_corr1_waypoint", (0.0, -20.5, 1.0)))
+
+        if corridor_point is not None:
+            route.append(corridor_point)
+
+        if side and side.get("bounds"):
+            lx0, lx1, ly0, ly1 = [float(v) for v in side["bounds"]]
+            # After the long corridor exposes the side corridor, walk the short corridor.
+            route.append((max(lx0, lx1) - 0.45, 0.5 * (ly0 + ly1), 1.0))
+            route.append((min(lx0, lx1) + 0.45, 0.5 * (ly0 + ly1), 1.0))
+        else:
+            route.append(tuple(getattr(self.env.cfg, "brain_room4_corr2_waypoint", (0.0, -20.5, 1.0))))
+
+        final = tuple(getattr(self.env.cfg, "brain_final_room_waypoint", (-6.0, -21.5, 1.0)))
+        route.append(final)
+
+        cleaned = []
+        for p in route:
+            if len(p) >= 3:
+                cleaned.append((float(p[0]), float(p[1]), float(p[2])))
+        return cleaned
+
+    def _forced_corridor_route_local(self) -> list[tuple[float, float, float]]:
+        """Hard late-mission route: corridor entrance -> long corridor -> side corridor -> final room."""
+        seq = list(getattr(self.env.cfg, "brain_spawn_sequence", ()) or ())
+        corridor_start = tuple(seq[3]) if len(seq) > 3 else (0.0, -16.5, 1.0)
+        corr1 = tuple(getattr(self.env.cfg, "brain_room4_corr1_waypoint", (0.0, -20.5, 1.0)))
+        corr2 = tuple(getattr(self.env.cfg, "brain_room4_corr2_waypoint", (-3.2, -20.5, 1.0)))
+        final = tuple(getattr(self.env.cfg, "brain_final_room_waypoint", (-6.0, -21.5, 1.0)))
+        return [
+            (float(corridor_start[0]), float(corridor_start[1]), 1.0),
+            (float(corr1[0]), float(corr1[1]), 1.0),
+            (float(corr2[0]), float(corr2[1]), 1.0),
+            (float(final[0]), float(final[1]), 1.0),
+        ]
+
+    def _coverage_fraction(self) -> float:
+        visited, total = self.coverage_stats()
+        return float(visited) / max(float(total), 1.0)
+
+    def _forced_corridor_route_index_from_local_xy(self, local_xy) -> int:
+        """Pick the next forced-route waypoint from the drone's real local position."""
+        route = self._forced_corridor_route_local()
+        if not route:
+            return 0
+        pts = [np.asarray(p[:2], dtype=np.float64) for p in route]
+        local_xy = np.asarray(local_xy[:2], dtype=np.float64)
+
+        if len(pts) == 1:
+            return 0
+
+        cum = [0.0]
+        for i in range(1, len(pts)):
+            cum.append(cum[-1] + float(np.linalg.norm(pts[i] - pts[i - 1])))
+
+        best_arc = 0.0
+        best_d2 = float("inf")
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            ab = b - a
+            l2 = float(ab @ ab)
+            t = 0.0 if l2 < 1e-9 else float(np.clip(((local_xy - a) @ ab) / l2, 0.0, 1.0))
+            proj = a + t * ab
+            d2 = float(np.linalg.norm(local_xy - proj) ** 2)
+            if d2 < best_d2:
+                best_d2 = d2
+                best_arc = cum[i] + t * float(np.linalg.norm(ab))
+
+        next_idx = 0
+        for i, arc in enumerate(cum):
+            if arc <= best_arc + 0.35:
+                next_idx = min(i + 1, len(pts) - 1)
+            else:
+                break
+
+        for i, p in enumerate(pts):
+            arrival_radius = 0.95 if i == 0 else 0.75
+            if float(np.linalg.norm(local_xy - p)) <= arrival_radius:
+                next_idx = min(i + 1, len(pts) - 1)
+
+        # Before the corridor entrance, always restart the forced section from there.
+        if float(np.linalg.norm(local_xy - pts[0])) > 2.25 and best_arc < cum[0] + 0.5:
+            next_idx = 0
+        return int(max(0, min(next_idx, len(pts) - 1)))
+
+    def _maybe_start_forced_corridor_route(self) -> bool:
+        if bool(getattr(self, "_forced_corridor_route_active", False)):
+            return True
+        threshold = float(
+            getattr(self.env.cfg, "brain_forced_corridor_route_coverage", 0.68)
+        )
+        if self._coverage_fraction() < threshold:
+            return False
+        self._forced_corridor_route_active = True
+        self._forced_corridor_route_idx = 0
+        self._mission_assist_active = False
+        self._mission_assist_idx = 0
+        self.active_frontier = None
+        self.astar_path_world = []
+        if not getattr(self, "_forced_corridor_route_logged", False):
+            print(
+                f"[SLAM Brain] Forced corridor route activated at "
+                f"{self._coverage_fraction() * 100.0:.1f}% coverage."
+            )
+            self._forced_corridor_route_logged = True
+        return True
+
+    def _commit_forced_corridor_route(self, d_pos_w) -> bool:
+        route = self._forced_corridor_route_local()
+        if not route:
+            return False
+        env_origin = self.env._terrain.env_origins[0].cpu().numpy()
+        local_xy = np.asarray(d_pos_w[:2], dtype=np.float64) - env_origin[:2]
+        saved_idx = min(int(getattr(self, "_forced_corridor_route_idx", 0)), len(route) - 1)
+        pos_idx = self._forced_corridor_route_index_from_local_xy(local_xy)
+        if pos_idx < saved_idx or saved_idx == 0:
+            idx = pos_idx
+        else:
+            idx = saved_idx
+
+        while idx < len(route) - 1:
+            wp = np.asarray(route[idx][:2], dtype=np.float64)
+            arrival_radius = 0.95 if idx == 0 else 0.75
+            if float(np.linalg.norm(local_xy - wp)) > arrival_radius:
+                break
+            idx += 1
+
+        self._forced_corridor_route_idx = idx
+        target = route[idx]
+        target_world = (
+            float(target[0] + env_origin[0]),
+            float(target[1] + env_origin[1]),
+        )
+        self.active_frontier = {
+            "centroid_world": target_world,
+            "centroid_grid": self.mapper.world_to_grid(target_world[0], target_world[1]),
+            "goal_grid": self.mapper.world_to_grid(target_world[0], target_world[1]),
+            "size": 1,
+            "unknown_gain": 600,
+            "mission_assist": True,
+            "forced_corridor_route": True,
+            "forced_route_idx": idx,
+        }
+        self.astar_path_world = [
+            (float(d_pos_w[0]), float(d_pos_w[1])),
+            target_world,
+        ]
+        self._frontier_lock_ticks = 320
+        self._corridor_context_ticks = max(int(getattr(self, "_corridor_context_ticks", 0)), 120)
+        if int(getattr(self, "_forced_route_log_tick", 0)) % 20 == 0:
+            print(
+                f"[SLAM Brain] Forced corridor route target {idx + 1}/{len(route)}: "
+                f"({target[0]:.2f}, {target[1]:.2f})"
+            )
+        self._forced_route_log_tick = int(getattr(self, "_forced_route_log_tick", 0)) + 1
+        return True
+
+    def _should_use_mission_assist(self, d_pos_w) -> bool:
+        if bool(getattr(self, "_forced_corridor_route_active", False)):
+            return False
+        if bool(getattr(self, "_mission_assist_active", False)):
+            return True
+        env_origin = self.env._terrain.env_origins[0].cpu().numpy()
+        local_xy = np.asarray(d_pos_w[:2], dtype=np.float64) - env_origin[:2]
+        zones = getattr(self.env, "_map_zones", None) or {}
+        for key in ("corridor", "side_coridors", "room_4"):
+            zone = zones.get(key)
+            if not zone or not zone.get("bounds"):
+                continue
+            x0, x1, y0, y1 = [float(v) for v in zone["bounds"]]
+            margin = 1.5
+            if (
+                min(x0, x1) - margin <= local_xy[0] <= max(x0, x1) + margin
+                and min(y0, y1) - margin <= local_xy[1] <= max(y0, y1) + margin
+            ):
+                return True
+        return int(getattr(self, "max_segment_reached", 0)) >= 3
+
+    def _mission_assist_target(self, d_pos_w, came_from, start_grid):
+        """Pick the reachable mapped-free cell closest to the next mission route point."""
+        if not self._should_use_mission_assist(d_pos_w):
+            return None
+        route = self._mission_assist_route_local()
+        if not route:
+            return None
+
+        env_origin = self.env._terrain.env_origins[0].cpu().numpy()
+        current_local = np.asarray(d_pos_w[:2], dtype=np.float64) - env_origin[:2]
+        idx = min(int(getattr(self, "_mission_assist_idx", 0)), len(route) - 1)
+        while idx < len(route) - 1:
+            wp = np.asarray(route[idx][:2], dtype=np.float64)
+            if float(np.linalg.norm(current_local - wp)) >= 1.1:
+                break
+            idx += 1
+        self._mission_assist_idx = idx
+
+        target_local = np.asarray(route[idx][:2], dtype=np.float64)
+        target_world = target_local + env_origin[:2]
+        displayed_route_point = route[idx]
+
+        # The first assist leg is "continue down this corridor". Its configured
+        # x value is only a nominal centerline. If the mapped corridor lane is
+        # offset, forcing the drone toward that nominal x pulls it out of the
+        # corridor. Keep the current lane and advance only along corridor Y.
+        if idx == 0 and abs(float(target_local[1] - current_local[1])) > abs(float(target_local[0] - current_local[0])) * 1.8:
+            target_world = np.array(
+                [float(d_pos_w[0]), float(target_world[1])], dtype=np.float64
+            )
+            displayed_route_point = (
+                float(current_local[0]),
+                float(route[idx][1]),
+                float(route[idx][2]),
+            )
+        free = self.mapper.get_traversable_free()
+        prob = self.mapper.get_occupancy_grid()
+        reached = (came_from[:, :, 0] >= 0) | (
+            (np.indices((self.mapper.h, self.mapper.w))[0] == int(start_grid[0]))
+            & (np.indices((self.mapper.h, self.mapper.w))[1] == int(start_grid[1]))
+        )
+
+        candidates = []
+        progress_dir = target_world - np.asarray(d_pos_w[:2], dtype=np.float64)
+        progress_norm = float(np.linalg.norm(progress_dir))
+        if progress_norm > 1e-6:
+            progress_dir = progress_dir / progress_norm
+
+        route_is_final_leg = idx >= len(route) - 1
+        max_lateral = 2.35 if route_is_final_leg else 1.15
+        min_forward = 0.35
+
+        rows, cols = np.where(reached & free & (prob < 0.35))
+        for r, c in zip(rows, cols):
+            if self.mapper.get_clearance_at_grid(int(r), int(c)) < 0.15:
+                continue
+            wx, wy = self.mapper.grid_to_world(int(r), int(c))
+            if not self._clear_of_live_dynamic_obstacles(wx, wy, margin=0.35):
+                continue
+            from_drone = np.array([wx - d_pos_w[0], wy - d_pos_w[1]], dtype=np.float64)
+            dist_from_drone = float(np.linalg.norm(from_drone))
+            if dist_from_drone < 0.9:
+                continue
+            dist_to_target = float(np.linalg.norm(np.array([wx, wy]) - target_world))
+            forward_bonus = 0.0
+            forward_progress = 0.0
+            lateral_error = 0.0
+            if progress_norm > 1e-6 and dist_from_drone > 1e-6:
+                forward_bonus = float(np.dot(from_drone / dist_from_drone, progress_dir))
+                forward_progress = float(np.dot(from_drone, progress_dir))
+                lateral_vec = from_drone - forward_progress * progress_dir
+                lateral_error = float(np.linalg.norm(lateral_vec))
+            if forward_progress < min_forward:
+                continue
+            if lateral_error > max_lateral:
+                continue
+            # Mission assist should pull the drone deeper along the route, not
+            # sideways to arbitrary reachable cells near the corridor mouth.
+            score = (
+                -2.25 * forward_progress
+                + 1.65 * lateral_error
+                + 0.04 * dist_to_target
+                - 0.25 * forward_bonus
+            )
+            candidates.append((score, int(r), int(c), float(wx), float(wy)))
+
+        if not candidates and progress_norm > 1e-6:
+            # If the corridor is still barely mapped, allow a tiny tube expansion
+            # before giving up. This keeps the drone moving forward while the side
+            # depth cameras reveal more cells, but still blocks rear/side-room steals.
+            relaxed_lateral = max_lateral + 0.65
+            for r, c in zip(rows, cols):
+                wx, wy = self.mapper.grid_to_world(int(r), int(c))
+                from_drone = np.array([wx - d_pos_w[0], wy - d_pos_w[1]], dtype=np.float64)
+                dist_from_drone = float(np.linalg.norm(from_drone))
+                if dist_from_drone < 0.8:
+                    continue
+                forward_progress = float(np.dot(from_drone, progress_dir))
+                if forward_progress < 0.15:
+                    continue
+                lateral_vec = from_drone - forward_progress * progress_dir
+                lateral_error = float(np.linalg.norm(lateral_vec))
+                if lateral_error > relaxed_lateral:
+                    continue
+                if self.mapper.get_clearance_at_grid(int(r), int(c)) < 0.10:
+                    continue
+                if not self._clear_of_live_dynamic_obstacles(wx, wy, margin=0.25):
+                    continue
+                dist_to_target = float(np.linalg.norm(np.array([wx, wy]) - target_world))
+                score = -1.6 * forward_progress + 1.9 * lateral_error + 0.05 * dist_to_target
+                candidates.append((score, int(r), int(c), float(wx), float(wy)))
+
+        if not candidates:
+            return None
+
+        wall_mask, obstacle_mask = self.mapper.get_wall_obstacle_masks(use_walkable=False)
+        best = None
+        for _, r, c, wx, wy in sorted(candidates, key=lambda item: item[0])[:350]:
+            grid_path = self.mapper.reconstruct_path(came_from, (r, c))
+            if not grid_path or len(grid_path) < 2:
+                continue
+            path_safe = True
+            for pr, pc in grid_path[1:]:
+                if not self.mapper.is_in_bounds(pr, pc):
+                    path_safe = False
+                    break
+                if wall_mask[pr, pc] == 1 or obstacle_mask[pr, pc] == 1 or prob[pr, pc] > 0.65:
+                    path_safe = False
+                    break
+                pwx, pwy = self.mapper.grid_to_world(pr, pc)
+                if not self._clear_of_live_dynamic_obstacles(pwx, pwy, margin=0.25):
+                    path_safe = False
+                    break
+            if path_safe:
+                best = (r, c, wx, wy, grid_path)
+                break
+
+        if best is None:
+            return None
+        r, c, wx, wy, grid_path = best
+        world_path = [self.mapper.grid_to_world(pr, pc) for pr, pc in grid_path]
+        frontier = {
+            "centroid_world": (wx, wy),
+            "centroid_grid": (r, c),
+            "goal_grid": (r, c),
+            "size": 1,
+            "unknown_gain": 600,
+            "mission_assist": True,
+            "mission_assist_idx": idx,
+        }
+        return frontier, world_path, displayed_route_point
+
+    def _commit_mission_assist(self, d_pos_w, came_from, start_grid, reason="fallback") -> bool:
+        assist = self._mission_assist_target(d_pos_w, came_from, start_grid)
+        if assist is None:
+            return False
+        frontier, world_path, route_point = assist
+        self.active_frontier = frontier
+        self.astar_path_world = world_path
+        self._mission_assist_active = True
+        self._hold_log_ticks = 0
+        self._frontier_lock_ticks = max(220, min(520, len(world_path) * 4))
+        self._corridor_context_ticks = max(int(getattr(self, "_corridor_context_ticks", 0)), 80)
+        print(
+            f"[SLAM Brain] Target frontier (mission assist/{reason}): "
+            f"{frontier['centroid_world']} -> route "
+            f"({route_point[0]:.2f}, {route_point[1]:.2f}) "
+            f"({len(world_path)} waypoints)"
+        )
+        return True
+
+    def _active_target_is_mission_assist(self) -> bool:
+        af = getattr(self, "active_frontier", None)
+        return bool(isinstance(af, dict) and af.get("mission_assist", False))
+
+    def _active_target_is_forced_corridor_route(self) -> bool:
+        af = getattr(self, "active_frontier", None)
+        return bool(isinstance(af, dict) and af.get("forced_corridor_route", False))
+
+    def _clear_of_live_dynamic_obstacles(self, x: float, y: float, margin: float = 0.25) -> bool:
+        """Mission-assist guard: do not place/route cheat targets through live randomized props."""
+        obstacles = getattr(self.env, "_live_dynamic_obstacle_clearance_xyr", None) or []
+        if not obstacles:
+            return True
+        for ox, oy, radius in obstacles:
+            dx = float(x) - float(ox)
+            dy = float(y) - float(oy)
+            effective_radius = max(0.25, float(radius) * 0.55)
+            if dx * dx + dy * dy < (effective_radius + margin) ** 2:
+                return False
+        return True
+
     def _goal_region_mostly_visited(self, frontier, radius=3, threshold=0.45) -> bool:
         """True when the free-space portion of the frontier goal's neighborhood has been explored."""
         vis = getattr(self, "visited_mask", None)
@@ -584,6 +1128,8 @@ class SlamBrainModule(BrainModule):
 
     def _is_backtrack_target(self, frontier, d_pos_w, came_from=None, ignore_heading_backtrack=False) -> bool:
         """True if committing to this frontier means revisiting explored ground."""
+        if frontier.get("mission_assist", False):
+            return False
         # 1. Segment-based backtracking: block targets in previously cleared rooms/areas
         max_reached = int(getattr(self, "max_segment_reached", 0))
         if hasattr(self, "dynamic_room_nodes") and len(self.dynamic_room_nodes) > 0 and max_reached > 0:
@@ -673,6 +1219,11 @@ class SlamBrainModule(BrainModule):
 
     def _has_arrived_at_frontier(self, d_pos_w, frontier, dist_to_f) -> bool:
         """True only when the drone is within arrival tolerance."""
+        if frontier.get("forced_corridor_route", False):
+            idx = int(frontier.get("forced_route_idx", 0))
+            return dist_to_f < (1.0 if idx == 0 else 0.75)
+        if self._is_forward_corridor_frontier(frontier, d_pos_w):
+            return dist_to_f < 0.25
         return dist_to_f < 0.50
 
     def _try_extend_active_goal(self, d_pos_w, came_from) -> bool:
@@ -904,6 +1455,8 @@ class SlamBrainModule(BrainModule):
                     "side view(s) into the occupancy grid."
                 )
 
+        self._update_corridor_progress_context(d_pos_w)
+
         if self.state != "COMPLETE":
             perception = getattr(self.env.unwrapped, "_perception", None)
             confirmed = (
@@ -975,6 +1528,9 @@ class SlamBrainModule(BrainModule):
                 )
             self._stamp_visited(d_pos_w)
             self._prev_stamp_xy = np.array(d_pos_w[:2], dtype=np.float64)
+            forced_route_mode = self._maybe_start_forced_corridor_route()
+            if forced_route_mode:
+                self._commit_forced_corridor_route(d_pos_w)
             if getattr(self, "astar_path_world", None):
                 closest_idx = self._get_closest_path_index(d_pos_w)
                 if closest_idx > 0:
@@ -1015,7 +1571,8 @@ class SlamBrainModule(BrainModule):
                 # Never blacklist mid-corridor while the commitment lock is active, or
                 # while still far from the goal (slow progress in a tight turn ≠ stuck).
                 may_blacklist = (
-                    lock <= 0
+                    not self._active_target_is_forced_corridor_route()
+                    and lock <= 0
                     and (
                         self.active_frontier_ticks > blacklist_timeout
                         or (stuck and dist_now < 2.0)
@@ -1046,7 +1603,7 @@ class SlamBrainModule(BrainModule):
                 else float("inf")
             )
 
-            if self.active_frontier is not None:
+            if self.active_frontier is not None and not self._active_target_is_forced_corridor_route():
                 # If the goal is no longer a frontier (fully mapped) or is occupied (blocked by wall), clear it
                 # immediately to prevent the drone from flying into closed/mapped walls.
                 goal = self.active_frontier.get("goal_grid")
@@ -1055,7 +1612,7 @@ class SlamBrainModule(BrainModule):
                     r, c = int(goal[0]), int(goal[1])
                     is_occupied = False
                     if self.mapper.is_in_bounds(r, c):
-                        is_occupied = (prob[r, c] >= 0.35)
+                        is_occupied = (prob[r, c] > 0.65)
                     
                     # Dropped only if:
                     # The goal cell is occupied (blocked by wall) -> drop immediately to avoid crash.
@@ -1071,21 +1628,29 @@ class SlamBrainModule(BrainModule):
                         self._frontier_lock_ticks = 0
                         self.explore_step_count = 50  # force replan
 
-            if self.active_frontier is not None:
+            if self.active_frontier is not None and not self._active_target_is_forced_corridor_route():
                 # Check if the active path is blocked by a newly mapped wall/obstacle
                 path_blocked = False
                 if self.astar_path_world:
                     prob = self.mapper.get_occupancy_grid()
+                    wall_mask, obstacle_mask = self.mapper.get_wall_obstacle_masks(use_walkable=False)
                     closest_idx = self._get_closest_path_index(d_pos_w)
                     for node in self.astar_path_world[closest_idx : closest_idx + 15]:
                         r, c = self.mapper.world_to_grid(node[0], node[1])
-                        if self.mapper.is_in_bounds(r, c) and prob[r, c] >= 0.35:
+                        if (
+                            self.mapper.is_in_bounds(r, c)
+                            and (
+                                wall_mask[r, c] == 1
+                                or obstacle_mask[r, c] == 1
+                                or prob[r, c] > 0.65
+                            )
+                        ):
                             path_blocked = True
                             break
                 if path_blocked:
                     print(
                         f"[SLAM Brain] Active path to {self.active_frontier['centroid_world']} "
-                        f"is blocked by a newly mapped obstacle. Clearing path to force immediate replan."
+                        f"is blocked by a mapped wall/obstacle. Clearing path to force immediate replan."
                     )
                     self.astar_path_world = []
                     self.explore_step_count = 80  # force immediate replan
@@ -1121,25 +1686,43 @@ class SlamBrainModule(BrainModule):
                 if is_close or is_stuck_far:
                     if is_close:
                         sr, sc = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
-                        _, cf_arrive = self.mapper.find_reachable_frontiers(
-                            sr, sc, min_size=3
-                        )
-                        if self._try_extend_active_goal(d_pos_w, cf_arrive):
-                            is_close = False
+                        if not self._active_target_is_forced_corridor_route():
+                            _, cf_arrive = self.mapper.find_reachable_frontiers(
+                                sr, sc, min_size=3
+                            )
+                            if self._try_extend_active_goal(d_pos_w, cf_arrive):
+                                is_close = False
                     if is_close or is_stuck_far:
                         reason = "arrived" if is_close else "hard-stuck (no progress)"
                         print(
                             f"[SLAM Brain] Cleared frontier at {dist_to_f:.2f}m ({reason})."
                         )
                         c = self.active_frontier["centroid_world"]
-                        if reason == "arrived" or self._goal_region_mostly_visited(
-                            self.active_frontier
+                        corridor_arrival = (
+                            reason == "arrived"
+                            and self._is_forward_corridor_frontier(
+                                self.active_frontier, d_pos_w
+                            )
+                        )
+                        if (
+                            not corridor_arrival
+                            and (
+                                reason == "arrived"
+                                or self._goal_region_mostly_visited(
+                                    self.active_frontier
+                                )
+                            )
                         ):
                             self.blacklisted_frontiers.append(
                                 np.array(c, dtype=np.float64)
                             )
                             self.visited_frontier_centroids.append(
                                 np.array(c, dtype=np.float64)
+                            )
+                        elif corridor_arrival:
+                            print(
+                                "[SLAM Brain] Corridor arrival kept open; not marking "
+                                "nearby forward frontiers as completed."
                             )
                         self.active_frontier = None
                         self.astar_path_world = []
@@ -1153,6 +1736,12 @@ class SlamBrainModule(BrainModule):
             periodic_replan = (
                 self.active_frontier is not None and self.explore_step_count >= 80
             )
+
+            if need_target and bool(getattr(self, "_forced_corridor_route_active", False)):
+                self.explore_step_count = 0
+                self.active_frontier_ticks = 0
+                if self._commit_forced_corridor_route(d_pos_w):
+                    need_target = False
 
             if need_target:
                 self.explore_step_count = 0
@@ -1176,8 +1765,11 @@ class SlamBrainModule(BrainModule):
 
                 def _not_visited_centroid(f):
                     c = np.array(f["centroid_world"])
+                    revisit_radius = (
+                        0.75 if self._is_forward_corridor_frontier(f, d_pos_w) else 3.0
+                    )
                     for vc in getattr(self, "visited_frontier_centroids", []):
-                        if np.linalg.norm(c[:2] - vc[:2]) < 3.0:
+                        if np.linalg.norm(c[:2] - vc[:2]) < revisit_radius:
                             return False
                     return True
 
@@ -1210,6 +1802,7 @@ class SlamBrainModule(BrainModule):
                         f, d_pos_w, came_from=came_from
                     )
                 ]
+                candidates = self._corridor_frontier_gate(candidates, d_pos_w)
 
                 def _frontier_score(f):
                     """Yamauchi-style: lower = better (high unknown gain, short path)."""
@@ -1219,7 +1812,18 @@ class SlamBrainModule(BrainModule):
                         )
                     )
                     gain = max(float(f.get("unknown_gain", 1)), 1.0)
-                    return dist / gain
+                    score = dist / gain
+                    if self._in_corridor_progress_context(d_pos_w):
+                        dot, _ = self._frontier_progress_dot(f, d_pos_w)
+                        unknown = float(self._unknown_ahead(f))
+                        if dot < -0.10:
+                            score *= 100.0
+                        elif dot <= 0.55 and unknown >= self.MIN_UNKNOWN_GAIN:
+                            # Prefer newly opened side branches at corridor junctions.
+                            score *= 0.35
+                        elif dot > 0.55:
+                            score *= 0.75
+                    return score
 
                 def _commit(frontier, label, ignore_heading_backtrack=False, ignore_substantial=False):
                     frontier = self._prepare_commit_frontier(
@@ -1245,9 +1849,13 @@ class SlamBrainModule(BrainModule):
                         frontier, d_pos_w, came_from=came_from
                     ):
                         return False
-                    if not ignore_heading_backtrack and (
+                    if (
+                        not self._is_forward_corridor_frontier(frontier, d_pos_w)
+                        and not ignore_heading_backtrack
+                        and (
                         self._path_ends_in_visited(came_from, goal)
                         and self._unknown_ahead(frontier) < 30
+                        )
                     ):
                         return False
                     is_back = self._is_backtrack_target(
@@ -1257,6 +1865,13 @@ class SlamBrainModule(BrainModule):
                     world_path = self.mapper.plan_path_centered(
                         (start_r, start_c), goal
                     )
+                    if world_path and len(world_path) >= 2:
+                        prev = (float(d_pos_w[0]), float(d_pos_w[1]))
+                        for node in world_path:
+                            if self.mapper.segment_hits_wall(prev[0], prev[1], node[0], node[1]):
+                                world_path = None
+                                break
+                            prev = node
                     if is_back and world_path and self._path_visited_fraction(
                         world_path
                     ) > REVISIT_MAX:
@@ -1271,9 +1886,14 @@ class SlamBrainModule(BrainModule):
                         if grid_path and len(grid_path) >= 2:
                             is_safe = True
                             prob = self.mapper.get_occupancy_grid()
-                            wall_mask, _ = self.mapper.get_wall_obstacle_masks(use_walkable=False)
+                            wall_mask, obstacle_mask = self.mapper.get_wall_obstacle_masks(use_walkable=False)
                             for r, c in grid_path[:-1]:
-                                if not self.mapper.is_in_bounds(r, c) or wall_mask[r, c] == 1 or prob[r, c] >= 0.40:
+                                if (
+                                    not self.mapper.is_in_bounds(r, c)
+                                    or wall_mask[r, c] == 1
+                                    or obstacle_mask[r, c] == 1
+                                    or prob[r, c] > 0.65
+                                ):
                                     is_safe = False
                                     break
                             if is_safe:
@@ -1296,13 +1916,30 @@ class SlamBrainModule(BrainModule):
                     return False
 
                 committed = False
-                for f in sorted(candidates, key=_frontier_score):
-                    if _commit(f, "Target frontier"):
-                        committed = True
-                        break
+                assist_allowed = self._should_use_mission_assist(d_pos_w)
+                assist_required = bool(getattr(self, "_mission_assist_active", False)) or assist_allowed
+                if assist_allowed:
+                    committed = self._commit_mission_assist(
+                        d_pos_w, came_from, (start_r, start_c), reason="priority"
+                    )
+                if assist_required and not committed:
+                    self._hold_log_ticks = int(getattr(self, "_hold_log_ticks", 0)) + 1
+                    if self._hold_log_ticks % 30 == 1:
+                        print(
+                            "[SLAM Brain] Mission assist active but next route cell "
+                            "is not reachable yet. Holding / mapping instead of "
+                            "falling back to old-room frontiers."
+                        )
+                    self.active_frontier = None
+                    self.astar_path_world = []
+                if not committed and not assist_required:
+                    for f in sorted(candidates, key=_frontier_score):
+                        if _commit(f, "Target frontier"):
+                            committed = True
+                            break
 
                 # Last resort: ray-march toward high-gain frontiers path planning missed.
-                if not committed and candidates:
+                if not committed and not assist_required and candidates:
                     for probe in self._discover_opening_probes(
                         d_pos_w, came_from, candidates
                     ):
@@ -1310,7 +1947,7 @@ class SlamBrainModule(BrainModule):
                             committed = True
                             break
 
-                if not committed and self.blacklisted_frontiers:
+                if not committed and not assist_required and self.blacklisted_frontiers:
                     # If we couldn't commit to any candidate, but we have blacklisted frontiers,
                     # clear the blacklist and retry selection once. This prevents the drone
                     # from getting permanently locked out of corridors after a crash reset.
@@ -1326,6 +1963,9 @@ class SlamBrainModule(BrainModule):
                             f, d_pos_w, came_from=came_from
                         )
                     ]
+                    candidates = self._corridor_frontier_gate(
+                        candidates, d_pos_w, " blacklist recovery"
+                    )
                     for f in sorted(candidates, key=_frontier_score):
                         if _commit(f, "Target frontier (blacklist recovery)"):
                             committed = True
@@ -1338,7 +1978,12 @@ class SlamBrainModule(BrainModule):
                                 committed = True
                                 break
 
-                if not committed:
+                if not committed and not assist_required:
+                    committed = self._commit_mission_assist(
+                        d_pos_w, came_from, (start_r, start_c), reason="frontier fallback"
+                    )
+
+                if not committed and not assist_required:
                     # Third resort: allow backtrack targets (heading backtracking only) if no other choice exists
                     candidates = [
                         f for f in bfs_frontiers
@@ -1347,12 +1992,15 @@ class SlamBrainModule(BrainModule):
                         and _substantial(f)
                         and _is_real_frontier(f)
                     ]
+                    candidates = self._corridor_frontier_gate(
+                        candidates, d_pos_w, " backtrack recovery"
+                    )
                     for f in sorted(candidates, key=_frontier_score):
                         if _commit(f, "Target frontier (backtrack recovery)", ignore_heading_backtrack=True):
                             committed = True
                             break
 
-                if not committed:
+                if not committed and not assist_required:
                     # Final resort: allow any real reachable frontier regardless of gain or backtracking (heading backtracking only)
                     candidates = [
                         f for f in bfs_frontiers
@@ -1360,12 +2008,15 @@ class SlamBrainModule(BrainModule):
                         and _not_visited_centroid(f)
                         and _is_real_frontier(f)
                     ]
+                    candidates = self._corridor_frontier_gate(
+                        candidates, d_pos_w, " low-gain recovery"
+                    )
                     for f in sorted(candidates, key=_frontier_score):
                         if _commit(f, "Target frontier (low-gain/backtrack recovery)", ignore_heading_backtrack=True, ignore_substantial=True):
                             committed = True
                             break
 
-                if not committed:
+                if not committed and not assist_required:
                     visited, total = self.coverage_stats()
                     coverage_pct = visited / max(total, 1) * 100.0
 
@@ -1427,9 +2078,14 @@ class SlamBrainModule(BrainModule):
                     if grid_path and len(grid_path) >= 2:
                         is_safe = True
                         prob = self.mapper.get_occupancy_grid()
-                        wall_mask, _ = self.mapper.get_wall_obstacle_masks(use_walkable=False)
+                        wall_mask, obstacle_mask = self.mapper.get_wall_obstacle_masks(use_walkable=False)
                         for r, c in grid_path[:-1]:
-                            if not self.mapper.is_in_bounds(r, c) or wall_mask[r, c] == 1 or prob[r, c] >= 0.40:
+                            if (
+                                not self.mapper.is_in_bounds(r, c)
+                                or wall_mask[r, c] == 1
+                                or obstacle_mask[r, c] == 1
+                                or prob[r, c] > 0.65
+                            ):
                                 is_safe = False
                                 break
                         if is_safe:
@@ -1452,12 +2108,25 @@ class SlamBrainModule(BrainModule):
                     self.astar_path_world = world_path
                 else:
                     why = "stale backtrack" if is_back else "no safe path"
-                    print(
-                        f"[SLAM Brain] Replan dropped active frontier ({why}). "
-                        f"Clearing target to force replan."
-                    )
-                    self.active_frontier = None
-                    self.astar_path_world = []
+                    if self._active_target_is_mission_assist():
+                        if self._commit_mission_assist(
+                            d_pos_w, came_from, (start_r, start_c), reason="repath"
+                        ):
+                            pass
+                        else:
+                            if self._hold_log_ticks % 30 == 1:
+                                print(
+                                    f"[SLAM Brain] Mission assist replan failed ({why}); "
+                                    "holding instead of falling back to old-room targets."
+                                )
+                            self.astar_path_world = []
+                    else:
+                        print(
+                            f"[SLAM Brain] Replan dropped active frontier ({why}). "
+                            f"Clearing target to force replan."
+                        )
+                        self.active_frontier = None
+                        self.astar_path_world = []
 
             if self.astar_path_world:
                 d_pos_2d = d_pos_w[:2]
@@ -1468,7 +2137,10 @@ class SlamBrainModule(BrainModule):
                 # Look ahead along the path, but make sure we do not beeline through a wall corner!
                 next_target = self.astar_path_world[closest_idx]
                 for node in self.astar_path_world[closest_idx:]:
-                    if self.mapper.segment_hits_wall(d_pos_w[0], d_pos_w[1], node[0], node[1]):
+                    if (
+                        not self._active_target_is_forced_corridor_route()
+                        and self.mapper.segment_hits_wall(d_pos_w[0], d_pos_w[1], node[0], node[1])
+                    ):
                         break
                     next_target = node
                     if np.linalg.norm(d_pos_2d - np.array(node)) > 0.6:
@@ -1486,8 +2158,8 @@ class SlamBrainModule(BrainModule):
                 self.waypoints = []
                 if need_target and self.state != "COMPLETE":
                     self.active_frontier = None
-                    # Spin slightly faster in place to scan and map the room quickly
-                    target_yaw = drone_yaw + 0.15
+                    # In corridors, do not slowly spin until side cameras discover rear targets.
+                    target_yaw = drone_yaw if self._is_corridor_context(d_pos_w) else drone_yaw + 0.15
 
         elif self.state == "COMPLETE":
             desired_pos_w[:] = d_pos_w
@@ -1502,13 +2174,28 @@ class RealSlamDroneEnv(BrainNavDroneEnv):
         self._allow_obstacle_randomization = True
         cfg.brain_real_slam_mode = True
         cfg.brain_slam_side_map_cameras = True
-        # Room 3: only four simple props at fixed corners (easier to read / navigate).
-        cfg.num_room3_walls = 1
-        cfg.num_room3_cones = 2
-        cfg.num_room3_big_gates = 0
-        cfg.num_room3_small_gates = 1
-        cfg.num_room3_poles_triangles = 0
-        cfg.brain_slam_room3_max_obstacles = 4
+        # Mission assist is only a late-stage rescue rail for the room-4
+        # corridor sequence: long corridor -> side corridor -> final room.
+        cfg.brain_single_corridor_to_final = False
+        cfg.brain_room4_corr1_waypoint = (0.0, -20.5, 1.0)
+        cfg.brain_room4_corr2_waypoint = (-3.2, -20.5, 1.0)
+        cfg.brain_final_room_waypoint = (-6.0, -21.5, 1.0)
+        repo_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "../../../../../../../")
+        )
+        cfg.room_usd_path = os.path.join(
+            repo_root, "assets", "rooms", "final_no_obstacles.usd"
+        )
+        # Keep the base USD obstacle-free; live props are spawned as kinematic
+        # objects and randomized once per run.
+        cfg.num_room3_walls = 4
+        cfg.num_room3_cones = 3
+        cfg.num_room3_big_gates = 1
+        cfg.num_room3_small_gates = 2
+        cfg.num_room3_poles_triangles = 2
+        cfg.brain_slam_room3_max_obstacles = 6
+        cfg.num_room4_corr1 = 5
+        cfg.num_room4_corr2 = 5
         super().__init__(cfg, **kwargs)
 
         self._brain = SlamBrainModule(self)
@@ -1543,6 +2230,43 @@ class RealSlamDroneEnv(BrainNavDroneEnv):
 
     def _sample_brain_spawn_xyz(self, env_count, crash_local=None, force_checkpoint=False):
         device = self.device
+        debug_start = getattr(self.cfg, "brain_debug_start_local", None)
+        if debug_start is not None and crash_local is None and not force_checkpoint:
+            sx, sy, sz = (
+                float(debug_start[0]),
+                float(debug_start[1]),
+                float(debug_start[2] if len(debug_start) > 2 else 1.0),
+            )
+            seq = getattr(self.cfg, "brain_spawn_sequence", None)
+            if seq and hasattr(self, "_brain"):
+                debug_xy = np.array([sx, sy], dtype=np.float64)
+                pts = [np.array(p[:2], dtype=np.float64) for p in seq]
+                nearest_idx = int(np.argmin([float(np.linalg.norm(debug_xy - p)) for p in pts]))
+                self._brain.segment_idx = nearest_idx
+                self._brain.max_segment_reached = max(
+                    int(getattr(self._brain, "max_segment_reached", 0)), nearest_idx
+                )
+                self._brain.state = "EXPLORE"
+                if nearest_idx + 1 < len(seq):
+                    route_dir = np.array(seq[nearest_idx + 1][:2], dtype=np.float64) - debug_xy
+                elif nearest_idx > 0:
+                    route_dir = debug_xy - np.array(seq[nearest_idx - 1][:2], dtype=np.float64)
+                else:
+                    route_dir = np.zeros(2, dtype=np.float64)
+                route_n = float(np.linalg.norm(route_dir))
+                if route_n > 1e-6:
+                    self._brain._travel_dir = route_dir / route_n
+            label = getattr(self.cfg, "brain_debug_start_label", "debug start")
+            if not getattr(self, "_debug_start_logged", False):
+                print(
+                    f"[SLAM Environment] Debug start ({label}): "
+                    f"({sx:.2f}, {sy:.2f}, {sz:.2f})"
+                )
+                self._debug_start_logged = True
+            spawn_x = torch.full((env_count,), sx, device=device)
+            spawn_y = torch.full((env_count,), sy, device=device)
+            spawn_z = torch.full((env_count,), sz, device=device)
+            return spawn_x, spawn_y, spawn_z
         # Respawn at the LAST checkpoint the drone actually passed — never one ahead
         # of the crash. Nearest-by-distance could snap forward (e.g. crash in the
         # first corridor → respawn at the second corridor), which skips progress and
@@ -1588,6 +2312,12 @@ class RealSlamDroneEnv(BrainNavDroneEnv):
 
             if hasattr(self, "_brain"):
                 self._brain.segment_idx = spawn_idx
+                if bool(getattr(self._brain, "_forced_corridor_route_active", False)):
+                    self._brain._forced_corridor_route_idx = (
+                        self._brain._forced_corridor_route_index_from_local_xy((sx, sy))
+                    )
+                    self._brain._mission_assist_active = False
+                    self._brain._mission_assist_idx = 0
 
             label = ""
             labels = getattr(self, "_brain_spawn_labels", None)
@@ -1612,7 +2342,9 @@ class RealSlamDroneEnv(BrainNavDroneEnv):
         self._allow_obstacle_randomization = False
 
     def _reset_idx(self, env_ids: torch.Tensor | None = None):
-        self._allow_obstacle_randomization = True
+        self._allow_obstacle_randomization = not bool(
+            getattr(self, "_real_slam_obstacles_placed", False)
+        )
         if hasattr(self, "_brain") and self._brain is not None:
             self._brain.blacklisted_frontiers = []
         super()._reset_idx(env_ids)

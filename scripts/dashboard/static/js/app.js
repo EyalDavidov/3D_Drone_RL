@@ -526,6 +526,7 @@
     };
     let loadedRecordingMeta = null;
     let loadedRecordingName = '';
+    let loadedRecordingFile = '';
 
     function statusClass(status) {
         const s = (status || '').toUpperCase();
@@ -785,6 +786,7 @@
     function onRecordingLoaded(name, meta) {
         loadedRecordingName = name;
         loadedRecordingMeta = meta || null;
+        loadedRecordingFile = (meta && meta.filename) || name;
         if (recLoadedVal) recLoadedVal.textContent = name.length > 22 ? name.slice(0, 20) + '…' : name;
         if (recFramesVal) recFramesVal.textContent = String(playbackFrames.length);
         if (recNowName) recNowName.textContent = name;
@@ -801,16 +803,47 @@
             const hasLlc = playbackFrames.some(f => f.llc_outputs && f.llc_outputs.thrust != null);
             const hasMission = playbackFrames.some(f => f.mission_status);
             recFdrSource.textContent = `Source: ${n} JSONL frames · ALT/GS/MAP/THR from log${hasLlc ? '' : ' (THR approx)'}${hasMission ? '' : ' · no mission_status'}`;
+            if (meta && meta.replayDownsampled) {
+                const sampleNote = meta.replayStride > 1 ? `sampled x${meta.replayStride}` : `sampled to ${n} frames`;
+                recFdrSource.textContent += ` · ${sampleNote}`;
+            }
         }
     }
 
     let recordingsCache = {};
+    let activeRecordingLoad = { token: 0, controller: null };
+
+    function recEsc(value) {
+        return String(value ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        }[ch]));
+    }
+
+    async function saveRecordingTitle(filename, title) {
+        const cleanTitle = String(title || '').trim();
+        const rec = recordingsCache[filename];
+        if (rec) {
+            rec.title = cleanTitle;
+            rec.display_title = cleanTitle || filename;
+        }
+        const response = await fetch('/api/recording_meta', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename, title: cleanTitle }),
+        });
+        if (!response.ok) throw new Error(`Save failed (${response.status})`);
+        return response.json();
+    }
 
     function loadRecordingsList() {
         if (!recordingsListBody) return;
         recordingsListBody.innerHTML = '<div class="rec-lib-empty">Scanning recordings directory…</div>';
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
         fetch('/api/recordings', { signal: controller.signal })
             .then(res => {
                 if (!res.ok) {
@@ -829,28 +862,72 @@
                 recordingsListBody.innerHTML = '';
                 data.forEach(rec => {
                     recordingsCache[rec.filename] = rec;
-                    const row = document.createElement('button');
-                    row.type = 'button';
+                    const row = document.createElement('div');
+                    row.tabIndex = 0;
+                    row.setAttribute('role', 'button');
                     row.className = 'rec-lib-row play-remote-btn';
                     row.dataset.file = rec.filename;
-                    if (loadedRecordingName === rec.filename) row.classList.add('rec-lib-row-active');
+                    if (loadedRecordingFile === rec.filename) row.classList.add('rec-lib-row-active');
 
                     const st = rec.status || '—';
                     const crashTip = rec.crash_reason ? ` · ${rec.crash_reason}` : '';
-                    row.title = `${rec.filename} · ${st}${crashTip}`;
+                    const replayTip = rec.large_file ? ` · large file, replay samples x${rec.recommended_stride || 1}` : '';
+                    row.title = `${rec.filename} · ${st}${crashTip}${replayTip}`;
+                    const recTitle = rec.display_title || rec.title || rec.filename;
 
                     row.innerHTML = `
+                        <span class="rec-lib-name-wrap">
+                            <input class="rec-lib-name-input" value="${recEsc(recTitle)}" aria-label="Recording name" />
+                        </span>
                         <span class="rec-lib-date">${rec.date}</span>
                         <span class="rec-lib-found mono">${rec.targets_found}/${rec.targets_total}</span>
                         <span class="rec-lib-cov mono">${rec.coverage.toFixed(1)}%</span>
                         <span class="rec-lib-dur mono">${formatTime(rec.duration)}</span>
+                        <span class="rec-lib-load-status mono">0%</span>
                     `;
                     recordingsListBody.appendChild(row);
                 });
 
                 recordingsListBody.querySelectorAll('.play-remote-btn').forEach(btn => {
-                    btn.addEventListener('click', () => {
+                    btn.addEventListener('click', (event) => {
+                        if (event.target && event.target.closest('.rec-lib-name-input')) return;
                         loadRemoteRecording(btn.dataset.file);
+                    });
+                    btn.addEventListener('keydown', (event) => {
+                        if (event.key === 'Enter' && !(event.target && event.target.closest('.rec-lib-name-input'))) {
+                            loadRemoteRecording(btn.dataset.file);
+                        }
+                    });
+                });
+
+                recordingsListBody.querySelectorAll('.rec-lib-name-input').forEach(input => {
+                    let before = input.value;
+                    input.addEventListener('focus', () => { before = input.value; });
+                    input.addEventListener('click', event => event.stopPropagation());
+                    input.addEventListener('keydown', event => {
+                        event.stopPropagation();
+                        if (event.key === 'Enter') input.blur();
+                        if (event.key === 'Escape') {
+                            input.value = before;
+                            input.blur();
+                        }
+                    });
+                    input.addEventListener('blur', async () => {
+                        const row = input.closest('.rec-lib-row');
+                        const filename = row ? row.dataset.file : '';
+                        if (!filename || input.value === before) return;
+                        input.disabled = true;
+                        try {
+                            await saveRecordingTitle(filename, input.value);
+                            before = input.value;
+                            input.classList.remove('rec-lib-name-error');
+                        } catch (err) {
+                            console.error('[Playback] Failed to save recording title:', err);
+                            input.classList.add('rec-lib-name-error');
+                            input.value = before;
+                        } finally {
+                            input.disabled = false;
+                        }
                     });
                 });
             })
@@ -858,7 +935,7 @@
                 console.error("[Playback] Failed to load recordings list:", err);
                 const timedOut = err && err.name === 'AbortError';
                 recordingsListBody.innerHTML = timedOut
-                    ? '<div class="rec-lib-empty rec-lib-error">Loading recordings timed out — check recordings path/server logs.</div>'
+                    ? '<div class="rec-lib-empty rec-lib-error">Loading recordings timed out — recording scan is still too heavy.</div>'
                     : '<div class="rec-lib-empty rec-lib-error">Failed to load — is server.py running?</div>';
             })
             .finally(() => {
@@ -867,6 +944,13 @@
     }
 
     async function loadRemoteRecording(filename) {
+        if (activeRecordingLoad.controller) {
+            try { activeRecordingLoad.controller.abort(); } catch (e) {}
+        }
+        const loadToken = activeRecordingLoad.token + 1;
+        const controller = new AbortController();
+        activeRecordingLoad = { token: loadToken, controller };
+
         if (recordingsListBody) {
             recordingsListBody.querySelectorAll('.play-remote-btn').forEach(b => {
                 b.classList.toggle('rec-lib-loading', b.dataset.file === filename);
@@ -875,23 +959,42 @@
         }
 
         const loadBtn = recordingsListBody ? recordingsListBody.querySelector(`.play-remote-btn[data-file="${filename}"]`) : null;
-        const statusSpan = loadBtn ? loadBtn.querySelector('.rec-lib-status') : null;
+        const statusSpan = loadBtn ? loadBtn.querySelector('.rec-lib-load-status') : null;
         if (statusSpan) {
-            statusSpan.textContent = '0%';
+            statusSpan.textContent = '';
         }
 
         const cached = recordingsCache[filename] || {};
+        const replayStride = Math.max(1, Number(cached.recommended_stride || 1));
+        const replayMaxFrames = cached.large_file ? 2500 : 0;
+        const expectedSourceFrames = Math.max(0, Number(cached.frames || 0));
+        const expectedLoadedFrames = expectedSourceFrames > 0
+            ? (replayMaxFrames > 0
+                ? Math.min(replayMaxFrames, expectedSourceFrames)
+                : Math.max(1, Math.ceil(expectedSourceFrames / replayStride)))
+            : 0;
         let estimatedTotalBytes = 0;
-        if (cached.file_size) {
+        if (!cached.large_file && cached.file_bytes) {
+            estimatedTotalBytes = Number(cached.file_bytes) || 0;
+        } else if (!cached.large_file && cached.file_size) {
             const num = parseFloat(cached.file_size);
-            if (cached.file_size.includes("MB")) estimatedTotalBytes = num * 1024 * 1024;
+            if (cached.file_size.includes("GB")) estimatedTotalBytes = num * 1024 * 1024 * 1024;
+            else if (cached.file_size.includes("MB")) estimatedTotalBytes = num * 1024 * 1024;
             else if (cached.file_size.includes("KB")) estimatedTotalBytes = num * 1024;
             else estimatedTotalBytes = num;
         }
 
         try {
-            const response = await fetch(`/api/recording?file=${encodeURIComponent(filename)}`);
+            const query = new URLSearchParams({ file: filename });
+            if (replayStride > 1) query.set('stride', String(replayStride));
+            if (replayMaxFrames > 0) query.set('max_frames', String(replayMaxFrames));
+            const response = await fetch(`/api/recording?${query.toString()}`, {
+                signal: controller.signal,
+            });
             if (!response.ok) throw new Error("Server returned error status " + response.status);
+            if ((response.headers.get('Content-Encoding') || '').toLowerCase().includes('gzip')) {
+                estimatedTotalBytes = 0;
+            }
 
             const reader = response.body.getReader();
             
@@ -904,20 +1007,13 @@
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                if (activeRecordingLoad.token !== loadToken) return;
 
                 receivedLength += value.length;
 
                 let percent = 0;
                 if (estimatedTotalBytes > 0) {
                     percent = Math.min(99, Math.round((receivedLength / estimatedTotalBytes) * 100));
-                }
-
-                if (loadBtn) {
-                    loadBtn.style.setProperty('--load-progress', `${percent}%`);
-                    if (statusSpan) {
-                        const mb = (receivedLength / (1024 * 1024)).toFixed(1);
-                        statusSpan.textContent = percent > 0 ? `${percent}%` : `${mb}MB`;
-                    }
                 }
 
                 // Decode chunk and split line-by-line progressively
@@ -937,7 +1033,24 @@
                         }
                     } catch (e) {}
                 }
+
+                if (loadBtn && activeRecordingLoad.token === loadToken) {
+                    const framePercent = expectedLoadedFrames > 0
+                        ? Math.min(99, Math.round((frames.length / expectedLoadedFrames) * 100))
+                        : 0;
+                    const visualPercent = framePercent > 0
+                        ? framePercent
+                        : (estimatedTotalBytes > 0
+                            ? percent
+                            : Math.min(95, Math.max(8, Math.round((receivedLength / (1024 * 1024)) * 4))));
+                    loadBtn.style.setProperty('--load-progress', `${visualPercent}%`);
+                    if (statusSpan) {
+                        statusSpan.textContent = '';
+                    }
+                }
             }
+
+            if (activeRecordingLoad.token !== loadToken) return;
 
             // Parse the final remaining line
             if (partialLine.trim()) {
@@ -952,6 +1065,9 @@
             }
 
             playbackFrames = frames;
+            if (loadBtn) {
+                loadBtn.style.setProperty('--load-progress', '100%');
+            }
 
             if (playbackFrames.length === 0) {
                 alert("No valid telemetry frames found in this recording.");
@@ -997,19 +1113,26 @@
             const cached = recordingsCache[filename] || {};
             const meta = {
                 ...cached,
+                filename,
                 file_size: cached.file_size || formatFileSize(receivedLength),
                 session_header: sessionHeader,
+                replayStride,
+                replayDownsampled: replayStride > 1 || replayMaxFrames > 0,
             };
-            onRecordingLoaded(filename, meta);
+            onRecordingLoaded(cached.display_title || cached.title || filename, meta);
             renderFrame(0);
             loadRecordingsList();
 
         } catch (err) {
+            if (err && err.name === 'AbortError') return;
             console.error("[Playback] Failed to load remote recording:", err);
             alert("Failed to load recording: " + err.message);
             loadRecordingsList();
         } finally {
-            if (loadBtn) {
+            if (activeRecordingLoad.token === loadToken) {
+                activeRecordingLoad.controller = null;
+            }
+            if (loadBtn && activeRecordingLoad.token === loadToken) {
                 loadBtn.classList.remove('rec-lib-loading');
                 // The button text will be reset when loadRecordingsList() runs and re-renders the rows.
             }
@@ -1262,6 +1385,7 @@
             if (txt) txt.textContent = 'Import flight log (.jsonl)';
         }
         loadedRecordingName = '';
+        loadedRecordingFile = '';
         loadedRecordingMeta = null;
         if (recLoadedVal) recLoadedVal.textContent = 'None';
         if (recFramesVal) recFramesVal.textContent = '—';
@@ -1368,6 +1492,21 @@
         btn.title = isMin ? 'Expand' : 'Minimize';
 
         // Dispatch a window resize event to force Three.js and Chart.js to recalculate dimensions
+        window.dispatchEvent(new Event('resize'));
+    });
+
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.glass-collapse-btn');
+        if (!btn) return;
+        e.stopPropagation();
+        const targetId = btn.dataset.collapseTarget;
+        const body = targetId ? document.getElementById(targetId) : null;
+        const panel = btn.closest('.glass-panel');
+        if (!body || !panel) return;
+        const collapsed = panel.classList.toggle('glass-panel-collapsed');
+        body.hidden = collapsed;
+        btn.textContent = collapsed ? '+' : '−';
+        btn.title = collapsed ? 'Expand section' : 'Collapse section';
         window.dispatchEvent(new Event('resize'));
     });
 

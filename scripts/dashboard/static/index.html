@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RL Drone Dashboard — Play Mode</title>
     <meta name="description" content="Real-time monitoring dashboard for RL drone navigation play mode">
-    <link rel="stylesheet" href="css/style.css?v=2">
+    <link rel="stylesheet" href="css/style.css?v=3">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -19,11 +19,7 @@
     <header id="dashboard-header">
         <div class="header-left">
             <div class="logo">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                    <path d="M2 17l10 5 10-5" />
-                    <path d="M2 12l10 5 10-5" />
-                </svg>
+                <img class="logo-mark" src="assets/dashboard-drone-logo.svg" alt="" aria-hidden="true">
                 <h1>Drone Dashboard</h1>
             </div>
             <div class="header-badge" id="sim-status">
@@ -574,7 +570,10 @@
                     <div class="glass-panel yhud-log-panel">
                         <div class="glass-header">
                             <span class="glass-title"><span class="glass-title-icon">🛟</span> Rescue Log</span>
-                            <span class="yhud-log-count" id="yolo-log-count">0</span>
+                            <span class="yhud-head-actions">
+                                <span class="yhud-log-count" id="yolo-log-count">0</span>
+                                <button class="glass-collapse-btn" data-collapse-target="yolo-log" title="Collapse section">−</button>
+                            </span>
                         </div>
                         <div class="glass-body yhud-log" id="yolo-log">
                             <div class="yhud-log-empty" id="yolo-log-empty">
@@ -587,6 +586,7 @@
                     <div class="glass-panel yhud-gallery-panel">
                         <div class="glass-header">
                             <span class="glass-title"><span class="glass-title-icon">📸</span> Captured Frames</span>
+                            <button class="glass-collapse-btn" data-collapse-target="yolo-gallery" title="Collapse section">−</button>
                         </div>
                         <div class="glass-body" id="yolo-gallery"
                             style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px; max-height: 180px; overflow-y: auto;">
@@ -595,11 +595,12 @@
                                 NO FRAMES SAVED</div>
                         </div>
                     </div>
-                    <div class="glass-panel">
+                    <div class="glass-panel yhud-telemetry-panel">
                         <div class="glass-header">
                             <span class="glass-title"><span class="glass-title-icon">📊</span> Telemetry</span>
+                            <button class="glass-collapse-btn" data-collapse-target="yolo-telemetry-body" title="Collapse section">−</button>
                         </div>
-                        <div class="glass-body glass-stats">
+                        <div class="glass-body glass-stats" id="yolo-telemetry-body">
                             <div class="glass-stat-row"><span class="glass-stat-label">Best Conf</span><span
                                     class="mono glass-stat-val" id="yolo-conf-val">0.0%</span></div>
                             <div class="glass-stat-row"><span class="glass-stat-label">Live Conf</span><span
@@ -656,7 +657,7 @@
                             <button id="btn-refresh-recordings" class="rec-icon-btn" title="Refresh list">↻</button>
                         </div>
                         <div class="rec-lib-cols">
-                            <span>Date</span><span>Rescued</span><span>Map</span><span>Log</span>
+                            <span>Name</span><span>Date</span><span>Rescued</span><span>Map</span><span>Log</span>
                         </div>
                         <div id="recordings-table-container" class="rec-lib-scroll">
                             <div id="recordings-list-body" class="rec-lib-list">

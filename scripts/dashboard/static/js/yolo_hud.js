@@ -45,6 +45,8 @@ class YoloHud {
         this._state = 'idle';
         this._threshold = 0.7;
         this._selectedPersonKey = null;
+        this._galleryFrames = [];
+        this._galleryIndex = 0;
 
         // Smoothed / animated values
         this._dispBoxes = [];       // eased box geometry for smooth motion
@@ -94,6 +96,7 @@ class YoloHud {
         };
 
         this._logSig = '';   // signature to avoid rebuilding log DOM every frame
+        this._ensureGalleryLightbox();
 
         this.TIER = {
             confirmed: { stroke: '#b6ff3c', glow: 'rgba(182,255,60,0.55)', text: '#e8ffc8' },
@@ -110,6 +113,67 @@ class YoloHud {
 
         this._loop = this._loop.bind(this);
         requestAnimationFrame(this._loop);
+    }
+
+    _ensureGalleryLightbox() {
+        if (document.getElementById('yolo-gallery-lightbox')) return;
+        const box = document.createElement('div');
+        box.id = 'yolo-gallery-lightbox';
+        box.className = 'yhud-lightbox';
+        box.hidden = true;
+        box.innerHTML = `
+            <div class="yhud-lightbox-backdrop" data-yhud-lightbox-close="1"></div>
+            <div class="yhud-lightbox-stage">
+                <button class="yhud-lightbox-close" data-yhud-lightbox-close="1" title="Close">x</button>
+                <button class="yhud-lightbox-nav yhud-lightbox-prev" data-yhud-lightbox-prev="1" title="Previous">&lt;</button>
+                <img class="yhud-lightbox-img" alt="Captured YOLO frame" />
+                <button class="yhud-lightbox-nav yhud-lightbox-next" data-yhud-lightbox-next="1" title="Next">&gt;</button>
+                <div class="yhud-lightbox-caption mono"></div>
+            </div>
+        `;
+        document.body.appendChild(box);
+        this._lightbox = box;
+        this._lightboxImg = box.querySelector('.yhud-lightbox-img');
+        this._lightboxCaption = box.querySelector('.yhud-lightbox-caption');
+
+        box.addEventListener('click', (event) => {
+            if (event.target.closest('[data-yhud-lightbox-close]')) this._closeGalleryLightbox();
+            if (event.target.closest('[data-yhud-lightbox-prev]')) this._stepGalleryLightbox(-1);
+            if (event.target.closest('[data-yhud-lightbox-next]')) this._stepGalleryLightbox(1);
+        });
+        document.addEventListener('keydown', (event) => {
+            if (!this._lightbox || this._lightbox.hidden) return;
+            if (event.key === 'Escape') this._closeGalleryLightbox();
+            if (event.key === 'ArrowLeft') this._stepGalleryLightbox(-1);
+            if (event.key === 'ArrowRight') this._stepGalleryLightbox(1);
+        });
+    }
+
+    _openGalleryLightbox(index) {
+        if (!this._galleryFrames.length) return;
+        this._galleryIndex = Math.max(0, Math.min(index, this._galleryFrames.length - 1));
+        this._showGalleryLightboxFrame();
+        if (this._lightbox) this._lightbox.hidden = false;
+    }
+
+    _closeGalleryLightbox() {
+        if (this._lightbox) this._lightbox.hidden = true;
+    }
+
+    _stepGalleryLightbox(delta) {
+        if (!this._galleryFrames.length) return;
+        this._galleryIndex = (this._galleryIndex + delta + this._galleryFrames.length) % this._galleryFrames.length;
+        this._showGalleryLightboxFrame();
+    }
+
+    _showGalleryLightboxFrame() {
+        const frame = this._galleryFrames[this._galleryIndex];
+        if (!frame || !this._lightboxImg) return;
+        const imgPath = `yolo_saves/${frame}`;
+        this._lightboxImg.src = imgPath;
+        if (this._lightboxCaption) {
+            this._lightboxCaption.textContent = `${this._galleryIndex + 1} / ${this._galleryFrames.length} - ${frame}`;
+        }
     }
 
     // ---- Public API ----
@@ -363,6 +427,7 @@ class YoloHud {
         const host = document.getElementById('yolo-gallery');
         const emptyNode = document.getElementById('yolo-gallery-empty');
         if (!host) return;
+        this._galleryFrames = frames || [];
 
         const sig = (frames || []).join('|');
         if (sig === this._gallerySig) return;
@@ -378,7 +443,7 @@ class YoloHud {
 
         if (emptyNode) emptyNode.style.display = 'none';
 
-        for (const frame of frames) {
+        frames.forEach((frame, index) => {
             const isConfirmed = frame.startsWith('detection');
             const label = isConfirmed ? 'CONFIRMED' : 'NOTED';
             const camMatch = frame.match(/_(front|left|right)\.jpg$/i);
@@ -425,12 +490,10 @@ class YoloHud {
                 </div>
             `;
             
-            thumb.onclick = () => {
-                window.open(imgPath, '_blank');
-            };
+            thumb.onclick = () => this._openGalleryLightbox(index);
             
             host.appendChild(thumb);
-        }
+        });
     }
 
     // ---- Canvas render loop ----

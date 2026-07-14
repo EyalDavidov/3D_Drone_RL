@@ -78,12 +78,19 @@ body { display: flex; flex-direction: column; }
 .header-left, .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 
 .logo { display: flex; align-items: center; gap: 8px; color: var(--accent-primary); }
+.logo-mark {
+    width: 25px;
+    height: 25px;
+    flex-shrink: 0;
+    object-fit: contain;
+    filter: invert(72%) sepia(73%) saturate(1034%) hue-rotate(151deg) brightness(105%) contrast(104%)
+        drop-shadow(0 0 8px rgba(47, 243, 255, 0.45));
+}
 .logo h1 {
     font-size: 15px; font-weight: 600; letter-spacing: -0.3px;
     background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
     -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
 }
-.logo svg { flex-shrink: 0; }
 
 /* Status badge */
 .header-badge {
@@ -1447,9 +1454,40 @@ body { display: flex; flex-direction: column; }
     flex-direction: column;
     gap: 12px;
     min-height: 0;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
-.yhud-log-panel { flex: 1.6; min-height: 0; }
+.yhud-log-panel { flex: 1.35 1 160px; min-height: 92px; }
+.yhud-gallery-panel { flex: 1 1 150px; min-height: 88px; }
+.yhud-telemetry-panel { flex: 1.2 1 190px; min-height: 96px; }
+.yhud-head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.glass-collapse-btn {
+    width: 24px;
+    height: 24px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    color: rgba(226, 232, 240, 0.85);
+    background: rgba(15, 23, 42, 0.65);
+    font-size: 14px;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+}
+.glass-collapse-btn:hover {
+    color: var(--neon-cyan);
+    border-color: rgba(34, 211, 238, 0.42);
+}
+.glass-panel-collapsed {
+    flex: 0 0 auto;
+    min-height: 0;
+}
+.glass-panel-collapsed .glass-header {
+    border-bottom: none;
+}
 .yhud-log-count {
     font-family: var(--font-mono); font-size: 12px; font-weight: 700;
     color: #0a1018; background: var(--neon-cyan); padding: 1px 9px; border-radius: 999px;
@@ -1496,6 +1534,91 @@ body { display: flex; flex-direction: column; }
 }
 .yhud-log-gps span { display: inline-flex; align-items: center; gap: 4px; }
 .yhud-log-gps b { color: var(--neon-cyan); font-weight: 600; }
+
+.yhud-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: grid;
+    place-items: center;
+}
+.yhud-lightbox[hidden] { display: none; }
+.yhud-lightbox-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(3, 7, 18, 0.86);
+    backdrop-filter: blur(10px);
+}
+.yhud-lightbox-stage {
+    position: relative;
+    z-index: 1;
+    width: min(92vw, 1180px);
+    height: min(86vh, 760px);
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr) 54px;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 18px;
+    border: 1px solid rgba(34, 211, 238, 0.28);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.96));
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 34px rgba(34, 211, 238, 0.15);
+}
+.yhud-lightbox-img {
+    grid-column: 2;
+    grid-row: 1;
+    max-width: 100%;
+    max-height: 100%;
+    justify-self: center;
+    align-self: center;
+    object-fit: contain;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: #020617;
+}
+.yhud-lightbox-caption {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    color: rgba(226, 232, 240, 0.72);
+    font-size: 12px;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.yhud-lightbox-close,
+.yhud-lightbox-nav {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: rgba(226, 232, 240, 0.9);
+    background: rgba(15, 23, 42, 0.78);
+    cursor: pointer;
+}
+.yhud-lightbox-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 800;
+}
+.yhud-lightbox-nav {
+    width: 46px;
+    height: 72px;
+    border-radius: 10px;
+    font-size: 28px;
+    font-weight: 800;
+}
+.yhud-lightbox-prev { grid-column: 1; grid-row: 1; }
+.yhud-lightbox-next { grid-column: 3; grid-row: 1; }
+.yhud-lightbox-close:hover,
+.yhud-lightbox-nav:hover {
+    color: #22d3ee;
+    border-color: rgba(34, 211, 238, 0.5);
+}
+
 .glass-stats {
     flex-direction: column;
     align-items: stretch;
@@ -2076,7 +2199,7 @@ body { display: flex; flex-direction: column; }
 
 .rec-lib-cols {
     display: grid;
-    grid-template-columns: 1.5fr 1fr 1fr 1fr;
+    grid-template-columns: minmax(86px, 1.1fr) minmax(74px, 1fr) 58px 54px 54px;
     gap: 4px;
     padding: 5px 10px;
     font-size: 9px;
@@ -2105,8 +2228,9 @@ body { display: flex; flex-direction: column; }
 .rec-lib-error { color: #f87171; }
 
 .rec-lib-row {
+    position: relative;
     display: grid;
-    grid-template-columns: 1.5fr 1fr 1fr 1fr;
+    grid-template-columns: minmax(86px, 1.1fr) minmax(74px, 1fr) 58px 54px 54px;
     gap: 4px;
     align-items: center;
     width: 100%;
@@ -2120,6 +2244,11 @@ body { display: flex; flex-direction: column; }
     text-align: left;
     cursor: pointer;
     transition: background 0.12s;
+    overflow: hidden;
+}
+.rec-lib-row > * {
+    position: relative;
+    z-index: 1;
 }
 .rec-lib-row:hover { background: rgba(255, 45, 149, 0.06); }
 .rec-lib-row-active {
@@ -2127,8 +2256,46 @@ body { display: flex; flex-direction: column; }
     border-left: 2px solid #ff2d95;
     padding-left: 8px;
 }
-.rec-lib-loading { opacity: 0.5; pointer-events: none; }
+.rec-lib-loading { opacity: 0.85; pointer-events: none; }
+.rec-lib-load-status {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    padding: 2px 6px;
+    border-radius: 999px;
+    color: #06111d;
+    background: #22d3ee;
+    font-size: 9px;
+    font-weight: 800;
+    box-shadow: 0 0 12px rgba(34, 211, 238, 0.35);
+}
+.rec-lib-loading .rec-lib-load-status { display: none; }
+.rec-lib-name-wrap,
 .rec-lib-date { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-lib-name-input {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px 5px;
+    color: rgba(255, 255, 255, 0.86);
+    background: transparent;
+    font: inherit;
+    font-size: 10px;
+    outline: none;
+}
+.rec-lib-name-input:hover,
+.rec-lib-name-input:focus {
+    border-color: rgba(34, 211, 238, 0.38);
+    background: rgba(34, 211, 238, 0.08);
+}
+.rec-lib-name-input:disabled { opacity: 0.65; }
+.rec-lib-name-error {
+    border-color: rgba(248, 113, 113, 0.75);
+    background: rgba(248, 113, 113, 0.10);
+}
 .rec-lib-status {
     font-size: 9px;
     font-weight: 700;
@@ -2507,9 +2674,17 @@ body { display: flex; flex-direction: column; }
 .play-remote-btn.rec-lib-loading {
     position: relative;
     border-color: rgba(16, 185, 129, 0.5) !important;
-    background: linear-gradient(to right, rgba(16, 185, 129, 0.22) var(--load-progress, 0%), rgba(17, 24, 39, 0.8) var(--load-progress, 0%)) !important;
     box-shadow: 0 0 10px rgba(16, 185, 129, 0.15) !important;
-    transition: background 0.1s ease, border-color 0.2s ease;
+    transition: border-color 0.2s ease;
+}
+.play-remote-btn.rec-lib-loading::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: var(--load-progress, 0%);
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.34), rgba(34, 211, 238, 0.18));
+    pointer-events: none;
+    transition: width 0.12s linear;
 }
 .play-remote-btn.rec-lib-loading .rec-lib-status {
     background: rgba(16, 185, 129, 0.3) !important;
@@ -2569,4 +2744,644 @@ body { display: flex; flex-direction: column; }
     color: #f472b6;
 }
 
+/* ========== RESPONSIVE DASHBOARD OVERRIDES ==========
+   Applies to live mode and replay mode. Keep every panel available, but let
+   dense desktop layouts collapse into scrollable, touch-friendly stacks. */
+@media (max-width: 1280px), (max-height: 820px) {
+    :root { --gap: 8px; }
+
+    #dashboard-header {
+        height: auto;
+        min-height: 48px;
+        flex-wrap: wrap;
+        align-content: center;
+        gap: 8px 10px;
+        padding: 6px 10px;
+    }
+    .header-left,
+    .header-right {
+        min-width: 0;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .tab-bar {
+        order: 3;
+        flex: 1 1 100%;
+        justify-content: flex-start;
+        min-width: 0;
+        height: auto;
+        overflow-x: auto;
+        padding-bottom: 2px;
+        scrollbar-width: thin;
+    }
+    .tab {
+        height: 32px;
+        padding: 0 12px;
+        font-size: 11px;
+    }
+    .spawn-panel { max-width: min(100%, 360px); }
+    .spawn-status { max-width: 120px; }
+
+    .global-playback-bar {
+        height: auto;
+        padding: 6px 10px;
+    }
+    .playback-controls-inner {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .control-group-center {
+        order: 3;
+        flex: 1 1 100%;
+        min-width: 0;
+    }
+    .timeline-slider {
+        min-width: 140px;
+    }
+}
+
+@media (max-width: 1100px) {
+    #dashboard-main {
+        min-height: 0;
+    }
+    .panel {
+        resize: none;
+        min-width: 0;
+    }
+
+    #tab-cameras.active {
+        grid-template-rows: minmax(360px, 1.35fr) minmax(220px, 0.8fr);
+        overflow-y: auto;
+    }
+    .cam-sensors-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    #tab-navigation.active {
+        grid-template-rows: auto auto minmax(420px, 1fr);
+        overflow-y: auto;
+    }
+    .nav-top-row {
+        grid-template-columns: 1fr;
+    }
+    .nav-chart-col {
+        min-height: 220px;
+    }
+    .fc-expanded-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    #tab-slam.active,
+    #tab-yolo.active {
+        overflow-y: auto;
+    }
+    .slam-tab-layout,
+    .yolo-tab-layout {
+        flex-direction: column;
+        overflow: visible;
+    }
+    .slam-map-main {
+        min-height: min(62vh, 620px);
+    }
+    .slam-stats-col {
+        flex: 0 0 auto;
+        width: 100%;
+        overflow: visible;
+    }
+    .smap-body {
+        min-height: 360px;
+    }
+
+    .rec-studio-header {
+        flex-wrap: wrap;
+        gap: 8px 12px;
+    }
+    .rec-header-stats {
+        order: 3;
+        width: 100%;
+        margin-left: 0;
+        flex-wrap: wrap;
+        gap: 10px 16px;
+    }
+    .rec-studio-body {
+        grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr);
+        grid-template-rows: minmax(0, 1fr) auto;
+    }
+    .rec-inspector {
+        grid-column: 1 / -1;
+        min-height: 180px;
+        max-height: 260px;
+        border-top: 1px solid rgba(255,255,255,0.05);
+    }
+}
+
+@media (max-width: 760px) {
+    html,
+    body {
+        overflow: auto;
+    }
+    body {
+        min-height: 100vh;
+    }
+    #dashboard-header {
+        position: relative;
+    }
+    .logo h1 {
+        font-size: 14px;
+    }
+    .mission-badge,
+    .level-selector,
+    .header-stat,
+    .spawn-panel {
+        flex: 1 1 auto;
+    }
+    .tab {
+        padding: 0 10px;
+        font-size: 10px;
+    }
+    .tab-content,
+    #tab-cameras,
+    #tab-navigation,
+    #tab-slam,
+    #tab-yolo,
+    #tab-recordings.active {
+        height: auto;
+        min-height: calc(100vh - 128px);
+        overflow-y: auto;
+    }
+
+    #tab-cameras.active {
+        display: flex;
+        flex-direction: column;
+    }
+    .cam-wall {
+        grid-template-columns: 1fr;
+        grid-template-rows: repeat(4, minmax(180px, 30vh));
+    }
+    .cam-sensors-row {
+        grid-template-columns: 1fr;
+    }
+    .cam-sensor-cell {
+        min-height: 180px;
+    }
+    .cam-solo-bar {
+        flex-wrap: wrap;
+    }
+    .cam-solo-picks {
+        width: 100%;
+        margin-left: 0;
+        overflow-x: auto;
+    }
+
+    .map-overlay {
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        transform: none;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px 10px;
+    }
+    .fc-expanded-grid,
+    .slam-stats-grid,
+    .rec-live-strip {
+        grid-template-columns: 1fr;
+    }
+    .smap-legend {
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        gap: 5px 8px;
+        padding: 6px 8px;
+        font-size: 9px;
+    }
+    .smap-hint {
+        display: none;
+    }
+
+    .yhud-stages-row,
+    .yhud-stages-top,
+    .yhud-stages-bottom {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+    .yhud-stage {
+        min-height: 220px;
+    }
+    .yhud-intel {
+        position: static;
+        width: 100%;
+        margin-top: 8px;
+    }
+
+    .rec-studio {
+        border-radius: 0;
+    }
+    .rec-studio-body {
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+    }
+    .rec-library {
+        min-height: 220px;
+        max-height: 320px;
+        border-right: none;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .rec-deck {
+        min-height: 420px;
+        overflow: visible;
+    }
+    .rec-inspector {
+        max-height: none;
+    }
+    .rec-transport,
+    .rec-deck-top {
+        flex-wrap: wrap;
+    }
+    .rec-speed-wrap {
+        margin-left: 0;
+    }
+    .rec-lib-cols,
+    .rec-lib-row {
+        grid-template-columns: minmax(70px, 1fr) minmax(68px, 0.9fr) 50px 44px 44px;
+        font-size: 10px;
+    }
+}
+
+@media (max-width: 520px) {
+    #dashboard-header {
+        padding: 6px;
+    }
+    .header-left,
+    .header-right,
+    .spawn-panel {
+        width: 100%;
+    }
+    .mission-badge {
+        width: 100%;
+        justify-content: space-between;
+    }
+    .level-selector {
+        width: 100%;
+        justify-content: space-between;
+    }
+    .global-playback-bar .control-group-left,
+    .global-playback-bar .control-group-right {
+        width: 100%;
+        justify-content: space-between;
+    }
+    .ctrl-btn {
+        min-width: 32px;
+    }
+    .rec-brand {
+        min-width: 0;
+    }
+    .rec-header-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .rec-fdr-panel {
+        min-height: 180px;
+        max-height: none;
+    }
+    .rec-live-strip {
+        gap: 4px;
+    }
+    .smap-body,
+    #slam-3d-container {
+        min-height: 300px;
+    }
+}
+
+@media (max-height: 680px) and (min-width: 761px) {
+    .tab-content {
+        padding: 6px;
+    }
+    #tab-cameras.active {
+        grid-template-rows: minmax(260px, 1fr) minmax(150px, 0.45fr);
+    }
+    .cam-wall-header {
+        height: 24px;
+    }
+    .cam-sensors-label {
+        display: none;
+    }
+    .nav-chart-col {
+        min-height: 160px;
+    }
+    .slam-map-main {
+        min-height: 420px;
+    }
+    .smap-body {
+        min-height: 260px;
+    }
+    .rec-studio-header {
+        padding: 6px 10px;
+    }
+    .rec-fdr-panel {
+        min-height: 120px;
+    }
+}
+
+/* Final small-screen guardrail. This intentionally sits last so it wins over the
+   older desktop/tablet media rules above. */
+@media (max-width: 640px) {
+    html,
+    body {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden !important;
+    }
+
+    body {
+        display: block;
+    }
+
+    #dashboard-header {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "left"
+            "right"
+            "tabs";
+        width: 100%;
+        max-width: 100vw;
+        height: auto !important;
+        min-height: 0;
+        padding: 8px;
+        gap: 8px;
+        overflow: hidden;
+    }
+
+    .header-left {
+        grid-area: left;
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+        width: 100%;
+        min-width: 0;
+        justify-content: stretch;
+    }
+
+    .header-right {
+        grid-area: right;
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+        min-width: 0;
+        justify-content: stretch;
+    }
+
+    .logo {
+        display: none !important;
+    }
+
+    .header-badge,
+    .mission-badge,
+    .level-selector,
+    .header-stat,
+    .spawn-panel {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        margin: 0;
+        justify-content: center;
+    }
+
+    .mission-badge {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+        justify-items: center;
+    }
+
+    .mission-badge .mission-state,
+    .mission-badge .mission-targets,
+    .header-stat .value {
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .level-selector,
+    .spawn-panel {
+        grid-column: 1 / -1;
+    }
+
+    .level-pills {
+        flex: 1;
+        justify-content: center;
+    }
+
+    .spawn-panel {
+        display: grid;
+        grid-template-columns: auto 48px minmax(68px, auto) minmax(0, 1fr);
+        align-items: center;
+    }
+
+    .spawn-status {
+        max-width: none;
+        min-width: 0;
+    }
+
+    .tab-bar {
+        grid-area: tabs;
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+        min-width: 0 !important;
+        height: auto;
+        overflow: visible;
+        border: 0;
+        padding: 0;
+    }
+
+    .tab {
+        width: 100%;
+        min-width: 0;
+        height: 34px;
+        padding: 0 6px;
+        font-size: 10px;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    #global-playback-bar {
+        width: 100%;
+        max-width: 100vw;
+        overflow: hidden;
+    }
+
+    .playback-controls-inner,
+    .control-group-left,
+    .control-group-center,
+    .control-group-right {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .control-group-center {
+        display: grid;
+        grid-template-columns: repeat(5, 34px);
+        grid-auto-rows: auto;
+        justify-content: center;
+        gap: 6px;
+    }
+
+    .control-group-center .timeline-slider {
+        grid-column: 1 / -1;
+        width: 100%;
+        min-width: 0;
+        margin: 4px 0 0;
+    }
+
+    #dashboard-main,
+    .tab-content,
+    #tab-cameras,
+    #tab-navigation,
+    #tab-slam,
+    #tab-yolo,
+    #tab-recordings {
+        width: 100%;
+        max-width: 100vw;
+        min-width: 0;
+        overflow-x: hidden !important;
+    }
+
+    .tab-content {
+        padding: 6px;
+    }
+
+    .panel,
+    .glass-panel,
+    .cam-wall-cell,
+    .cam-sensor-cell,
+    .rec-library,
+    .rec-deck,
+    .rec-inspector {
+        min-width: 0 !important;
+        max-width: 100%;
+    }
+
+    .panel-header,
+    .cam-wall-header,
+    .glass-header,
+    .rec-panel-head {
+        min-width: 0;
+    }
+
+    .panel-title,
+    .glass-title,
+    .rec-panel-title {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    #tab-cameras.active {
+        gap: 8px;
+    }
+
+    .cam-main-wrap,
+    .cam-sensors-strip,
+    .cam-wall,
+    .cam-sensors-row {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .cam-wall {
+        grid-template-rows: repeat(4, minmax(210px, 34vh));
+    }
+
+    .cam-sensors-row {
+        padding: 6px;
+        gap: 8px;
+    }
+
+    .nav-top-row,
+    .nav-bottom-row,
+    .slam-tab-layout,
+    .slam-stats-col,
+    .yolo-tab-layout,
+    .rec-studio,
+    .rec-studio-body {
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .yhud,
+    .yhud-stage,
+    .yhud-stages-row,
+    .yhud-stages-top,
+    .yhud-stages-bottom {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .hud-alert {
+        left: 8px;
+        right: 8px;
+        bottom: 10px;
+        transform: none;
+        min-width: 0;
+        max-width: none;
+        padding: 10px;
+        gap: 10px;
+    }
+
+    .hud-alert-label {
+        letter-spacing: 0.8px;
+    }
+
+    .rec-studio-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+    }
+
+    .rec-header-stats {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+    }
+
+    .rec-status-badge {
+        width: 100%;
+        text-align: center;
+    }
+}
+
+@media (max-width: 380px) {
+    .tab-bar {
+        grid-template-columns: 1fr;
+    }
+
+    .header-right {
+        grid-template-columns: 1fr;
+    }
+
+    .spawn-panel {
+        grid-template-columns: auto 48px minmax(64px, auto);
+    }
+
+    .spawn-status {
+        grid-column: 1 / -1;
+        text-align: center;
+    }
+
+    .mission-badge {
+        grid-template-columns: auto minmax(0, 1fr);
+        row-gap: 4px;
+    }
+}
 

@@ -120,6 +120,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         if getattr(self, "_room_bounds_local", None) is not None:
             print(f"[BrainNavEnv] Spawn bounds from USD room: {self._room_bounds_local}\n")
 
+        self._apply_drone_body_material()
         self._sync_dynamic_obstacle_registry()
         self._sync_map_geometry_from_usd()
         self._setup_rescue_persons()
@@ -175,6 +176,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         self._segment_crash_counts: dict[int, int] = {}
         self._final_rescue_person_prim = None
         self._final_center_person_prim = None
+        self._room1_rescue_person_prim = None
+        self._room2_rescue_person_prim = None
         self._room3_rescue_person_prim = None
         self._steps_since_last_scan = 100
         self._was_scanning = False
@@ -187,8 +190,93 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             print(f"[BrainNavEnv] Episode timeout disabled for play (length={play_len}s).\n")
 
         self._apply_brain_spawn_and_goal(self._robot._ALL_INDICES, mission_snapshot=None)
+        self._apply_drone_body_material()
         self._setup_rescue_persons()
         self._randomize_obstacles(self._robot._ALL_INDICES)
+
+    def _apply_drone_body_material(self) -> None:
+        """Paint the drone body dark gray so it stays visible against colored walls."""
+        try:
+            from isaaclab.sim.utils import bind_visual_material
+            import omni.usd
+
+            stage = omni.usd.get_context().get_stage()
+            if stage is None:
+                return
+
+            mat_path = "/World/Materials/DroneBodyDarkGray"
+            if not stage.GetPrimAtPath(mat_path).IsValid():
+                mat_cfg = sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.08, 0.085, 0.09),
+                    metallic=0.0,
+                    roughness=0.72,
+                )
+                mat_cfg.func(mat_path, mat_cfg)
+
+            bound = 0
+            for env_id in range(self.num_envs):
+                body_path = f"/World/envs/env_{env_id}/Drone/body"
+                if stage.GetPrimAtPath(body_path).IsValid():
+                    bind_visual_material(
+                        body_path,
+                        mat_path,
+                        stage=stage,
+                        stronger_than_descendants=True,
+                    )
+                    bound += 1
+
+            if bound:
+                print(f"[BrainNavEnv] Applied dark gray drone body material to {bound} env(s).\n")
+            self._setup_drone_texture_lights()
+        except Exception as exc:
+            print(f"[BrainNavEnv] Could not apply dark gray drone body material: {exc}\n")
+
+    def _setup_drone_texture_lights(self) -> None:
+        """Add a very weak rear body light to reveal the drone texture."""
+        if not bool(getattr(self.cfg, "drone_texture_light_enabled", True)):
+            return
+
+        try:
+            from pxr import Gf, UsdGeom, UsdLux
+
+            stage = self.sim.stage
+            if stage is None:
+                return
+
+            light_cls = getattr(UsdLux, "SphereLight", None) or getattr(UsdLux, "DiskLight", None)
+            if light_cls is None:
+                return
+
+            intensity = float(getattr(self.cfg, "drone_texture_light_intensity", 180.0))
+            exposure = float(getattr(self.cfg, "drone_texture_light_exposure", -0.8))
+            radius = float(getattr(self.cfg, "drone_texture_light_radius", 0.14))
+            color = tuple(getattr(self.cfg, "drone_texture_light_color", (0.85, 0.9, 1.0)))
+
+            created = 0
+            for env_id in range(self.num_envs):
+                body_path = f"/World/envs/env_{env_id}/Drone/body"
+                if not stage.GetPrimAtPath(body_path).IsValid():
+                    continue
+
+                light = light_cls.Define(stage, f"{body_path}/RearTextureLight")
+                light_prim = light.GetPrim()
+                UsdGeom.XformCommonAPI(light_prim).SetTranslate(Gf.Vec3d(-0.20, 0.0, 0.12))
+
+                if hasattr(light, "CreateIntensityAttr"):
+                    light.CreateIntensityAttr().Set(intensity)
+                if hasattr(light, "CreateExposureAttr"):
+                    light.CreateExposureAttr().Set(exposure)
+                if hasattr(light, "CreateRadiusAttr"):
+                    light.CreateRadiusAttr().Set(radius)
+                if hasattr(light, "CreateColorAttr"):
+                    light.CreateColorAttr().Set(Gf.Vec3f(float(color[0]), float(color[1]), float(color[2])))
+
+                created += 1
+
+            if created:
+                print(f"[BrainNavEnv] Added weak rear drone texture light to {created} env(s).\n")
+        except Exception as exc:
+            print(f"[BrainNavEnv] Could not create drone texture light: {exc}\n")
 
     @staticmethod
     def _ensure_ae_checkpoint_file(cfg: BrainNavDroneEnvCfg) -> None:
@@ -261,6 +349,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         self.scene.articulations["robot"] = self._robot
         self._pillars = []
         self._room3_obstacles = []
+        self._room3_obstacle_types = []
         self._corr1_obstacles = []
         self._corr2_obstacles = []
 
@@ -303,6 +392,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 obj = RigidObject(obj_cfg)
                 self.scene.rigid_objects[f"room3_{name}_{i}"] = obj
                 self._room3_obstacles.append(obj)
+                self._room3_obstacle_types.append(name)
 
         self._corr1_obstacles = []
         for i in range(self.cfg.num_room4_corr1):
@@ -403,6 +493,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         if self._view_right_camera is not None:
             self.scene.sensors["view_right_camera"] = self._view_right_camera
 
+        self._setup_camera_fill_lights()
+
         # Behind-drone chase camera for the viewport (Multilevel_AE_PPO)
         try:
             import omni.usd
@@ -426,11 +518,64 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         except Exception as e:
             print(f"[BrainNavEnv] Could not set chase viewport camera (headless?): {e}")
 
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = sim_utils.DomeLightCfg(
+            intensity=float(getattr(self.cfg, "world_light_intensity", 900.0)),
+            color=(0.75, 0.75, 0.75),
+        )
         light_cfg.func("/World/Light", light_cfg)
 
         self._cache_room_spawn_bounds()
         self._sync_dynamic_obstacle_registry()
+
+    def _setup_camera_fill_lights(self) -> None:
+        """Attach a weak local fill light to each body camera."""
+        if not bool(getattr(self.cfg, "camera_fill_lights_enabled", True)):
+            return
+
+        try:
+            from pxr import Gf, UsdGeom, UsdLux
+
+            stage = self.sim.stage
+            if stage is None:
+                return
+
+            light_cls = getattr(UsdLux, "DiskLight", None) or getattr(UsdLux, "SphereLight", None)
+            if light_cls is None:
+                print("[BrainNavEnv] Camera fill lights skipped: no supported USD light schema.\n")
+                return
+
+            intensity = float(getattr(self.cfg, "camera_fill_light_intensity", 75.0))
+            exposure = float(getattr(self.cfg, "camera_fill_light_exposure", -1.5))
+            radius = float(getattr(self.cfg, "camera_fill_light_radius", 0.035))
+            color = tuple(getattr(self.cfg, "camera_fill_light_color", (1.0, 0.94, 0.86)))
+            camera_names = ("Camera", "Camera_View", "Camera_ViewLeft", "Camera_ViewRight")
+
+            created = 0
+            for env_id in range(self.num_envs):
+                for camera_name in camera_names:
+                    camera_path = f"/World/envs/env_{env_id}/Drone/body/{camera_name}"
+                    if not stage.GetPrimAtPath(camera_path).IsValid():
+                        continue
+
+                    light = light_cls.Define(stage, f"{camera_path}/SoftFillLight")
+                    light_prim = light.GetPrim()
+                    UsdGeom.XformCommonAPI(light_prim).SetTranslate(Gf.Vec3d(0.0, 0.0, -0.04))
+
+                    if hasattr(light, "CreateIntensityAttr"):
+                        light.CreateIntensityAttr(intensity)
+                    if hasattr(light, "CreateExposureAttr"):
+                        light.CreateExposureAttr(exposure)
+                    if hasattr(light, "CreateRadiusAttr"):
+                        light.CreateRadiusAttr(radius)
+                    if hasattr(light, "CreateColorAttr"):
+                        light.CreateColorAttr(Gf.Vec3f(float(color[0]), float(color[1]), float(color[2])))
+
+                    created += 1
+
+            if created:
+                print(f"[BrainNavEnv] Added gentle camera fill lights to {created} camera(s).\n")
+        except Exception as exc:
+            print(f"[BrainNavEnv] Could not create camera fill lights: {exc}\n")
 
     def _build_sequential_spawn_sequence(self) -> tuple[tuple, list[str]]:
         """Build scan/nav waypoints: rooms 1–4, then corr1 → corr2 → Worker final room."""
@@ -536,17 +681,58 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         return seq, labels
 
     def _get_usd_edit_layer(self):
-        from pxr import Usd
-
         stage = self.sim.stage
         edit_layer = stage.GetSessionLayer()
-        if edit_layer is None or edit_layer.empty:
+        if edit_layer is None:
             edit_layer = stage.GetRootLayer()
         return edit_layer
 
+    def _get_usd_runtime_layers(self):
+        """Layers that may contain runtime-authored rescue person overrides."""
+        stage = self.sim.stage
+        layers = []
+        for layer in (stage.GetSessionLayer(), stage.GetRootLayer()):
+            if layer is not None and layer not in layers:
+                layers.append(layer)
+        return layers
+
     def _build_rescue_person_log_slots(self) -> list[dict]:
         """Fixed YOLO log slots — one row per physical rescue person."""
-        return []
+        origin = self._terrain.env_origins[0].cpu().numpy()
+        slot_defs = [
+            (
+                "room1",
+                "Room 1 Person",
+                getattr(self.cfg, "brain_room1_person_local", (1.1, -0.85, 0.0)),
+            ),
+            (
+                "room2",
+                "Room 2 Person",
+                getattr(self.cfg, "brain_room2_person_local", (1.1, -5.2, 0.0)),
+            ),
+            (
+                "room3",
+                "Room 3 Person",
+                getattr(self.cfg, "brain_room3_person_local", (0.0, -10.0, 0.0)),
+            ),
+            (
+                "final",
+                "Final Room Person",
+                getattr(self.cfg, "brain_final_person_local", (-6.0, -21.5, 0.0)),
+            ),
+        ]
+        default_rooms = self._default_rescue_person_rooms()
+        slots: list[dict] = []
+        for slot_id, label, local_xyz in slot_defs:
+            if slot_id not in default_rooms:
+                continue
+            if local_xyz is None:
+                continue
+            wx = float(local_xyz[0]) + float(origin[0])
+            wy = float(local_xyz[1]) + float(origin[1])
+            wz = float(local_xyz[2]) + float(origin[2])
+            slots.append({"id": slot_id, "xyz": (wx, wy, wz), "label": label})
+        return slots
 
     def _build_dynamic_spawn_log_slots(
         self, local_positions: list[tuple[float, float, float]]
@@ -799,6 +985,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
     def _is_valid_dynamic_spawn_xy(self, x: float, y: float, margin: float = 0.25) -> bool:
         """True when (x,y) is on the navigable floor inside the map, clear of obstacles."""
+        margin = max(float(margin), float(getattr(self.cfg, "brain_person_wall_clearance_m", 0.65)))
         bounds = getattr(self, "_room_bounds_local", None)
         if bounds is None:
             bounds = getattr(self.cfg, "map_bounds", None)
@@ -820,6 +1007,20 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         if hasattr(self, "_is_inside_map_obstacle"):
             if bool(self._is_inside_map_obstacle(tx, ty, margin=margin).item()):
                 return False
+        if not self._is_clear_of_live_dynamic_obstacles(x, y, margin=margin):
+            return False
+        return True
+
+    def _is_clear_of_live_dynamic_obstacles(self, x: float, y: float, margin: float = 0.25) -> bool:
+        """Reject spawned people near obstacles placed by the live randomizer."""
+        obstacles = getattr(self, "_live_dynamic_obstacle_clearance_xyr", None) or []
+        if not obstacles:
+            return True
+
+        extra = float(getattr(self.cfg, "brain_person_dynamic_obstacle_clearance_m", 0.45))
+        for ox, oy, radius in obstacles:
+            if math.hypot(x - float(ox), y - float(oy)) < float(radius) + extra + margin:
+                return False
         return True
 
     def _sample_dynamic_spawn_positions(
@@ -829,7 +1030,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         import random as _rng
 
         floor_z = self._person_spawn_local_z()
-        margin = 0.25
+        margin = float(getattr(self.cfg, "brain_person_wall_clearance_m", 0.65))
         placed: list[tuple[float, float, float]] = []
         seen_xy: set[tuple[int, int]] = set()
 
@@ -883,7 +1084,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         if len(placed) < count:
             print(
                 f"[BrainNavEnv] Spawn sampling: {len(placed)}/{count} valid positions "
-                f"(walkable_cells={n_cells})."
+                f"(walkable_cells={n_cells}, wall_clearance={margin:.2f}m)."
             )
         return placed
 
@@ -933,6 +1134,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 stage.RemovePrim(wrapper_path)
 
             wrapper = stage.DefinePrim(wrapper_path, "Xform")
+            wrapper.SetActive(True)
             xform = UsdGeom.Xformable(wrapper)
             xform.ClearXformOpOrder()
             xform.AddTranslateOp().Set(world_pos)
@@ -1001,6 +1203,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             wrapper = stage.GetPrimAtPath(wrapper_path)
             if not wrapper.IsValid():
                 raise RuntimeError(f"Failed to clone rescue person to {wrapper_path}")
+            wrapper.SetActive(True)
 
             xform = UsdGeom.Xformable(wrapper)
             for op in xform.GetOrderedXformOps():
@@ -1024,13 +1227,16 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         return wrapper_prim
 
     def _hide_map_default_person(self) -> None:
-        """Hide the map's embedded F_Business_02 (wrong default position/scale)."""
+        """Hide person assets embedded in the map, outside the generated scope."""
         from pxr import Usd, UsdGeom
 
         stage = self.sim.stage
         scope = getattr(self.cfg, "brain_rescue_person_scope", "RescuePersons")
         for path in (
             "/World/envs/env_0/Room/F_Business_02",
+            "/World/envs/env_0/Room/RescuePerson_Room1",
+            "/World/envs/env_0/Room/RescuePerson_Room2",
+            "/World/envs/env_0/Room/RescuePerson_Room3",
             "/World/envs/env_0/Room/RescuePerson_Final",
             "/World/envs/env_0/Room/RescuePerson_Final_Center",
         ):
@@ -1040,15 +1246,35 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         room = stage.GetPrimAtPath("/World/envs/env_0/Room")
         if room.IsValid():
+            person_root_tokens = (
+                "f_business",
+                "female_adult",
+                "male_adult",
+                "rescueperson_",
+                "rescue_person_",
+                "spawnedperson_",
+                "randomperson_",
+                "targetperson_",
+                "rescuetarget_",
+                "dashboardspawn_",
+                "person_spawn_",
+            )
             for prim in Usd.PrimRange(room):
                 path = prim.GetPath().pathString
                 name = prim.GetName().lower()
                 if f"/{scope}/" in path or path.endswith(f"/{scope}"):
                     continue
-                if "f_business" in name or "female_adult_business" in name:
+                if (
+                    prim.IsA(UsdGeom.Xformable)
+                    and any(token in name for token in person_root_tokens)
+                ):
                     self._set_prim_visibility(prim, visible=False)
-                elif name == "f_business_02" and prim.IsA(UsdGeom.Xformable):
-                    self._set_prim_visibility(prim, visible=False)
+
+    def _default_rescue_person_rooms(self) -> set[str]:
+        rooms = getattr(self.cfg, "brain_default_person_rooms", ("room3", "final"))
+        if isinstance(rooms, str):
+            rooms = (rooms,)
+        return {str(room).strip().lower() for room in rooms if str(room).strip()}
 
     def _person_bbox_height(self, prim) -> float | None:
         from pxr import UsdGeom
@@ -1061,12 +1287,16 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         return float(size[2])
 
     def _setup_rescue_persons(self) -> None:
-        """Three persons via wrapper Xforms: room 3, final room A, final room B."""
+        """Static rescue persons via wrapper Xforms."""
         if not getattr(self.cfg, "spawn_person", True):
             return
         try:
+            self._reset_rescue_person_wrappers(reset_state=True)
             self._hide_map_default_person()
+            default_rooms = self._default_rescue_person_rooms()
 
+            room1_name = getattr(self.cfg, "brain_room1_person_name", "RescuePerson_Room1")
+            room2_name = getattr(self.cfg, "brain_room2_person_name", "RescuePerson_Room2")
             room3_name = getattr(self.cfg, "brain_room3_person_name", "RescuePerson_Room3")
             final_name = getattr(self.cfg, "brain_final_person_name", "RescuePerson_Final")
             center_name = getattr(
@@ -1074,39 +1304,76 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             )
             sx, sy, sz = self._person_wrapper_scale()
 
-            room3 = getattr(self.cfg, "brain_room3_person_local", (0.0, -10.0, 0.0))
-            room3_prim = self._spawn_rescue_person_wrapper(
-                room3_name, tuple(room3), yaw_deg=90.0
-            )
-            self._room3_rescue_person_prim = room3_prim
-            h3 = self._person_bbox_height(room3_prim)
-            self._static_person_target_height = h3
-            print(
-                f"[BrainNavEnv] Room 3 person ({room3_prim.GetPath()}) "
-                f"scale=({sx:.2f},{sy:.2f},{sz:.2f}) at "
-                f"({room3[0]:.2f}, {room3[1]:.2f}, {room3[2]:.2f})"
-                f"{f', height={h3:.2f}m' if h3 else ''}.\n"
-            )
+            static_specs = [
+                (
+                    "_room1_rescue_person_prim",
+                    "Room 1",
+                    room1_name,
+                    getattr(self.cfg, "brain_room1_person_local", (1.1, -0.85, 0.0)),
+                    90.0,
+                ),
+                (
+                    "_room2_rescue_person_prim",
+                    "Room 2",
+                    room2_name,
+                    getattr(self.cfg, "brain_room2_person_local", (1.1, -5.2, 0.0)),
+                    90.0,
+                ),
+            ]
+            for attr, label, name, local_xyz, yaw in static_specs:
+                if label.lower().replace(" ", "") not in default_rooms:
+                    setattr(self, attr, None)
+                    continue
+                prim = self._spawn_rescue_person_wrapper(name, tuple(local_xyz), yaw_deg=yaw)
+                setattr(self, attr, prim)
+                hp = self._person_bbox_height(prim)
+                print(
+                    f"[BrainNavEnv] {label} person ({prim.GetPath()}) "
+                    f"scale=({sx:.2f},{sy:.2f},{sz:.2f}) at "
+                    f"({local_xyz[0]:.2f}, {local_xyz[1]:.2f}, {local_xyz[2]:.2f})"
+                    f"{f', height={hp:.2f}m' if hp else ''}.\n"
+                )
 
-            final_local = getattr(self.cfg, "brain_final_person_local", (-4.0, -20.0, 0.0))
-            final_prim = self._spawn_rescue_person_wrapper(
-                final_name, tuple(final_local), yaw_deg=-90.0
-            )
-            self._final_rescue_person_prim = final_prim
-            px, py, pz = float(final_local[0]), float(final_local[1]), float(final_local[2])
-            self._finish_point_local = (px, py, 1.0)
-            hf = self._person_bbox_height(final_prim)
-            print(
-                f"[BrainNavEnv] Final-room person A ({final_prim.GetPath()}) "
-                f"scale=({sx:.2f},{sy:.2f},{sz:.2f}) at "
-                f"({px:.2f}, {py:.2f}, {pz:.2f})"
-                f"{f', height={hf:.2f}m' if hf else ''}.\n"
-            )
+            if "room3" in default_rooms:
+                room3 = getattr(self.cfg, "brain_room3_person_local", (0.0, -10.0, 0.0))
+                room3_prim = self._spawn_rescue_person_wrapper(
+                    room3_name, tuple(room3), yaw_deg=90.0
+                )
+                self._room3_rescue_person_prim = room3_prim
+                h3 = self._person_bbox_height(room3_prim)
+                self._static_person_target_height = h3
+                print(
+                    f"[BrainNavEnv] Room 3 person ({room3_prim.GetPath()}) "
+                    f"scale=({sx:.2f},{sy:.2f},{sz:.2f}) at "
+                    f"({room3[0]:.2f}, {room3[1]:.2f}, {room3[2]:.2f})"
+                    f"{f', height={h3:.2f}m' if h3 else ''}.\n"
+                )
+            else:
+                self._room3_rescue_person_prim = None
+
+            if "final" in default_rooms:
+                final_local = getattr(self.cfg, "brain_final_person_local", (-4.0, -20.0, 0.0))
+                final_prim = self._spawn_rescue_person_wrapper(
+                    final_name, tuple(final_local), yaw_deg=-90.0
+                )
+                self._final_rescue_person_prim = final_prim
+                px, py, pz = float(final_local[0]), float(final_local[1]), float(final_local[2])
+                self._finish_point_local = (px, py, 1.0)
+                hf = self._person_bbox_height(final_prim)
+                print(
+                    f"[BrainNavEnv] Final-room person A ({final_prim.GetPath()}) "
+                    f"scale=({sx:.2f},{sy:.2f},{sz:.2f}) at "
+                    f"({px:.2f}, {py:.2f}, {pz:.2f})"
+                    f"{f', height={hf:.2f}m' if hf else ''}.\n"
+                )
+            else:
+                self._final_rescue_person_prim = None
 
             self._final_center_person_prim = None
 
             if hasattr(self, "_perception") and self._perception is not None:
                 self._perception._rescue_person_slots = self._build_rescue_person_log_slots()
+            self._audit_rescue_person_stage()
         except Exception as exc:
             print(f"[BrainNavEnv] Could not set up rescue persons: {exc}\n")
             import traceback
@@ -1189,6 +1456,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 print("[BrainNavEnv] WARNING: Room prim missing — cannot verify rescue persons.\n")
                 return
 
+            room1 = getattr(self, "_room1_rescue_person_prim", None)
+            room2 = getattr(self, "_room2_rescue_person_prim", None)
             room3 = getattr(self, "_room3_rescue_person_prim", None)
             final = getattr(self, "_final_rescue_person_prim", None)
             if room3 is None:
@@ -1201,6 +1470,21 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                     if prim.GetName().lower() == final_name:
                         final = prim
                         break
+
+            for label, prim, cfg_name, default_pos in (
+                ("Room 1", room1, "brain_room1_person_local", (1.1, -0.85, 0.0)),
+                ("Room 2", room2, "brain_room2_person_local", (1.1, -5.2, 0.0)),
+            ):
+                if prim and prim.IsValid():
+                    p_local = getattr(self.cfg, cfg_name, default_pos)
+                    hp = self._person_bbox_height(prim)
+                    print(
+                        f"[BrainNavEnv] {label} rescue person: {prim.GetPath()} "
+                        f"target ({p_local[0]:.2f}, {p_local[1]:.2f}, {p_local[2]:.2f})"
+                        f"{f', height={hp:.2f}m' if hp else ''}.\n"
+                    )
+                else:
+                    print(f"[BrainNavEnv] WARNING: {label} person prim not found.\n")
 
             if room3 and room3.IsValid():
                 r3 = getattr(self.cfg, "brain_room3_person_local", (0.0, -10.0, 0.0))
@@ -1573,6 +1857,31 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         num_resets = env_ids.shape[0]
         env_origins = self._terrain.env_origins[env_ids]
+        env0_local_idx = None
+        for local_idx, env_id in enumerate(env_ids.tolist()):
+            if int(env_id) == 0:
+                env0_local_idx = local_idx
+                break
+        live_obstacle_xyr: list[tuple[float, float, float]] = []
+
+        def _remember_env0_obstacle(
+            obs_x: torch.Tensor,
+            obs_y: torch.Tensor,
+            obs_z: torch.Tensor,
+            radius: float,
+        ) -> None:
+            if env0_local_idx is None:
+                return
+            if float(obs_z[env0_local_idx].item()) < -10.0:
+                return
+            live_obstacle_xyr.append(
+                (
+                    float(obs_x[env0_local_idx].item()),
+                    float(obs_y[env0_local_idx].item()),
+                    float(radius),
+                )
+            )
+
         mission_level = self._get_mission_obstacle_level()
         levels = torch.full((num_resets,), mission_level, dtype=torch.long, device=self.device)
         hide_for_scan = (
@@ -1621,6 +1930,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             state[:, 7:] = 0.0
             pole.write_root_pose_to_sim(state[:, :7], env_ids)
             pole.write_root_velocity_to_sim(state[:, 7:], env_ids)
+            _remember_env0_obstacle(
+                pole_x,
+                pole_y,
+                pole_z,
+                float(getattr(self.cfg, "brain_person_pole_clearance_radius_m", 0.45)),
+            )
 
         # ── Randomize Room 3 Obstacles ────────────────────────────────
         # 12 grid cells (4 rows of Y, 3 columns of X) - Compressed to center (X in [-1.5, 1.5], Y in [-14.0, -11.0])
@@ -1632,6 +1947,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         # Never spawn dynamic obstacles on top of a rescue person (breaks YOLO silhouette).
         person_xy = torch.tensor(
             [
+                getattr(self.cfg, "brain_room1_person_local", (1.1, -0.85, 0.0))[:2],
+                getattr(self.cfg, "brain_room2_person_local", (1.1, -5.2, 0.0))[:2],
                 getattr(self.cfg, "brain_room3_person_local", (0.0, -10.0, 0.0))[:2],
                 getattr(self.cfg, "brain_final_person_local", (-4.0, -20.0, 0.0))[:2],
                 getattr(self.cfg, "brain_final_person_center_local", (-6.0, -21.5, 0.0))[:2],
@@ -1648,29 +1965,49 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         grid_positions = grid_positions[keep_cells]
 
         if real_slam:
-            # Static house: room-3 props only (room-4 corridor props appear when exploring).
+            # Static house: populate all configured live obstacle groups once.
             is_level3 = torch.ones(num_resets, dtype=torch.bool, device=self.device)
-            is_level4 = torch.zeros(num_resets, dtype=torch.bool, device=self.device)
-            # Fixed, readable layout — four props near the room corners, away from the person.
-            slam_room3_slots = torch.tensor(
-                [[-1.2, -12.0], [1.2, -12.0], [-1.2, -13.5], [1.2, -13.5]],
-                device=self.device,
-                dtype=torch.float32,
-            )
+            is_level4 = torch.ones(num_resets, dtype=torch.bool, device=self.device)
         else:
             is_level3 = levels == 2
             is_level4 = levels == 3
-            slam_room3_slots = None
         if hide_for_scan:
             is_level3 = torch.zeros_like(is_level3)
             is_level4 = torch.zeros_like(is_level4)
 
         num_level3_resets = torch.count_nonzero(is_level3).item()
         slam_room3_cap = int(getattr(self.cfg, "brain_slam_room3_max_obstacles", 4)) if real_slam else len(self._room3_obstacles)
+        n_room3 = 0
+        room3_slot_by_obstacle = {}
 
-        if num_level3_resets > 0 and not real_slam:
+        if num_level3_resets > 0:
             n_grid = grid_positions.shape[0]
-            n_room3 = len(self._room3_obstacles)
+            n_room3 = min(len(self._room3_obstacles), max(0, slam_room3_cap), int(n_grid))
+            obstacle_types = list(getattr(self, "_room3_obstacle_types", []))
+            if obstacle_types and n_room3 > 0:
+                required = []
+                for typ in ("wall", "cone", "big_gate", "small_gate", "poles_triangle"):
+                    try:
+                        required.append(obstacle_types.index(typ))
+                    except ValueError:
+                        pass
+                active_indices = required[:n_room3]
+                remaining = [
+                    idx for idx in range(len(self._room3_obstacles))
+                    if idx not in active_indices
+                ]
+                if len(active_indices) < n_room3 and remaining:
+                    order = torch.randperm(len(remaining), device=self.device).detach().cpu().tolist()
+                    for k in order:
+                        active_indices.append(remaining[k])
+                        if len(active_indices) >= n_room3:
+                            break
+                n_room3 = len(active_indices)
+                room3_slot_by_obstacle = {
+                    obs_idx: slot_idx for slot_idx, obs_idx in enumerate(active_indices)
+                }
+            else:
+                room3_slot_by_obstacle = {idx: idx for idx in range(n_room3)}
             perms = torch.stack([torch.randperm(n_grid, device=self.device) for _ in range(num_level3_resets)])
             import math
             rand_yaws = torch.zeros(num_level3_resets, n_room3, device=self.device).uniform_(0, 2 * math.pi)
@@ -1685,14 +2022,10 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             obs_qw = torch.ones(num_resets, device=self.device)
             obs_qz = torch.zeros(num_resets, device=self.device)
             
-            if real_slam and num_level3_resets > 0 and j < slam_room3_cap and slam_room3_slots is not None:
-                slot = slam_room3_slots[min(j, slam_room3_slots.shape[0] - 1)]
-                obs_x[is_level3] = slot[0]
-                obs_y[is_level3] = slot[1]
-                obs_z[is_level3] = 0.0
-            elif num_level3_resets > 0 and j < grid_positions.shape[0]:
+            if num_level3_resets > 0 and j in room3_slot_by_obstacle:
+                room3_slot = room3_slot_by_obstacle[j]
                 # Get the assigned cell index for this obstacle in each Level 3 env
-                assigned_cell_indices = perms[:, j]  # (num_level3_resets,)
+                assigned_cell_indices = perms[:, room3_slot]  # (num_level3_resets,)
                 assigned_positions = grid_positions[assigned_cell_indices]  # (num_level3_resets, 2)
                 
                 # Add small random noise (±0.3m in X and Y)
@@ -1704,7 +2037,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 obs_z[is_level3] = 0.0  # Lowered by 1m (was 1.0)
                 
                 # Apply random yaw
-                yaw = rand_yaws[:, j]
+                yaw = rand_yaws[:, room3_slot]
                 obs_qw[is_level3] = torch.cos(yaw / 2.0)
                 obs_qz[is_level3] = torch.sin(yaw / 2.0)
                 
@@ -1719,6 +2052,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             
             obstacle.write_root_pose_to_sim(state[:, :7], env_ids)
             obstacle.write_root_velocity_to_sim(state[:, 7:], env_ids)
+            _remember_env0_obstacle(
+                obs_x,
+                obs_y,
+                obs_z,
+                float(getattr(self.cfg, "brain_person_room3_obstacle_clearance_radius_m", 0.95)),
+            )
 
         # ── Randomize Room 4 Obstacles ────────────────────────────────
         num_level4_resets = torch.count_nonzero(is_level4).item()
@@ -1766,6 +2105,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             state[:, 7:] = 0.0
             obstacle.write_root_pose_to_sim(state[:, :7], env_ids)
             obstacle.write_root_velocity_to_sim(state[:, 7:], env_ids)
+            _remember_env0_obstacle(
+                obs_x,
+                obs_y,
+                obs_z,
+                float(getattr(self.cfg, "brain_person_corridor_obstacle_clearance_radius_m", 0.75)),
+            )
 
         # 2. Room 4.2 Corridor Obstacles (corr2)
         for j, obstacle in enumerate(self._corr2_obstacles):
@@ -1795,10 +2140,24 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             state[:, 7:] = 0.0
             obstacle.write_root_pose_to_sim(state[:, :7], env_ids)
             obstacle.write_root_velocity_to_sim(state[:, 7:], env_ids)
+            _remember_env0_obstacle(
+                obs_x,
+                obs_y,
+                obs_z,
+                float(getattr(self.cfg, "brain_person_corridor_obstacle_clearance_radius_m", 0.75)),
+            )
+
+        if env0_local_idx is not None:
+            self._live_dynamic_obstacle_clearance_xyr = live_obstacle_xyr
 
         if real_slam:
             # Mark the house as placed so future resets/segment changes leave it static.
             self._real_slam_obstacles_placed = True
+            print(
+                "[BrainNavEnv] REAL SLAM obstacles randomized once for this live run "
+                f"(poles={len(self._poles)}, room3_active={n_room3}, "
+                f"corr1={len(self._corr1_obstacles)}, corr2={len(self._corr2_obstacles)})."
+            )
 
     def _preprocess_depth(self) -> torch.Tensor:
         """Normalize depth for AE; downsample 512×288 brain-play camera to 72×128."""
@@ -1998,7 +2357,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         if not getattr(self, "_person_materials_bound", False) and getattr(self.cfg, "brain_person_override_textures", False):
             from pxr import Usd, UsdGeom
             bound_count = 0
-            for p_attr in ("_room3_rescue_person_prim", "_final_rescue_person_prim"):
+            for p_attr in (
+                "_room1_rescue_person_prim",
+                "_room2_rescue_person_prim",
+                "_room3_rescue_person_prim",
+                "_final_rescue_person_prim",
+            ):
                 prim = getattr(self, p_attr, None)
                 if prim is not None and prim.IsValid():
                     self._ensure_person_textures(prim)
@@ -2438,6 +2802,14 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         """Disable debug draw and OpenCV windows before Isaac Sim tears down."""
         self._closing = True
         try:
+            # Always rebuild the configured defaults before shutdown. This also
+            # handles stale stages where the dynamic-spawn flags were lost.
+            if getattr(self.cfg, "spawn_person", True):
+                self._setup_rescue_persons()
+                print("[BrainNavEnv] Restored configured rescue persons before closing live run.\n")
+        except Exception as exc:
+            print(f"[BrainNavEnv] Could not restore default rescue persons on close: {exc}\n")
+        try:
             self.set_debug_vis(False)
         except Exception:
             pass
@@ -2455,6 +2827,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
     def _hide_static_rescue_persons_for_dynamic_spawn(self) -> None:
         """Hide default room-3 / final-room persons when operator spawns new targets."""
         for attr in (
+            "_room1_rescue_person_prim",
+            "_room2_rescue_person_prim",
             "_room3_rescue_person_prim",
             "_final_rescue_person_prim",
             "_final_center_person_prim",
@@ -2466,6 +2840,8 @@ class BrainNavDroneEnv(AEPPODroneEnv):
     def _restore_static_rescue_persons(self) -> None:
         """Show default static persons again after a failed dynamic spawn."""
         for attr in (
+            "_room1_rescue_person_prim",
+            "_room2_rescue_person_prim",
             "_room3_rescue_person_prim",
             "_final_rescue_person_prim",
             "_final_center_person_prim",
@@ -2476,32 +2852,260 @@ class BrainNavDroneEnv(AEPPODroneEnv):
         self.spawned_targets_local = []
         self.dynamic_spawn_active = False
 
-    def _clear_dynamic_spawned_persons(self) -> None:
-        """Remove ALL dashboard-spawned person wrappers from the stage."""
+    def _remove_or_deactivate_prim(self, stage, path: str) -> bool:
+        """Remove a prim; if it is authored in another layer, deactivate and hide it."""
+        from pxr import Usd
+
+        if not stage.GetPrimAtPath(path).IsValid():
+            return False
+
+        for layer in reversed(self._get_usd_runtime_layers()):
+            with Usd.EditContext(stage, layer):
+                prim = stage.GetPrimAtPath(path)
+                if not prim.IsValid():
+                    continue
+                try:
+                    stage.RemovePrim(path)
+                except Exception as exc:
+                    print(f"[BrainNavEnv] Could not remove stale rescue prim {path}: {exc}")
+
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            for layer in self._get_usd_runtime_layers():
+                with Usd.EditContext(stage, layer):
+                    prim = stage.GetPrimAtPath(path)
+                    if not prim.IsValid():
+                        continue
+                    try:
+                        prim.SetActive(False)
+                    except Exception:
+                        pass
+                    try:
+                        self._set_prim_visibility(prim, visible=False)
+                    except Exception:
+                        pass
+        return True
+
+    def _looks_like_generated_person_root(self, prim, scope: str) -> bool:
+        """Detect generated/person-like roots left by previous live runs."""
+        from pxr import UsdGeom
+
+        if prim is None or not prim.IsValid() or not prim.IsA(UsdGeom.Xformable):
+            return False
+
+        path = prim.GetPath().pathString
+        name = prim.GetName()
+        lower_name = name.lower()
+        lower_path = path.lower()
+        lower_scope = str(scope).lower()
+
+        person_tokens = (
+            "dynamicspawn",
+            "dynamic_spawn",
+            "spawnedperson",
+            "spawned_person",
+            "randomperson",
+            "random_person",
+            "targetperson",
+            "target_person",
+            "rescuetarget",
+            "rescue_target",
+            "dashboardspawn",
+            "dashboard_spawn",
+            "spawnedtarget",
+            "spawned_target",
+            "randomtarget",
+            "random_target",
+            "personspawn",
+            "person_spawn",
+            "rescueperson",
+            "rescue_person",
+            "f_business",
+            "female_adult",
+            "male_adult",
+        )
+        if any(token in lower_name for token in person_tokens):
+            return True
+
+        if f"/{lower_scope}/" in lower_path:
+            return True
+
+        try:
+            refs = prim.GetMetadata("references")
+            refs_text = str(refs).lower() if refs is not None else ""
+            if any(token in refs_text for token in ("f_business", "female_adult", "male_adult")):
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _generated_person_root_path(self, prim, scope: str) -> str | None:
+        """Return the wrapper/root path that should be removed for a stale person prim."""
+        path = prim.GetPath().pathString
+        parts = [part for part in path.split("/") if part]
+        if not parts:
+            return None
+
+        scope_l = str(scope).lower()
+        parts_l = [part.lower() for part in parts]
+        if scope_l in parts_l:
+            idx = parts_l.index(scope_l)
+            if idx + 1 < len(parts):
+                return "/" + "/".join(parts[: idx + 2])
+
+        # Dynamic/static person roots are direct Xform wrappers. If detection hit a
+        # child Character prim, remove the parent wrapper instead.
+        if parts[-1].lower() in ("character", "body", "root"):
+            return "/" + "/".join(parts[:-1])
+        return path
+
+    def _reset_rescue_person_wrappers(self, *, reset_state: bool = False) -> int:
+        """Clear generated rescue-person wrappers before recreating the configured defaults."""
         from pxr import Usd
 
         stage = self.sim.stage
         scope = getattr(self.cfg, "brain_rescue_person_scope", "RescuePersons")
-        parent_path = f"/World/envs/env_0/Room/{scope}"
+        room_path = "/World/envs/env_0/Room"
+        parent_path = f"{room_path}/{scope}"
         to_remove: list[str] = []
+
+        parent = stage.GetPrimAtPath(parent_path)
+        if parent.IsValid():
+            for child in parent.GetChildren():
+                name = child.GetName()
+                if name == "Materials":
+                    continue
+                to_remove.append(str(child.GetPath()))
+
+        # Remove generated roots anywhere under the stage. Older dashboard/live
+        # versions used several wrapper paths, and stale layers can keep those
+        # roots composed into later runs.
+        for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+            path = str(prim.GetPath())
+            if not path.startswith("/World/"):
+                continue
+            if path == parent_path or path.startswith(parent_path + "/"):
+                continue
+            if "/Drone/" in path or path.endswith("/Drone"):
+                continue
+            root_path = None
+            if self._looks_like_generated_person_root(prim, scope):
+                root_path = self._generated_person_root_path(prim, scope)
+            if root_path and root_path not in to_remove:
+                to_remove.append(root_path)
+
+        for name in getattr(self, "_dynamic_spawn_names", []):
+            path = f"{parent_path}/{name}"
+            if path not in to_remove:
+                to_remove.append(path)
+
+        removed = 0
+        if to_remove:
+            with Usd.EditContext(stage, self._get_usd_edit_layer()):
+                for path in sorted(to_remove, key=len, reverse=True):
+                    if self._remove_or_deactivate_prim(stage, path):
+                        removed += 1
+
+        if reset_state:
+            self._dynamic_spawn_names = []
+            self._dynamic_spawn_prims = []
+            self.spawned_targets_local = []
+            self.dynamic_spawn_active = False
+            for attr in (
+                "_room1_rescue_person_prim",
+                "_room2_rescue_person_prim",
+                "_room3_rescue_person_prim",
+                "_final_rescue_person_prim",
+                "_final_center_person_prim",
+            ):
+                setattr(self, attr, None)
+            if hasattr(self, "_perception") and self._perception is not None:
+                self._perception._detection_log = []
+                self._perception._person_best_conf = {}
+                self._perception.frame_confirmed_persons = []
+
+        if removed:
+            print(f"[BrainNavEnv] Reset rescue persons: removed {removed} stale wrapper(s).\n")
+        return removed
+
+    def _audit_rescue_person_stage(self) -> None:
+        """Report the composed rescue roots after reset/setup for stale-person diagnosis."""
+        from pxr import UsdGeom
+
+        stage = self.sim.stage
+        scope = getattr(self.cfg, "brain_rescue_person_scope", "RescuePersons")
+        parent_path = f"/World/envs/env_0/Room/{scope}"
+        parent = stage.GetPrimAtPath(parent_path)
+        active_roots: list[str] = []
+        if parent.IsValid():
+            for child in parent.GetChildren():
+                if child.GetName() == "Materials":
+                    continue
+                visible = True
+                if child.IsA(UsdGeom.Imageable):
+                    visible = child.GetVisibilityAttr().Get() != "invisible"
+                active_roots.append(
+                    f"{child.GetName()}(active={child.IsActive()},visible={visible})"
+                )
+        print(
+            "[BrainNavEnv] Rescue-person stage after setup: "
+            f"{', '.join(active_roots) if active_roots else 'no generated roots'}\n"
+        )
+
+    def _purge_dynamic_spawned_person_prims(self, *, reset_state: bool = False) -> int:
+        """Remove stale dashboard-spawned person wrappers from the USD stage."""
+        from pxr import Usd
+
+        stage = self.sim.stage
+        scope = getattr(self.cfg, "brain_rescue_person_scope", "RescuePersons")
+        room_path = "/World/envs/env_0/Room"
+        parent_path = f"{room_path}/{scope}"
+        to_remove: list[str] = []
+
         parent = stage.GetPrimAtPath(parent_path)
         if parent.IsValid():
             for child in parent.GetChildren():
                 if child.GetName().startswith("DynamicSpawn_"):
                     to_remove.append(str(child.GetPath()))
+
+        room = stage.GetPrimAtPath(room_path)
+        if room.IsValid():
+            for prim in Usd.PrimRange(room):
+                if prim.GetName().startswith("DynamicSpawn_"):
+                    path = str(prim.GetPath())
+                    if path not in to_remove:
+                        to_remove.append(path)
+
         for name in getattr(self, "_dynamic_spawn_names", []):
             path = f"{parent_path}/{name}"
             if path not in to_remove:
                 to_remove.append(path)
-        with Usd.EditContext(stage, self._get_usd_edit_layer()):
-            for path in to_remove:
-                prim = stage.GetPrimAtPath(path)
-                if prim.IsValid():
-                    stage.RemovePrim(path)
-        self._dynamic_spawn_names = []
-        self._dynamic_spawn_prims = []
-        self.spawned_targets_local = []
-        self.dynamic_spawn_active = False
+
+        removed = 0
+        if to_remove:
+            with Usd.EditContext(stage, self._get_usd_edit_layer()):
+                for path in sorted(to_remove, key=len, reverse=True):
+                    if self._remove_or_deactivate_prim(stage, path):
+                        removed += 1
+
+        if reset_state:
+            self._dynamic_spawn_names = []
+            self._dynamic_spawn_prims = []
+            self.spawned_targets_local = []
+            self.dynamic_spawn_active = False
+            if hasattr(self, "_perception") and self._perception is not None:
+                self._perception._detection_log = []
+                self._perception._person_best_conf = {}
+                self._perception.frame_confirmed_persons = []
+
+        if removed:
+            print(f"[BrainNavEnv] Removed {removed} stale dynamic rescue person(s) from the stage.\n")
+        return removed
+
+    def _clear_dynamic_spawned_persons(self) -> None:
+        """Remove ALL dashboard-spawned person wrappers from the stage."""
+        self._purge_dynamic_spawned_person_prims(reset_state=True)
         brain = getattr(self, "_brain", None)
         if brain is not None:
             brain.rescued_people = []

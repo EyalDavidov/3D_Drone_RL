@@ -234,11 +234,19 @@ class LiveDroneTelemetry:
     Hz to get the latest snapshot.
     """
 
-    def __init__(self, tick_rate: float = 10.0, perf_mode: bool = False):
+    def __init__(
+        self,
+        tick_rate: float = 10.0,
+        perf_mode: bool = False,
+        recording: bool = True,
+        lightweight_recording: bool = False,
+    ):
         self.tick_rate = tick_rate
         self.force_level: int | None = None  # required by server.py interface
         self.pending_spawn_count: int | None = None
         self._perf_mode = bool(perf_mode)
+        self._recording_enabled = bool(recording)
+        self._lightweight_recording = bool(lightweight_recording)
 
         self._lock = threading.Lock()
         self._state: dict[str, Any] = self._empty_state()
@@ -248,21 +256,24 @@ class LiveDroneTelemetry:
         # Telemetry recording file
         self._record_file = None
         self._record_header_written = False
-        try:
-            import os
-            import atexit
-            from datetime import datetime
-            
-            rec_dir = "D:\\isaac\\3D_Drone_RL\\recordings"
-            os.makedirs(rec_dir, exist_ok=True)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = os.path.join(rec_dir, f"flight_{timestamp}.jsonl")
-            self._record_file = open(filepath, "w", encoding="utf-8")
-            print(f"[LiveTelemetry] Recording telemetry to: {filepath}")
-            atexit.register(self.close)
-        except Exception as e:
-            print(f"[LiveTelemetry] Failed to initialize recording file: {e}")
+        if self._recording_enabled:
+            try:
+                import os
+                import atexit
+                from datetime import datetime
+
+                rec_dir = "D:\\isaac\\3D_Drone_RL\\recordings"
+                os.makedirs(rec_dir, exist_ok=True)
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filepath = os.path.join(rec_dir, f"flight_{timestamp}.jsonl")
+                self._record_file = open(filepath, "w", encoding="utf-8")
+                print(f"[LiveTelemetry] Recording telemetry to: {filepath}")
+                atexit.register(self.close)
+            except Exception as e:
+                print(f"[LiveTelemetry] Failed to initialize recording file: {e}")
+        else:
+            print("[LiveTelemetry] Recording disabled.")
 
         # Image cache — regenerated every N pushes to keep CPU load low
         self._image_cache: dict = {}
@@ -1282,10 +1293,13 @@ class LiveDroneTelemetry:
                 except Exception:
                     pass
 
-            # ---- A* path (every 4th point to limit size) ----
+            # ---- A* path ----
+            # Keep every point. Blind decimation (for example astar_path[::4])
+            # skips corners, so the 3D dashboard can draw a straight green line
+            # through walls even when the real A* route is valid.
             astar_path = getattr(env, "astar_path_world", [])
             path_list  = [[round(float(p[0]), 3), round(float(p[1]), 3)]
-                          for p in astar_path[::4]]
+                          for p in astar_path]
 
             # ---- Person ----
             person_found = False

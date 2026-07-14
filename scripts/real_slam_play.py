@@ -56,12 +56,39 @@ parser.add_argument(
     help="Disable the web dashboard.",
 )
 parser.add_argument(
+    "--perf-dashboard", action="store_true", default=False,
+    help=(
+        "Keep all dashboard visuals and camera quality, but refresh expensive "
+        "image/saliency panels at lower rates."
+    ),
+)
+parser.add_argument(
+    "--no-recording", action="store_true", default=False,
+    help="Disable live telemetry JSONL recording.",
+)
+parser.add_argument(
+    "--lightweight-recording", action="store_true", default=False,
+    help="Record telemetry only, without embedded base64 image snapshots.",
+)
+parser.add_argument(
     "--no-slam-window", action="store_true", default=False,
     help="Disable the OpenCV SLAM visualiser window.",
 )
 parser.add_argument(
     "--opencv", action="store_true", default=False,
     help="Force OpenCV SLAM + YOLO windows (off by default when dashboard is on).",
+)
+parser.add_argument(
+    "--debug_start_corridor",
+    action="store_true",
+    default=False,
+    help="Debug experiment: start the drone directly in the room-4 corridor.",
+)
+parser.add_argument(
+    "--debug_start_xy",
+    type=str,
+    default=None,
+    help="Debug experiment: start at custom env-local x,y coordinates, e.g. --debug_start_xy 0.0,-16.5.",
 )
 
 AppLauncher.add_app_launcher_args(parser)
@@ -344,6 +371,24 @@ def main():
     env_cfg.yolo_front_camera_only = args_cli.yolo_front_camera_only or getattr(env_cfg, "yolo_front_camera_only", False)
     env_cfg.debug_vis   = False
     env_cfg.show_ae_images = False
+    if args_cli.debug_start_corridor:
+        seq = tuple(getattr(env_cfg, "brain_spawn_sequence", ()) or ())
+        corr = tuple(seq[3]) if len(seq) > 3 else (0.0, -16.5, 1.0)
+        env_cfg.brain_debug_start_local = corr
+        env_cfg.brain_debug_start_label = "first corridor approach experiment"
+        env_cfg.brain_debug_start_segment_label = "room 4 entrance"
+        print(
+            "[SLAM Launcher] Debug start enabled: first corridor approach from spawn sequence "
+            f"at local ({corr[0]:.2f}, {corr[1]:.2f}, {corr[2]:.2f})"
+        )
+    if args_cli.debug_start_xy:
+        try:
+            sx, sy = [float(v.strip()) for v in args_cli.debug_start_xy.split(",", 1)]
+            env_cfg.brain_debug_start_local = (sx, sy, 1.0)
+            env_cfg.brain_debug_start_label = "custom debug start"
+            print(f"[SLAM Launcher] Debug start enabled: custom local ({sx:.2f}, {sy:.2f}, 1.00)")
+        except Exception as exc:
+            raise ValueError("--debug_start_xy must be formatted as x,y, for example 0.0,-16.5") from exc
 
     _web_dashboard = _DASHBOARD_AVAILABLE and (not args_cli.no_dashboard)
     _use_opencv = args_cli.opencv or (not _web_dashboard and not args_cli.no_slam_window)
@@ -378,14 +423,30 @@ def main():
     _telemetry = None
     if _web_dashboard:
         try:
-            _telemetry = LiveDroneTelemetry(tick_rate=24.0, perf_mode=False)
+            perf_dashboard = bool(getattr(args_cli, "perf_dashboard", False))
+            lightweight_recording = bool(
+                getattr(args_cli, "lightweight_recording", False)
+                or perf_dashboard
+            )
+            _telemetry = LiveDroneTelemetry(
+                tick_rate=24.0,
+                perf_mode=perf_dashboard,
+                recording=not bool(getattr(args_cli, "no_recording", False)),
+                lightweight_recording=lightweight_recording,
+            )
             start_dashboard_server(
                 http_port=8000, ws_port=8001,
                 telemetry_source=_telemetry,
                 open_browser=False,
                 blocking=False,
             )
-            print("[Dashboard] Live dashboard at http://localhost:8000 (perf mode: OpenCV off)")
+            if perf_dashboard:
+                print(
+                    "[Dashboard] Live dashboard at http://localhost:8000 "
+                    "(perf-dashboard: same quality, saliency starts OFF)"
+                )
+            else:
+                print("[Dashboard] Live dashboard at http://localhost:8000 (full refresh)")
         except Exception as de:
             print(f"[Dashboard] Failed to start: {de}")
             _telemetry = None

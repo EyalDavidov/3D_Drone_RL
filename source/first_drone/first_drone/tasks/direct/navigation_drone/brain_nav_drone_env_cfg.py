@@ -38,7 +38,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     map_bounds: tuple = (-8.55, 4.05, -23.05, 2.05)
     map_obstacles: tuple = ()
 
-    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "final_roof_flat.usd")
+    room_usd_path: str = os.path.join(_REPO_ROOT, "assets", "rooms", "final_no_obstacles.usd")
     use_direct_room_spawn: bool = True
     room_spawn_scale: tuple = (1.0, 1.0, 1.0)
     room_spawn_translation: tuple = (0.0, 0.0, 0.0)
@@ -110,6 +110,18 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
             pos=(0.0, -0.05, 0.05), rot=(0.0, 0.0, 0.7071, -0.7071), convention="ros"
         ),
     )
+
+    camera_fill_lights_enabled: bool = True
+    camera_fill_light_intensity: float = 75.0
+    camera_fill_light_exposure: float = -1.5
+    camera_fill_light_radius: float = 0.035
+    camera_fill_light_color: tuple = (1.0, 0.94, 0.86)
+    drone_texture_light_enabled: bool = True
+    drone_texture_light_intensity: float = 180.0
+    drone_texture_light_exposure: float = -0.8
+    drone_texture_light_radius: float = 0.14
+    drone_texture_light_color: tuple = (0.85, 0.9, 1.0)
+    world_light_intensity: float = 900.0
 
     # ---------- Terrain: no visible default Isaac Lab ground plane ----------
     # final_flat.usd provides floor/walls/collision. Keep terrain only for env_origins bookkeeping.
@@ -196,13 +208,19 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     brain_room4_corr2_waypoint: tuple = (0.0, -20.5, 1.0)
     brain_single_corridor_to_final: bool = True  # corr2 junction -> final in one pass
     brain_final_room_waypoint: tuple = (-6.0, -21.5, 1.0)
+    brain_forced_corridor_route_coverage: float = 0.68
     brain_final_person_local: tuple | None = (-6.0, -21.5, 0.0)  # final room center (middle of the room)
     brain_final_person_center_local: tuple = (-6.0, -21.5, 0.0)  # second person — final room center
     brain_final_person_center_name: str = "RescuePerson_Final_Center"
+    brain_room1_person_name: str = "RescuePerson_Room1"
+    brain_room2_person_name: str = "RescuePerson_Room2"
     brain_room3_person_name: str = "RescuePerson_Room3"
+    brain_default_person_rooms: tuple = ("room3", "final")
     brain_person_scale: float = 0.35  # ~half human height (uniform, same as before)
     brain_person_asset_native_scale: float = 0.7  # F_Business_02 root scale in nucleus USD
     brain_person_height_scale: float = 1.0
+    brain_room1_person_local: tuple = (1.10, -0.85, 0.0)
+    brain_room2_person_local: tuple = (1.10, -5.20, 0.0)
     brain_room3_person_local: tuple = (0.0, -10.0, 0.0)  # room 3 center, visible from entrance scan
     # Empty → Isaac nucleus default (F_Business_02 with clothes/textures from Omniverse CDN)
     brain_rescue_person_usd: str = ""
@@ -212,6 +230,11 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     brain_rescue_person_scope: str = "RescuePersons"
     brain_person_match_radius: float = 5.0  # YOLO log slot match radius (m)
     brain_person_obstacle_exclusion_m: float = 2.5  # keep dynamic obstacles off rescue persons
+    brain_person_wall_clearance_m: float = 0.65
+    brain_person_dynamic_obstacle_clearance_m: float = 0.45
+    brain_person_pole_clearance_radius_m: float = 0.45
+    brain_person_room3_obstacle_clearance_radius_m: float = 0.95
+    brain_person_corridor_obstacle_clearance_radius_m: float = 0.75
     brain_final_person_name: str = "RescuePerson_Final"
     brain_snap_drone_on_scan: bool = False  # never teleport mid-route; spin where the drone actually arrives
     brain_no_snap_from_segment: int = 4
@@ -267,7 +290,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     
     num_poles: int = 21
     pole_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
-        usd_path=os.path.join(_REPO_ROOT, "assets", "1_Pole.usd"),
+        usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "1_Pole.usd"),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
     )
 
@@ -277,8 +300,8 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     num_room3_big_gates: int = 1
     num_room3_small_gates: int = 2
     num_room3_poles_triangles: int = 2
-    # Real SLAM play: cap how many room-3 props are active (fixed layout, no shuffle).
-    brain_slam_room3_max_obstacles: int = 4
+    # Real SLAM play: choose this many room-3 props once per live run.
+    brain_slam_room3_max_obstacles: int = 6
 
     wall_spawn: sim_utils.UsdFileCfg = sim_utils.UsdFileCfg(
         usd_path=os.path.join(_REPO_ROOT, "assets", "obstacles", "wall.usd"),

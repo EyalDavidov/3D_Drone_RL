@@ -45,6 +45,8 @@ class OccupancyGridMapper:
         # sparse early scans don't flicker teal → yellow frame-to-frame.
         self._sticky_wall_mask = np.zeros((self.h, self.w), dtype=np.uint8)
         self.expected_total_cells = 11400
+        self.unknown_gain_radius_cells = max(8, int(round(6.0 / self.cell_size)))
+        self.unknown_gain_cap = 600
 
     def world_to_grid(self, x, y):
         """Convert world coordinates (meters) to grid indices (row, col)."""
@@ -352,7 +354,7 @@ class OccupancyGridMapper:
         inflated_obs = cv2.dilate(obstacle_mask, k, iterations=1)
         return ((inflated_walls > 0) | (inflated_obs > 0)).astype(np.uint8)
 
-    def segment_hits_wall(self, x0, y0, x1, y1, blocked=None) -> bool:
+    def segment_hits_wall(self, x0, y0, x1, y1, blocked=None, skip_start_m=0.20) -> bool:
         """True if the straight world segment (x0,y0)->(x1,y1) crosses a blocked cell.
 
         Used to reject straight-line fallbacks that would drive the drone through a
@@ -366,9 +368,9 @@ class OccupancyGridMapper:
         rs = np.linspace(r0, r1, n).round().astype(int)
         cs = np.linspace(c0, c1, n).round().astype(int)
         
-        # Skip the first few cells near the start position (0.20m radius around drone)
-        # to prevent self-blocking when the drone is flying close to a wall.
-        skip_cells = max(1, int(np.round(0.20 / self.cell_size)))
+        # Skip cells near the live drone position to prevent self-blocking when
+        # steering close to a wall. Offline path validation passes skip_start_m=0.
+        skip_cells = max(0, int(np.round(float(skip_start_m) / self.cell_size)))
         for r, c in zip(rs[skip_cells:], cs[skip_cells:]):
             if self.is_in_bounds(int(r), int(c)) and blocked[int(r), int(c)]:
                 return True
@@ -413,6 +415,50 @@ class OccupancyGridMapper:
                 if 0 <= r < self.h and 0 <= c < self.w and reachable_mask[r, c]:
                     return True
         return False
+
+    def _bounded_unknown_gain(self, frontier_cells, unknown, center_row, center_col) -> int:
+        """Local unknown area behind a frontier, capped to avoid global-map bias."""
+        from collections import deque
+
+        max_radius = int(getattr(self, "unknown_gain_radius_cells", 40))
+        cap = int(getattr(self, "unknown_gain_cap", 600))
+        seeds = set()
+
+        for fr, fc in frontier_cells:
+            fr, fc = int(fr), int(fc)
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = fr + dr, fc + dc
+                if (
+                    0 <= nr < self.h
+                    and 0 <= nc < self.w
+                    and unknown[nr, nc]
+                    and abs(nr - center_row) <= max_radius
+                    and abs(nc - center_col) <= max_radius
+                ):
+                    seeds.add((nr, nc))
+
+        if not seeds:
+            return 0
+
+        seen = set(seeds)
+        dq = deque(seeds)
+        while dq and len(seen) < cap:
+            r, c = dq.popleft()
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if (
+                    (nr, nc) not in seen
+                    and 0 <= nr < self.h
+                    and 0 <= nc < self.w
+                    and unknown[nr, nc]
+                    and abs(nr - center_row) <= max_radius
+                    and abs(nc - center_col) <= max_radius
+                ):
+                    seen.add((nr, nc))
+                    dq.append((nr, nc))
+                    if len(seen) >= cap:
+                        break
+        return min(len(seen), cap)
 
     def find_reachable_frontiers(self, start_row, start_col, min_size=1):
         """Robust pure-SLAM frontier search: one BFS over the drone's OWN free space.
@@ -482,11 +528,6 @@ class OccupancyGridMapper:
         # occlusion shadow behind an obstacle borders a TINY one. This "unknown gain"
         # is what lets the picker ignore useless pockets in an already-covered room
         # and commit to the big corridor. Pure SLAM — only the drone's own grid.
-        u_num, u_labels, u_stats, _ = cv2.connectedComponentsWithStats(
-            unknown.astype(np.uint8)
-        )
-        u_area = u_stats[:, cv2.CC_STAT_AREA] if u_num > 0 else np.zeros(1)
-
         num, labels_im, stats, centroids = cv2.connectedComponentsWithStats(fmask)
         frontiers = []
         for i in range(1, num):
@@ -501,16 +542,14 @@ class OccupancyGridMapper:
             goal = (int(ys[j]), int(xs[j]))
             wx, wy = self.grid_to_world(goal[0], goal[1])
 
-            # Unknown gain: total area of the unknown regions this frontier touches.
-            u_ids = set()
-            for fr, fc in zip(ys, xs):
-                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    nr, nc = fr + dr, fc + dc
-                    if 0 <= nr < h and 0 <= nc < w and unknown[nr, nc]:
-                        lbl = int(u_labels[nr, nc])
-                        if lbl > 0:
-                            u_ids.add(lbl)
-            unknown_gain = int(sum(int(u_area[l]) for l in u_ids))
+            # Local unknown gain only. Full connected-component area can include
+            # the global unseen outside map and create fake gains in covered rooms.
+            unknown_gain = self._bounded_unknown_gain(
+                zip(ys, xs),
+                unknown,
+                goal[0],
+                goal[1],
+            )
 
             frontiers.append({
                 "centroid_grid": (goal[0], goal[1]),
@@ -522,7 +561,14 @@ class OccupancyGridMapper:
         return frontiers, came_from
 
     def deepen_frontier_goal(
-        self, goal_grid, came_from, drone_grid, visited_mask=None, max_depth=40
+        self,
+        goal_grid,
+        came_from,
+        drone_grid,
+        visited_mask=None,
+        max_depth=40,
+        allow_stale_start=False,
+        stale_bridge_depth=8,
     ):
         """Push a corridor/room mouth goal deeper into the passage.
 
@@ -559,6 +605,9 @@ class OccupancyGridMapper:
                             rev += 1
             return total > 0 and (rev / total) >= threshold
 
+        if not self.is_in_bounds(gr, gc) or not free[gr, gc]:
+            return None
+
         best = None
         best_score = (-1, -1)  # (unknown_ahead, path_len)
         dq = deque([(gr, gc, 0)])
@@ -567,19 +616,20 @@ class OccupancyGridMapper:
             r, c, depth = dq.popleft()
             if depth > max_depth:
                 continue
-            if not touches_unknown(r, c):
+            is_frontier_cell = touches_unknown(r, c)
+            if is_frontier_cell and not cell_mostly_visited(r, c):
+                path = self.reconstruct_path(came_from, (r, c))
+                if path and len(path) >= 2:
+                    plen = len(path)
+                    unk_ahead = self.unknown_touch_count(r, c, radius=5)
+                    score = (unk_ahead, plen)
+                    if score > best_score:
+                        best_score = score
+                        best = (r, c)
+            if not is_frontier_cell and (
+                not allow_stale_start or depth >= stale_bridge_depth
+            ):
                 continue
-            if cell_mostly_visited(r, c):
-                continue
-            path = self.reconstruct_path(came_from, (r, c))
-            if not path or len(path) < 2:
-                continue
-            plen = len(path)
-            unk_ahead = self.unknown_touch_count(r, c, radius=5)
-            score = (unk_ahead, plen)
-            if score > best_score:
-                best_score = score
-                best = (r, c)
             for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 nr, nc = r + dr, c + dc
                 if (nr, nc) not in seen and self.is_in_bounds(nr, nc) and free[nr, nc]:
