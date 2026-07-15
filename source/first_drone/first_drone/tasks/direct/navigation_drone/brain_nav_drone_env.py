@@ -520,6 +520,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
 
         light_cfg = sim_utils.DomeLightCfg(
             intensity=float(getattr(self.cfg, "world_light_intensity", 900.0)),
+            exposure=float(getattr(self.cfg, "world_light_exposure", 5.0)),
             color=(0.75, 0.75, 0.75),
         )
         light_cfg.func("/World/Light", light_cfg)

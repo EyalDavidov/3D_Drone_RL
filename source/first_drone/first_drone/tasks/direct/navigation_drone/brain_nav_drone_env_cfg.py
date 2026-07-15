@@ -122,6 +122,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     drone_texture_light_radius: float = 0.14
     drone_texture_light_color: tuple = (0.85, 0.9, 1.0)
     world_light_intensity: float = 900.0
+    world_light_exposure: float = 5.0
 
     # ---------- Terrain: no visible default Isaac Lab ground plane ----------
     # final_flat.usd provides floor/walls/collision. Keep terrain only for env_origins bookkeeping.
