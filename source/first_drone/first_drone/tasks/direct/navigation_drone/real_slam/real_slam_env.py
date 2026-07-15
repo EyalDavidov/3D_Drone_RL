@@ -804,7 +804,7 @@ class SlamBrainModule(BrainModule):
         d_pos_w = self.env._robot.data.root_pos_w[0].cpu().numpy()
         drone_local_y = d_pos_w[1] - env_origin[1]
 
-        if drone_local_y <= -7.5:
+        if drone_local_y <= -11.5 and coverage >= 0.6:
             start_r, start_c = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
             bfs_frontiers, _ = self.mapper.find_reachable_frontiers(start_r, start_c, min_size=1)
 
@@ -905,10 +905,17 @@ class SlamBrainModule(BrainModule):
             "forced_route_idx": idx,
         }
         
-        self.astar_path_world = [
-            (float(d_pos_w[0]), float(d_pos_w[1])),
-            target_world,
-        ]
+        start_r, start_c = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
+        goal_r, goal_c = self.mapper.world_to_grid(target_world[0], target_world[1])
+        world_path = self.mapper.plan_path_centered((start_r, start_c), (goal_r, goal_c))
+        
+        if world_path and len(world_path) >= 2:
+            self.astar_path_world = world_path
+        else:
+            self.astar_path_world = [
+                (float(d_pos_w[0]), float(d_pos_w[1])),
+                target_world,
+            ]
         
         self._frontier_lock_ticks = 320
         self._corridor_context_ticks = max(int(getattr(self, "_corridor_context_ticks", 0)), 120)
