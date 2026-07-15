@@ -905,13 +905,10 @@ class SlamBrainModule(BrainModule):
             "forced_route_idx": idx,
         }
         
-        # Populate path with the current drone position and all remaining waypoints for dashboard visualization
-        path = [(float(d_pos_w[0]), float(d_pos_w[1]))]
-        for i in range(idx, len(route)):
-            wp_x = float(route[i][0] + env_origin[0])
-            wp_y = float(route[i][1] + env_origin[1])
-            path.append((wp_x, wp_y))
-        self.astar_path_world = path
+        self.astar_path_world = [
+            (float(d_pos_w[0]), float(d_pos_w[1])),
+            target_world,
+        ]
         
         self._frontier_lock_ticks = 320
         self._corridor_context_ticks = max(int(getattr(self, "_corridor_context_ticks", 0)), 120)
