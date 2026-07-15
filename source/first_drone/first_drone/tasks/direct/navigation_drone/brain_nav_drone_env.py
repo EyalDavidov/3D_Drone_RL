@@ -2087,15 +2087,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             
             if num_level4_resets > 0:
                 # All 5 obstacles are active
-                assigned_y = y_positions_c1[perms_c1[:, j]]
-                noise_y = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
-                
-                assigned_z = z_positions[perms_h1[:, j]]
-                noise_z = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
+                assigned_y = y_positions_c1[j % n_slots]
+                assigned_z = z_positions[j % n_slots]
                 
                 obs_x[is_level4] = 0.0
-                obs_y[is_level4] = assigned_y + noise_y
-                obs_z[is_level4] = (assigned_z + noise_z).clamp(0.4, 1.6)
+                obs_y[is_level4] = assigned_y
+                obs_z[is_level4] = assigned_z
 
             state[:, 0] = obs_x + env_origins[:, 0]
             state[:, 1] = obs_y + env_origins[:, 1]
@@ -2122,15 +2119,12 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             
             if num_level4_resets > 0:
                 # All 5 obstacles are active
-                assigned_x = x_positions_c2[perms_c2[:, j]]
-                noise_x = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
+                assigned_x = x_positions_c2[j % n_slots]
+                assigned_z = z_positions[j % n_slots]
                 
-                assigned_z = z_positions[perms_h2[:, j]]
-                noise_z = torch.zeros(num_level4_resets, device=self.device).uniform_(-0.05, 0.05)
-                
-                obs_x[is_level4] = assigned_x + noise_x
+                obs_x[is_level4] = assigned_x
                 obs_y[is_level4] = -20.5
-                obs_z[is_level4] = (assigned_z + noise_z).clamp(0.4, 1.6)
+                obs_z[is_level4] = assigned_z
 
             state[:, 0] = obs_x + env_origins[:, 0]
             state[:, 1] = obs_y + env_origins[:, 1]
