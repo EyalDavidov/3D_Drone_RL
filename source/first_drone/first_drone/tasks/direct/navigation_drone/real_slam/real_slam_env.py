@@ -2280,8 +2280,8 @@ class RealSlamDroneEnv(BrainNavDroneEnv):
         cfg.num_room3_small_gates = 2
         cfg.num_room3_poles_triangles = 2
         cfg.brain_slam_room3_max_obstacles = 6
-        cfg.num_room4_corr1 = 5
-        cfg.num_room4_corr2 = 5
+        cfg.num_room4_corr1 = 3
+        cfg.num_room4_corr2 = 3
         super().__init__(cfg, **kwargs)
 
         self._brain = SlamBrainModule(self)

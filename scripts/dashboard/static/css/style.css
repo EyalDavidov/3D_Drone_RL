@@ -1364,6 +1364,7 @@ body { display: flex; flex-direction: column; }
     box-shadow: inset 0 0 120px rgba(0,0,0,0.55);
 }
 .yhud-scanline {
+    display: none;
     position: absolute; left: 0; right: 0; top: 0; height: 2px; z-index: 3;
     background: linear-gradient(90deg, transparent, rgba(47,243,255,0.5), transparent);
     opacity: 0; pointer-events: none;
@@ -1654,11 +1655,12 @@ body { display: flex; flex-direction: column; }
 
 /* ---- Futuristic HUD detection alert (overlay bottom-center of feed) ---- */
 .hud-alert {
+    display: none !important;
     position: absolute;
     left: 50%;
     bottom: 18px;
     transform: translateX(-50%);
-    display: flex;
+    display: none;
     align-items: center;
     gap: 14px;
     min-width: 340px;
