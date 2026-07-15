@@ -112,13 +112,13 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     )
 
     camera_fill_lights_enabled: bool = True
-    camera_fill_light_intensity: float = 75.0
-    camera_fill_light_exposure: float = -1.5
-    camera_fill_light_radius: float = 0.035
+    camera_fill_light_intensity: float = 2000.0
+    camera_fill_light_exposure: float = 3.0
+    camera_fill_light_radius: float = 0.14
     camera_fill_light_color: tuple = (1.0, 0.94, 0.86)
     drone_texture_light_enabled: bool = True
-    drone_texture_light_intensity: float = 180.0
-    drone_texture_light_exposure: float = -0.8
+    drone_texture_light_intensity: float = 200.0
+    drone_texture_light_exposure: float = 2.5
     drone_texture_light_radius: float = 0.14
     drone_texture_light_color: tuple = (0.85, 0.9, 1.0)
     world_light_intensity: float = 900.0

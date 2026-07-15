@@ -84,7 +84,7 @@ class OccupancyGridMapper:
         v = np.arange(0, img_h, step_h)
         uu, vv = np.meshgrid(u, v)
         
-        valid_mask = (sub_depth > 0.05) & (sub_depth < 5.0) & (~np.isinf(sub_depth)) & (~np.isnan(sub_depth)) #was 10.0
+        valid_mask = (sub_depth > 0.05) & (sub_depth < 10.0) & (~np.isinf(sub_depth)) & (~np.isnan(sub_depth)) #was 10.0
         
         z_c = sub_depth[valid_mask]
         u_c = uu[valid_mask]
