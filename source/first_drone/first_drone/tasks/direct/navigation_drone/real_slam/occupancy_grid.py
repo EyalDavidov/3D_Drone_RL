@@ -84,7 +84,7 @@ class OccupancyGridMapper:
         v = np.arange(0, img_h, step_h)
         uu, vv = np.meshgrid(u, v)
         
-        valid_mask = (sub_depth > 0.05) & (sub_depth < 10.0) & (~np.isinf(sub_depth)) & (~np.isnan(sub_depth))
+        valid_mask = (sub_depth > 0.05) & (sub_depth < 5.0) & (~np.isinf(sub_depth)) & (~np.isnan(sub_depth)) #was 10.0
         
         z_c = sub_depth[valid_mask]
         u_c = uu[valid_mask]
@@ -104,7 +104,7 @@ class OccupancyGridMapper:
         
         # Filter floor and ceiling height to match drone's flight clearance height (0.8m to 1.3m).
         # This ignores the wall under/above the window openings, keeping them open in the 2D grid!
-        mask = (world_pts[:, 2] > 0.8) & (world_pts[:, 2] < 1.3)
+        mask = (world_pts[:, 2] > 0.8) & (world_pts[:, 2] < 1.2) #was 0.8 and 1.3
         hits_world = world_pts[mask]
         
         r0, c0 = self.world_to_grid(d_x, d_y)
