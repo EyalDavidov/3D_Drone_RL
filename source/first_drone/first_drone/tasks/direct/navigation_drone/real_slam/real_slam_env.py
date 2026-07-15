@@ -777,24 +777,96 @@ class SlamBrainModule(BrainModule):
     def _maybe_start_forced_corridor_route(self) -> bool:
         if bool(getattr(self, "_forced_corridor_route_active", False)):
             return True
+
         threshold = float(
             getattr(self.env.cfg, "brain_forced_corridor_route_coverage", 0.68)
         )
-        if self._coverage_fraction() < threshold:
-            return False
-        self._forced_corridor_route_active = True
-        self._forced_corridor_route_idx = 0
-        self._mission_assist_active = False
-        self._mission_assist_idx = 0
-        self.active_frontier = None
-        self.astar_path_world = []
-        if not getattr(self, "_forced_corridor_route_logged", False):
-            print(
-                f"[SLAM Brain] Forced corridor route activated at "
-                f"{self._coverage_fraction() * 100.0:.1f}% coverage."
-            )
-            self._forced_corridor_route_logged = True
-        return True
+        coverage = self._coverage_fraction()
+
+        # Trigger 1: Coverage threshold reached
+        if coverage >= threshold:
+            self._forced_corridor_route_active = True
+            self._forced_corridor_route_idx = 0
+            self._mission_assist_active = False
+            self._mission_assist_idx = 0
+            self.active_frontier = None
+            self.astar_path_world = []
+            if not getattr(self, "_forced_corridor_route_logged", False):
+                print(
+                    f"[SLAM Brain] Forced corridor route activated at "
+                    f"{coverage * 100.0:.1f}% coverage."
+                )
+                self._forced_corridor_route_logged = True
+            return True
+
+        # Trigger 2: In Room 3 and ran out of explorable frontiers (or no valid path to any targets)
+        env_origin = self.env._terrain.env_origins[0].cpu().numpy()
+        d_pos_w = self.env._robot.data.root_pos_w[0].cpu().numpy()
+        drone_local_y = d_pos_w[1] - env_origin[1]
+
+        if drone_local_y <= -7.5:
+            start_r, start_c = self.mapper.world_to_grid(d_pos_w[0], d_pos_w[1])
+            bfs_frontiers, _ = self.mapper.find_reachable_frontiers(start_r, start_c, min_size=1)
+
+            def _not_blacklisted(f):
+                return not any(
+                    np.linalg.norm(np.array(f["centroid_world"]) - np.array(b)) < 1.5
+                    for b in self.blacklisted_frontiers
+                )
+
+            def _not_visited_centroid(f):
+                c = np.array(f["centroid_world"])
+                revisit_radius = 0.75 if self._is_forward_corridor_frontier(f, d_pos_w) else 3.0
+                for vc in getattr(self, "visited_frontier_centroids", []):
+                    if np.linalg.norm(c[:2] - vc[:2]) < revisit_radius:
+                        return False
+                return True
+
+            def _substantial(f):
+                fwd, _ = self._frontier_fwd_dot_heading(f, d_pos_w)
+                limit = 4 if fwd > 0.15 else self.MIN_UNKNOWN_GAIN
+                return int(f.get("unknown_gain", 0)) >= limit
+
+            def _is_real_frontier(f):
+                goal = f.get("goal_grid")
+                if goal is None:
+                    cw = f["centroid_world"]
+                    goal = self.mapper.world_to_grid(cw[0], cw[1])
+                prob = self.mapper.get_occupancy_grid()
+                gr, gc = int(goal[0]), int(goal[1])
+                if not self.mapper.is_in_bounds(gr, gc) or prob[gr, gc] >= 0.35:
+                    return False
+                if self.mapper.get_clearance_at_grid(gr, gc) < 0.10:
+                    return False
+                return self.mapper.is_cell_frontier(goal, radius=1)
+
+            candidates = [
+                f for f in bfs_frontiers
+                if np.linalg.norm(d_pos_w[:2] - np.array(f["centroid_world"])) > 0.35
+                and _not_blacklisted(f)
+                and _not_visited_centroid(f)
+                and _substantial(f)
+                and _is_real_frontier(f)
+                and not self._is_backtrack_target(f, d_pos_w)
+            ]
+            candidates = self._corridor_frontier_gate(candidates, d_pos_w)
+
+            if len(candidates) == 0:
+                print(f"[SLAM Brain] In Room 3 (Y={drone_local_y:.2f}) and ran out of explorable frontiers. Activating forced corridor route.")
+                self._forced_corridor_route_active = True
+                self._forced_corridor_route_idx = 0
+                self._mission_assist_active = False
+                self._mission_assist_idx = 0
+                self.active_frontier = None
+                self.astar_path_world = []
+                if not getattr(self, "_forced_corridor_route_logged", False):
+                    print(
+                        f"[SLAM Brain] Forced corridor route activated (out of frontiers in Room 3)."
+                    )
+                    self._forced_corridor_route_logged = True
+                return True
+
+        return False
 
     def _commit_forced_corridor_route(self, d_pos_w) -> bool:
         route = self._forced_corridor_route_local()
@@ -832,10 +904,15 @@ class SlamBrainModule(BrainModule):
             "forced_corridor_route": True,
             "forced_route_idx": idx,
         }
-        self.astar_path_world = [
-            (float(d_pos_w[0]), float(d_pos_w[1])),
-            target_world,
-        ]
+        
+        # Populate path with the current drone position and all remaining waypoints for dashboard visualization
+        path = [(float(d_pos_w[0]), float(d_pos_w[1]))]
+        for i in range(idx, len(route)):
+            wp_x = float(route[i][0] + env_origin[0])
+            wp_y = float(route[i][1] + env_origin[1])
+            path.append((wp_x, wp_y))
+        self.astar_path_world = path
+        
         self._frontier_lock_ticks = 320
         self._corridor_context_ticks = max(int(getattr(self, "_corridor_context_ticks", 0)), 120)
         if int(getattr(self, "_forced_route_log_tick", 0)) % 20 == 0:
