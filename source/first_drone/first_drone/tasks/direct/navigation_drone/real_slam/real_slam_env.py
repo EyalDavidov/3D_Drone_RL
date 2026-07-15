@@ -1923,12 +1923,21 @@ class SlamBrainModule(BrainModule):
                         d_pos_w, came_from, (start_r, start_c), reason="priority"
                     )
                 if assist_required and not committed:
+                    # The assist route is only a guide. If its next route cell is
+                    # not reachable yet, do not freeze while SLAM already sees a
+                    # safe forward/side frontier in the same corridor area.
+                    for f in sorted(candidates, key=_frontier_score):
+                        if _commit(f, "Target frontier (assist fallback)"):
+                            committed = True
+                            break
+
+                if assist_required and not committed:
                     self._hold_log_ticks = int(getattr(self, "_hold_log_ticks", 0)) + 1
                     if self._hold_log_ticks % 30 == 1:
                         print(
                             "[SLAM Brain] Mission assist active but next route cell "
-                            "is not reachable yet. Holding / mapping instead of "
-                            "falling back to old-room frontiers."
+                            "is not reachable yet and no forward frontier could "
+                            "be committed. Holding / mapping."
                         )
                     self.active_frontier = None
                     self.astar_path_world = []
@@ -2108,7 +2117,9 @@ class SlamBrainModule(BrainModule):
                     self.astar_path_world = world_path
                 else:
                     why = "stale backtrack" if is_back else "no safe path"
-                    if self._active_target_is_mission_assist():
+                    if self._active_target_is_forced_corridor_route():
+                        self._commit_forced_corridor_route(d_pos_w)
+                    elif self._active_target_is_mission_assist():
                         if self._commit_mission_assist(
                             d_pos_w, came_from, (start_r, start_c), reason="repath"
                         ):
@@ -2117,8 +2128,9 @@ class SlamBrainModule(BrainModule):
                             if self._hold_log_ticks % 30 == 1:
                                 print(
                                     f"[SLAM Brain] Mission assist replan failed ({why}); "
-                                    "holding instead of falling back to old-room targets."
+                                    "clearing target so frontier fallback can retry."
                                 )
+                            self.active_frontier = None
                             self.astar_path_world = []
                     else:
                         print(
