@@ -444,9 +444,10 @@ class YoloHud {
         if (emptyNode) emptyNode.style.display = 'none';
 
         frames.forEach((frame, index) => {
-            const isConfirmed = frame.startsWith('detection');
+            const baseFrame = frame.includes('/') ? frame.split('/').pop() : frame;
+            const isConfirmed = baseFrame.startsWith('detection');
             const label = isConfirmed ? 'CONFIRMED' : 'NOTED';
-            const camMatch = frame.match(/_(front|left|right)\.jpg$/i);
+            const camMatch = baseFrame.match(/_(front|left|right)\.jpg$/i);
             const camLabel = camMatch ? camMatch[1].toUpperCase() : '';
             
             const thumb = document.createElement('div');
@@ -486,7 +487,7 @@ class YoloHud {
                     justify-content: space-between;
                 ">
                     <span>${label}${camLabel ? ` · ${camLabel}` : ''}</span>
-                    <span>#${frame.split('_')[1]?.split('.')[0] || ''}</span>
+                    <span>#${baseFrame.split('_')[1]?.split('.')[0] || ''}</span>
                 </div>
             `;
             

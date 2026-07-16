@@ -1104,6 +1104,9 @@ class PerceptionModule:
             # Also save to dashboard saves folder for real-time telemetry
             try:
                 dash_dir = Path(r"D:\isaac\3D_Drone_RL\scripts\dashboard\static\yolo_saves")
+                subfolder = getattr(self, "yolo_saves_subfolder", "")
+                if subfolder:
+                    dash_dir = dash_dir / subfolder
                 dash_dir.mkdir(parents=True, exist_ok=True)  # ensure it always exists
                 dash_path = dash_dir / tag
                 img.save(str(dash_path))

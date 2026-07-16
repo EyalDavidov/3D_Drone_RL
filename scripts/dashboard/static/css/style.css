@@ -2396,18 +2396,21 @@ body { display: flex; flex-direction: column; }
 
 /* FDR multi-channel timeline */
 .rec-fdr-panel {
-    display: flex;
-    flex: 1;
-    min-height: 100px;
-    max-height: 200px;
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    grid-template-rows: 1fr auto;
     gap: 0;
     border-radius: 8px;
     overflow: hidden;
     border: 1px solid rgba(34, 211, 238, 0.15);
     background: #080c12;
     flex-shrink: 0;
+    min-height: 140px;
+    max-height: 240px;
 }
 .rec-fdr-labels {
+    grid-column: 1;
+    grid-row: 1;
     display: flex;
     flex-direction: column;
     width: 44px;
@@ -2437,19 +2440,27 @@ body { display: flex; flex-direction: column; }
 }
 .rec-fdr-labels span:last-child { border-bottom: none; }
 
-.rec-fdr-charts {
-    position: relative;
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-}
 .rec-fdr-canvas {
+    grid-column: 2;
+    grid-row: 1;
     display: block;
     width: 100%;
-    flex: 1;
-    min-height: 72px;
+    height: 100%;
+    min-height: 0;
+}
+.rec-fdr-sidebar-spacer {
+    grid-column: 1;
+    grid-row: 2;
+    background: rgba(0, 0, 0, 0.4);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.rec-fdr-controls {
+    grid-column: 2;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 .rec-fdr-scrubber {
     width: 100%;
@@ -3058,7 +3069,7 @@ body { display: flex; flex-direction: column; }
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .rec-fdr-panel {
-        min-height: 180px;
+        min-height: 220px;
         max-height: none;
     }
     .rec-live-strip {
@@ -3096,7 +3107,7 @@ body { display: flex; flex-direction: column; }
         padding: 6px 10px;
     }
     .rec-fdr-panel {
-        min-height: 120px;
+        min-height: 160px;
     }
 }
 

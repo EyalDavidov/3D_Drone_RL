@@ -770,7 +770,8 @@ class SlamBrainModule(BrainModule):
                 next_idx = min(i + 1, len(pts) - 1)
 
         # Before the corridor entrance, always restart the forced section from there.
-        if float(np.linalg.norm(local_xy - pts[0])) > 2.25 and best_arc < cum[0] + 0.5:
+        arrival_radius_0 = 0.95
+        if float(np.linalg.norm(local_xy - pts[0])) > arrival_radius_0 and best_arc < cum[0] + 0.5:
             next_idx = 0
         return int(max(0, min(next_idx, len(pts) - 1)))
 

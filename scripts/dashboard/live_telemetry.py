@@ -256,17 +256,17 @@ class LiveDroneTelemetry:
         # Telemetry recording file
         self._record_file = None
         self._record_header_written = False
+        from datetime import datetime
+        self._timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if self._recording_enabled:
             try:
                 import os
                 import atexit
-                from datetime import datetime
 
                 rec_dir = "D:\\isaac\\3D_Drone_RL\\recordings"
                 os.makedirs(rec_dir, exist_ok=True)
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filepath = os.path.join(rec_dir, f"flight_{timestamp}.jsonl")
+                filepath = os.path.join(rec_dir, f"flight_{self._timestamp}.jsonl")
                 self._record_file = open(filepath, "w", encoding="utf-8")
                 print(f"[LiveTelemetry] Recording telemetry to: {filepath}")
                 atexit.register(self.close)
@@ -749,6 +749,8 @@ class LiveDroneTelemetry:
 
             # YOLO native-HUD payload (boxes + intel + rescue log + status)
             perception = getattr(env, "_perception", None)
+            if perception is not None and not getattr(perception, "yolo_saves_subfolder", ""):
+                perception.yolo_saves_subfolder = self._timestamp
             yolo_stats = self._build_yolo_stats(perception, brain)
 
             # ---- Spawn mission status (operator-only markers) ------------
@@ -1445,8 +1447,7 @@ class LiveDroneTelemetry:
             return "PERSON DETECTED", "person_detected"
         return label, key
 
-    @staticmethod
-    def _build_yolo_stats(perception, brain) -> dict:
+    def _build_yolo_stats(self, perception, brain) -> dict:
         """Assemble the full native-HUD payload from the perception module."""
         if perception is None:
             return {}
@@ -1536,8 +1537,14 @@ class LiveDroneTelemetry:
         try:
             from pathlib import Path
             dash_saves = Path(r"D:\isaac\3D_Drone_RL\scripts\dashboard\static\yolo_saves")
+            subfolder = getattr(self, "_timestamp", "")
+            if subfolder:
+                dash_saves = dash_saves / subfolder
             if dash_saves.exists():
-                captured_frames = [f.name for f in sorted(dash_saves.glob("*.jpg"), reverse=True)]
+                if subfolder:
+                    captured_frames = [f"{subfolder}/{f.name}" for f in sorted(dash_saves.glob("*.jpg"), reverse=True)]
+                else:
+                    captured_frames = [f.name for f in sorted(dash_saves.glob("*.jpg"), reverse=True)]
         except Exception:
             pass
 
