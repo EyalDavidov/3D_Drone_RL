@@ -844,10 +844,15 @@
         recordingsListBody.innerHTML = '<div class="rec-lib-empty">Scanning recordings directory…</div>';
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000);
+        
         fetch('/api/recordings', { signal: controller.signal })
+            .catch(() => fetch('recordings/manifest.json', { signal: controller.signal }))
             .then(res => {
                 if (!res.ok) {
-                    throw new Error(`Server returned error status ${res.status}`);
+                    return fetch('recordings/manifest.json', { signal: controller.signal }).then(r => {
+                        if (!r.ok) throw new Error(`Server returned error status ${res.status}`);
+                        return r.json();
+                    });
                 }
                 return res.json();
             })
@@ -988,16 +993,22 @@
             const query = new URLSearchParams({ file: filename });
             if (replayStride > 1) query.set('stride', String(replayStride));
             if (replayMaxFrames > 0) query.set('max_frames', String(replayMaxFrames));
-            const response = await fetch(`/api/recording?${query.toString()}`, {
-                signal: controller.signal,
-            });
+            
+            let response;
+            try {
+                response = await fetch(`/api/recording?${query.toString()}`, { signal: controller.signal });
+                if (!response.ok) throw new Error("API not available");
+            } catch (err) {
+                if (controller.signal.aborted) throw err;
+                console.log("[Playback] Falling back to static file: recordings/" + filename);
+                response = await fetch(`recordings/${filename}`, { signal: controller.signal });
+            }
             if (!response.ok) throw new Error("Server returned error status " + response.status);
             if ((response.headers.get('Content-Encoding') || '').toLowerCase().includes('gzip')) {
                 estimatedTotalBytes = 0;
             }
 
             const reader = response.body.getReader();
-            
             let receivedLength = 0;
             const decoder = new TextDecoder("utf-8");
             let partialLine = "";
