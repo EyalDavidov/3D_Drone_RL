@@ -2445,7 +2445,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                 self._last_person_world_xyz = person_world_xyz
                 if getattr(self._perception, "person_ever_detected", False):
                     self._brain.person_noted_anywhere = True
-                if person_found.any():
+                if person_found.any() and getattr(self.cfg, "yolo_verbose", False):
                     p = person_world_xyz[0].cpu().numpy()
                     print(
                         f"[BrainNavEnv] YOLO person detected at world "

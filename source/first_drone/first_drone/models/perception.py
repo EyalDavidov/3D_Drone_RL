@@ -1516,13 +1516,14 @@ class PerceptionModule:
                 "dist": z_depth,
             }
 
-            print(
-                f"[ALARM] {len(self.frame_confirmed_persons)} person(s) confirmed "
-                f"(best {conf:.0%}) via {confirmed_cam or 'front'} cam! "
-                f"Dist: {z_depth:.2f}m\n"
-                f"   ↳ [RESCUE COORDS] Target is {t_x:.1f}m Forward, {t_y:.1f}m Right, "
-                f"and {t_z:.1f}m High relative to the Building Entrance!"
-            )
+            if self.verbose:
+                print(
+                    f"[ALARM] {len(self.frame_confirmed_persons)} person(s) confirmed "
+                    f"(best {conf:.0%}) via {confirmed_cam or 'front'} cam! "
+                    f"Dist: {z_depth:.2f}m\n"
+                    f"   ↳ [RESCUE COORDS] Target is {t_x:.1f}m Forward, {t_y:.1f}m Right, "
+                    f"and {t_z:.1f}m High relative to the Building Entrance!"
+                )
         elif overall_best_person is not None:
             conf, (bx1, by1, bx2, by2), (t_x, t_y, t_z), z_depth, local_x, local_y = overall_best_person
             has_confirmed_person = True
@@ -1542,12 +1543,13 @@ class PerceptionModule:
                 "dist": z_depth,
             }
 
-            print(
-                f"[ALARM] Person confirmed ({conf:.0%}) via {confirmed_cam or 'front'} cam! "
-                f"Dist: {z_depth:.2f}m, Local X: {local_x:.2f}m\n"
-                f"   ↳ [RESCUE COORDS] Target is {t_x:.1f}m Forward, {t_y:.1f}m Right, "
-                f"and {t_z:.1f}m High relative to the Building Entrance!"
-            )
+            if self.verbose:
+                print(
+                    f"[ALARM] Person confirmed ({conf:.0%}) via {confirmed_cam or 'front'} cam! "
+                    f"Dist: {z_depth:.2f}m, Local X: {local_x:.2f}m\n"
+                    f"   ↳ [RESCUE COORDS] Target is {t_x:.1f}m Forward, {t_y:.1f}m Right, "
+                    f"and {t_z:.1f}m High relative to the Building Entrance!"
+                )
 
         self.detection_count += 1
         if display_conf > 0.0:
@@ -1640,25 +1642,29 @@ class PerceptionModule:
             if has_confirmed_person:
                 has_confirmed_person = False
                 person_found[0] = False
-            print(
-                f"[YOLO] Person NOTED in {scan_label or 'rooms 1–3'} "
-                f"(conf {display_conf:.0%}) — continuing mission, no GPS approach."
-            )
+            if self.verbose:
+                print(
+                    f"[YOLO] Person NOTED in {scan_label or 'rooms 1–3'} "
+                    f"(conf {display_conf:.0%}) — continuing mission, no GPS approach."
+                )
         elif has_noted and rescue_armed and logged_any:
-            print(
-                f"[YOLO] Person SEEN at {display_conf:.0%} in {scan_label or 'scan'} "
-                f"(need {self.person_conf_threshold:.0%} for rescue) — saved to debug_yolo_detections/"
-            )
+            if self.verbose:
+                print(
+                    f"[YOLO] Person SEEN at {display_conf:.0%} in {scan_label or 'scan'} "
+                    f"(need {self.person_conf_threshold:.0%} for rescue) — saved to debug_yolo_detections/"
+                )
         elif has_noted and logged_any:
-            print(
-                f"[YOLO] Person NOTED at {display_conf:.0%} in {scan_label or 'rooms 1–3'} "
-                f"— continuing mission."
-            )
+            if self.verbose:
+                print(
+                    f"[YOLO] Person NOTED at {display_conf:.0%} in {scan_label or 'rooms 1–3'} "
+                    f"— continuing mission."
+                )
         elif has_confirmed_person and logged_any:
-            print(
-                f"[YOLO] Person CONFIRMED at {display_conf:.0%} "
-                f"(threshold {self.person_conf_threshold:.0%})"
-            )
+            if self.verbose:
+                print(
+                    f"[YOLO] Person CONFIRMED at {display_conf:.0%} "
+                    f"(threshold {self.person_conf_threshold:.0%})"
+                )
         elif self.verbose and self.detection_count % 100 == 0:
             if display_conf > 0.0:
                 print(
