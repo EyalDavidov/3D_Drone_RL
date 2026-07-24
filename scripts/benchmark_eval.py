@@ -33,6 +33,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="A/B Benchmark Evaluation for Search and Rescue Drone.")
 parser.add_argument("--num_runs", type=int, default=1, help="Number of benchmark runs (default: 1 for pilot test).")
+parser.add_argument("--scan_mode", action="store_true", default=False, help="Enable active 360-degree SCAN mode at waypoints.")
 parser.add_argument("--task", type=str, default="Brain-Nav-Drone-Direct-v0", help="Task name.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to PPO checkpoint (.pt).")
 parser.add_argument("--seed_start", type=int, default=1000, help="Starting random seed.")
@@ -238,7 +239,7 @@ def main():
         while timestep < args_cli.max_steps and simulation_app.is_running():
             with torch.inference_mode():
                 # Step physics + Visual SLAM + PPO navigator + LLC controller
-                obs, rewards, terminated, truncated, info = env.step(dummy_action)
+                obs, rewards, dones, infos = env.step(dummy_action)
 
                 # Push frame telemetry to JSONL recorder
                 if telemetry is not None:
@@ -277,7 +278,7 @@ def main():
                     break
 
                 # Check crash / termination
-                if terminated[0].item() or truncated[0].item():
+                if dones[0].item():
                     collision_occurred = True
                     print(f"  ❌ Collision / Reset on step {timestep} (Time: {timestep * dt:.1f}s)")
                     break
@@ -299,6 +300,7 @@ def main():
         run_record = {
             "run_id": f"run_{run_idx + 1:03d}",
             "seed": seed,
+            "scan_mode": args_cli.scan_mode,
             "victim_positions": victim_positions,
             "total_victims": total_victims,
             "detected_count": det_count_final,
