@@ -290,6 +290,8 @@ class CameraFirstDroneEnv(DirectRLEnv):
         for key in self._episode_sums.keys():
             episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
             extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
+            if self._episode_sums[key].is_inference():
+                self._episode_sums[key] = self._episode_sums[key].clone()
             self._episode_sums[key][env_ids] = 0.0
         self.extras["log"] = dict()
         self.extras["log"].update(extras)

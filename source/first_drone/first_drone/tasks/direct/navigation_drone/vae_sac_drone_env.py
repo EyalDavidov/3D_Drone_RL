@@ -437,6 +437,8 @@ class SACDroneEnv(DirectRLEnv):
         for key, value in rewards.items():
             if key not in self._episode_sums:
                 self._episode_sums[key] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            if self._episode_sums[key].is_inference():
+                self._episode_sums[key] = self._episode_sums[key].clone()
             self._episode_sums[key] += value
 
         return reward
@@ -491,6 +493,8 @@ class SACDroneEnv(DirectRLEnv):
         for key in self._episode_sums.keys():
             avg = torch.mean(self._episode_sums[key][env_ids])
             extras["Episode_Reward/" + key] = avg / self.max_episode_length_s
+            if self._episode_sums[key].is_inference():
+                self._episode_sums[key] = self._episode_sums[key].clone()
             self._episode_sums[key][env_ids] = 0.0
         self.extras["log"] = dict()
         self.extras["log"].update(extras)

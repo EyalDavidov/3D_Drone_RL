@@ -147,6 +147,7 @@ class BrainNavDroneEnv(AEPPODroneEnv):
             person_match_radius=float(getattr(self.cfg, "brain_person_match_radius", 5.0)),
             yolo_clahe=getattr(self.cfg, "yolo_clahe", False),
             show_opencv=bool(getattr(self.cfg, "yolo_show_opencv", True)),
+            verbose=bool(getattr(self.cfg, "yolo_verbose", False)),
         )
         print(
             f"\n[BrainNavEnv] Perception initialized (use_mock={self.cfg.use_mock_perception}, "

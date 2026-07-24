@@ -29,9 +29,11 @@ class PerceptionModule:
         person_match_radius: float = 5.0,
         yolo_clahe: bool = False,
         show_opencv: bool = True,
+        verbose: bool = False,
     ):
         """Initialize YOLO-based person detection for the Brain module."""
         self.use_mock = use_mock
+        self.verbose = bool(verbose)
         self.show_opencv = bool(show_opencv)
         self.yolo_clahe = bool(yolo_clahe)
         self.person_conf_threshold = float(person_conf_threshold)
@@ -1099,7 +1101,8 @@ class PerceptionModule:
 
             img = Image.fromarray(frame_bgr[:, :, ::-1])
             img.save(str(output_path))
-            print(f"[YOLO] Saved {prefix} detection: {output_path}")
+            if self.verbose:
+                print(f"[YOLO] Saved {prefix} detection: {output_path}")
 
             # Also save to dashboard saves folder for real-time telemetry
             try:
@@ -1171,7 +1174,7 @@ class PerceptionModule:
             if rgb_arr.shape[-1] == 4:
                 rgb_arr = rgb_arr[..., :3]
 
-            if self.detection_count % 100 == 0:
+            if self.verbose and self.detection_count % 100 == 0:
                 print(f"[YOLO Debug] Input image min={rgb_arr.min():.2f} max={rgb_arr.max():.2f} dtype={rgb_arr.dtype}")
 
             if rgb_arr.dtype in (np.float32, np.float64):
@@ -1280,7 +1283,7 @@ class PerceptionModule:
                 if not overlap:
                     keep_candidates.append(item)
 
-            if keep_candidates:
+            if self.verbose and keep_candidates:
                 print(
                     f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Merged YOLO detected {len(keep_candidates)} person(s) "
                     f"with confidences: {['%.1f%% (%s)' % (c[0]*100, c[6]) for c in keep_candidates]}"
@@ -1309,14 +1312,15 @@ class PerceptionModule:
             for conf, box, x1, y1, x2, y2, scale_label in keep_candidates:
                 raw_yolo_best = max(raw_yolo_best, conf)
                 if not self._bbox_passes_person_shape_xy(x1, y1, x2, y2, img_w, img_h):
-                    bw = max(0.0, x2 - x1)
-                    bh = max(0.0, y2 - y1)
-                    aspect = bw / bh if bh > 0 else 0
-                    print(
-                        f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Rejected detection (conf {conf:.1%}) "
-                        f"due to shape filtering (aspect={bw:.1f}/{bh:.1f}={aspect:.2f}, "
-                        f"height_frac={bh/img_h:.3f}, area_frac={(bw*bh)/(img_w*img_h):.5f})"
-                    )
+                    if self.verbose:
+                        bw = max(0.0, x2 - x1)
+                        bh = max(0.0, y2 - y1)
+                        aspect = bw / bh if bh > 0 else 0
+                        print(
+                            f"[YOLO Debug] Cam Yaw {yaw_offset_deg}°: Rejected detection (conf {conf:.1%}) "
+                            f"due to shape filtering (aspect={bw:.1f}/{bh:.1f}={aspect:.2f}, "
+                            f"height_frac={bh/img_h:.3f}, area_frac={(bw*bh)/(img_w*img_h):.5f})"
+                        )
                     continue
 
                 best_person_conf = max(best_person_conf, conf)
@@ -1383,7 +1387,7 @@ class PerceptionModule:
         self._web_boxes = web_boxes
 
         # 2. Process Left
-        if self.detection_count % 200 == 0:
+        if self.verbose and self.detection_count % 200 == 0:
             print(f"[YOLO Diag] Left cam: rgb={'OK '+str(rgb_left.shape) if rgb_left is not None else 'None'}, depth={'OK' if depth_left is not None else 'None'}")
         res_l = process_single_cam(rgb_left, depth_left, 90.0)
         (
@@ -1394,7 +1398,7 @@ class PerceptionModule:
         self._web_boxes_left = web_boxes_l
 
         # 3. Process Right
-        if self.detection_count % 200 == 0:
+        if self.verbose and self.detection_count % 200 == 0:
             print(f"[YOLO Diag] Right cam: rgb={'OK '+str(rgb_right.shape) if rgb_right is not None else 'None'}, depth={'OK' if depth_right is not None else 'None'}")
         res_r = process_single_cam(rgb_right, depth_right, -90.0)
         (
@@ -1655,7 +1659,7 @@ class PerceptionModule:
                 f"[YOLO] Person CONFIRMED at {display_conf:.0%} "
                 f"(threshold {self.person_conf_threshold:.0%})"
             )
-        elif self.detection_count % 100 == 0:
+        elif self.verbose and self.detection_count % 100 == 0:
             if display_conf > 0.0:
                 print(
                     f"[YOLO] Person seen but REJECTED: best conf={display_conf:.0%} "

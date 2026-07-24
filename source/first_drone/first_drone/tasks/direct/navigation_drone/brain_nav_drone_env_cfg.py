@@ -163,6 +163,7 @@ class BrainNavDroneEnvCfg(AEPPODroneEnvCfg):
     yolo_clahe: bool = False       # colorized models don't need color-distorting CLAHE contrast boost
     yolo_show_opencv: bool = True  # False when web dashboard renders YOLO/SLAM natively
     yolo_front_camera_only: bool = False  # Run YOLO on all three cameras (Front, Left, Right) to enable peripheral detection
+    yolo_verbose: bool = False     # False = quiet terminal output; True = verbose frame-by-frame YOLO debug logging
 
     # ---------- Walkable floor (R-shaped map) ----------
     walkable_grid_resolution: float = 0.4   # Meters per occupancy cell when parsing floor meshes from USD
