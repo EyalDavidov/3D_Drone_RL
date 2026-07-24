@@ -68,7 +68,16 @@ def _make_gray_png(width: int, height: int, values) -> bytes:
     return out
 
 
+ROOM_BOUNDS = {
+    1: {"x": [-2.05, 2.05], "y": [-2.05, 2.05], "z": [0.0, 2.0]},
+    2: {"x": [-2.05, 2.05], "y": [-8.05, -2.00], "z": [0.0, 2.0]},
+    3: {"x": [-4.05, 4.05], "y": [-16.05, -7.95], "z": [0.0, 2.0]},
+    4: {"x": [-8.55, -4.45], "y": [-23.05, -17.95], "z": [0.0, 2.0]},
+}
+
+
 def _make_rgb_png(width: int, height: int, pixels) -> bytes:
+
     """Pure-Python fallback: encode a 2-D list of (R, G, B) tuples as RGB PNG."""
     raw = bytearray()
     for row in pixels:
@@ -269,9 +278,9 @@ class LiveDroneTelemetry:
                 filepath = os.path.join(rec_dir, f"flight_{self._timestamp}.jsonl")
                 self._record_file = open(filepath, "w", encoding="utf-8")
                 print(f"[LiveTelemetry] Recording telemetry to: {filepath}")
-                atexit.register(self.close)
             except Exception as e:
                 print(f"[LiveTelemetry] Failed to initialize recording file: {e}")
+
         else:
             print("[LiveTelemetry] Recording disabled.")
 
@@ -594,6 +603,57 @@ class LiveDroneTelemetry:
             "crash_reason": crash_reason or "",
         }
 
+    @staticmethod
+    def _collect_slam_frontiers(mapper, drone_pos: tuple[float, float], brain=None) -> list:
+        """Safe extraction of open frontiers from SLAM mapper or brain."""
+        if mapper is not None and hasattr(mapper, "detect_frontiers"):
+            try:
+                return mapper.detect_frontiers(drone_pos)
+            except Exception:
+                pass
+        if brain is not None and hasattr(brain, "frontiers"):
+            return getattr(brain, "frontiers", []) or []
+        return []
+
+    @staticmethod
+    def _get_map_zones(env) -> dict:
+        """Safe extraction of map zone bounding boxes."""
+        if hasattr(env, "map_zones"):
+            return getattr(env, "map_zones", {}) or {}
+        return {}
+
+    @staticmethod
+    def _get_blueprint(env) -> list:
+        """Safe extraction of USD room layout blueprint geometry."""
+        if hasattr(env, "get_blueprint"):
+            try:
+                return env.get_blueprint()
+            except Exception:
+                pass
+        return []
+
+    def _grab_yolo_frame_by_key(self, env, frame_attr: str, cache_attr: str) -> str:
+        """Extract base64 JPEG from perception BGR HUD frame attribute on env."""
+        import numpy as np
+        perception = getattr(env, "_perception", None)
+        if perception is None:
+            return getattr(self, cache_attr, "") or ""
+        bgr = getattr(perception, frame_attr, None)
+        if bgr is None or not isinstance(bgr, np.ndarray) or bgr.size == 0:
+            return getattr(self, cache_attr, "") or ""
+        try:
+            import cv2
+            import base64
+            success, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), getattr(self, "_yolo_jpeg_quality", 80)])
+            if success:
+                b64 = f"data:image/jpeg;base64,{base64.b64encode(encoded).decode('ascii')}"
+                setattr(self, cache_attr, b64)
+                return b64
+        except Exception:
+            pass
+        return getattr(self, cache_attr, "") or ""
+
+
     def push(self, env, elapsed_secs: float) -> None:
         """Extract live data from a running env instance and update snapshot."""
         import numpy as np
@@ -606,6 +666,8 @@ class LiveDroneTelemetry:
             robot = getattr(env, "_robot", None)
             if robot is None:
                 return
+
+
 
             brain = getattr(env, "_brain", None)
             mapper = getattr(env, "mapper", None)  # only on RealSlamDroneEnv
@@ -719,23 +781,27 @@ class LiveDroneTelemetry:
 
             # ---- Camera images (rate-limited) ----------------------------
             self._img_push_counter += 1
-            if self._img_push_counter % self._img_regen_interval == 0 or not self._image_cache:
-                self._img_regen_serial += 1
-                compute_saliency = (
-                    not self._perf_mode
-                    or self._img_regen_serial % self._saliency_regen_interval == 0
-                    or not self._image_cache.get("depth_saliency")
-                )
-                self._image_cache = self._grab_images(env, compute_saliency=compute_saliency)
-                yolo_img = self._grab_yolo_frame_by_key(env, "_web_frame_bgr", "_yolo_hud_cache")
-                if yolo_img:
-                    self._image_cache["yolo_frame"] = yolo_img
-                yolo_left = self._grab_yolo_frame_by_key(env, "_web_frame_left_bgr", "_yolo_hud_left_cache")
-                if yolo_left:
-                    self._image_cache["yolo_frame_left"] = yolo_left
-                yolo_right = self._grab_yolo_frame_by_key(env, "_web_frame_right_bgr", "_yolo_hud_right_cache")
-                if yolo_right:
-                    self._image_cache["yolo_frame_right"] = yolo_right
+            if not getattr(self, "_lightweight_recording", False) and (self._img_push_counter % self._img_regen_interval == 0 or not self._image_cache):
+                try:
+                    self._img_regen_serial += 1
+                    compute_saliency = (
+                        not self._perf_mode
+                        or self._img_regen_serial % self._saliency_regen_interval == 0
+                        or not self._image_cache.get("depth_saliency")
+                    )
+                    self._image_cache = self._grab_images(env, compute_saliency=compute_saliency)
+                    yolo_img = self._grab_yolo_frame_by_key(env, "_web_frame_bgr", "_yolo_hud_cache")
+                    if yolo_img:
+                        self._image_cache["yolo_frame"] = yolo_img
+                    yolo_left = self._grab_yolo_frame_by_key(env, "_web_frame_left_bgr", "_yolo_hud_left_cache")
+                    if yolo_left:
+                        self._image_cache["yolo_frame_left"] = yolo_left
+                    yolo_right = self._grab_yolo_frame_by_key(env, "_web_frame_right_bgr", "_yolo_hud_right_cache")
+                    if yolo_right:
+                        self._image_cache["yolo_frame_right"] = yolo_right
+                except Exception as img_err:
+                    pass
+
 
             # SLAM 3D grid for native 2D/3D browser maps (rate-limited in perf mode)
             self._slam3d_push_counter += 1
@@ -743,9 +809,17 @@ class LiveDroneTelemetry:
                 self._slam3d_push_counter % self._slam3d_regen_interval == 0
                 or not self._slam3d_cache
             ):
-                self._slam3d_cache = self._get_slam_3d(env, frontiers_raw=frontiers_raw)
-                self._slam3d_cache["blueprint"] = self._get_blueprint(env)
-                self._slam3d_cache["res"] = float(env._walkable_grid_res) if getattr(env, "_walkable_grid_res", None) is not None else 0.4
+                try:
+                    self._slam3d_cache = self._get_slam_3d(env, frontiers_raw=frontiers_raw)
+                    self._slam3d_cache["blueprint"] = self._get_blueprint(env)
+                    res_val = getattr(env, "_walkable_grid_res", None)
+                    if res_val is None and hasattr(env, "unwrapped"):
+                        res_val = getattr(env.unwrapped, "_walkable_grid_res", 0.4)
+                    self._slam3d_cache["res"] = float(res_val) if res_val is not None else 0.4
+                except Exception as slam_err:
+                    if not self._slam3d_cache:
+                        self._slam3d_cache = {"grid": [], "res": 0.4, "blueprint": []}
+
 
             # YOLO native-HUD payload (boxes + intel + rescue log + status)
             perception = getattr(env, "_perception", None)
@@ -843,8 +917,9 @@ class LiveDroneTelemetry:
                                 "brain_telemetry", "slam_state", "tick", "level_time",
                             ],
                         }
-                        self._record_file.write(json.dumps(header) + "\n")
+                        self._record_file.write(json.dumps(header, default=str) + "\n")
                         self._record_header_written = True
+
 
                     # Check if YOLO is actively tracking/detecting a person
                     yolo_active = False
@@ -877,13 +952,25 @@ class LiveDroneTelemetry:
                     rec_state = {k: v for k, v in state.items() if k != "images"}
                     rec_state["images"] = rec_images
                     
-                    # Add current timestamp relative to start time
-                    rec_state["timestamp"] = time.time() - self._start_time
-                    
-                    self._record_file.write(json.dumps(rec_state) + "\n")
+                    def _json_default(obj):
+                        if hasattr(obj, "item"):
+                            try:
+                                v = obj.item()
+                                return v if isinstance(v, (float, int, bool, str)) else str(v)
+                            except Exception:
+                                pass
+                        if hasattr(obj, "tolist"):
+                            try:
+                                return obj.tolist()
+                            except Exception:
+                                pass
+                        return str(obj)
+
+                    self._record_file.write(json.dumps(rec_state, default=_json_default) + "\n")
                     self._record_file.flush()
                 except Exception as e:
                     print(f"[LiveTelemetry] Failed to write to recording file: {e}")
+
 
             with self._lock:
                 self._state = state

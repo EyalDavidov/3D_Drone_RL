@@ -57,6 +57,8 @@ _build
 **/runs/*
 **/logs/*
 **/recordings/*
+!scripts/dashboard/static/recordings/
+!scripts/dashboard/static/recordings/**
 
 # Pre-Trained Checkpoints
 /.pretrained_checkpoints/
@@ -93,3 +95,7 @@ data/
 
 # Temporary scratch folder
 scratch/
+/debug_yolo_detections
+/scripts/dashboard/static/yolo_saves
+/scripts/dashboard/static/recordings
+/scripts/dashboard/static/recordings

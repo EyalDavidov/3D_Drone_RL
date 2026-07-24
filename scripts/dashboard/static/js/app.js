@@ -845,15 +845,18 @@
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000);
         
-        fetch('/api/recordings', { signal: controller.signal })
-            .catch(() => fetch('recordings/manifest.json', { signal: controller.signal }))
+        const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const recApi = isLocalHost ? '/api/recordings' : 'recordings/manifest.json';
+
+        fetch(recApi, { signal: controller.signal })
             .then(res => {
-                if (!res.ok) {
+                if (!res.ok && isLocalHost) {
                     return fetch('recordings/manifest.json', { signal: controller.signal }).then(r => {
-                        if (!r.ok) throw new Error(`Server returned error status ${res.status}`);
+                        if (!r.ok) throw new Error(`Server returned error status ${r.status}`);
                         return r.json();
                     });
                 }
+                if (!res.ok) throw new Error(`Server returned error status ${res.status}`);
                 return res.json();
             })
             .then(data => {
@@ -995,20 +998,34 @@
             if (replayMaxFrames > 0) query.set('max_frames', String(replayMaxFrames));
             
             let response;
-            try {
-                response = await fetch(`/api/recording?${query.toString()}`, { signal: controller.signal });
-                if (!response.ok) throw new Error("API not available");
-            } catch (err) {
-                if (controller.signal.aborted) throw err;
-                console.log("[Playback] Falling back to static file: recordings/" + filename);
-                response = await fetch(`recordings/${filename}`, { signal: controller.signal });
+            const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            if (isLocalHost) {
+                try {
+                    response = await fetch(`/api/recording?${query.toString()}`, { signal: controller.signal });
+                    if (!response.ok) throw new Error("API not available");
+                } catch (err) {
+                    if (controller.signal.aborted) throw err;
+                    console.log("[Playback] Falling back to static file: recordings/" + filename);
+                    response = await fetch(`recordings/${filename}`, { signal: controller.signal });
+                }
+            } else {
+                const workerUrl = `https://tiny-limit-fa97.powe3k.workers.dev/${filename}`;
+                console.log("[Playback] Streaming full raw release file via Cloudflare Worker: " + workerUrl);
+                response = await fetch(workerUrl, { signal: controller.signal })
+                    .catch(() => fetch(`recordings/${filename}`, { signal: controller.signal }));
             }
             if (!response.ok) throw new Error("Server returned error status " + response.status);
-            if ((response.headers.get('Content-Encoding') || '').toLowerCase().includes('gzip')) {
+            
+            let rawStream = response.body;
+            const isGzip = filename.endsWith('.gz') || (response.headers.get('Content-Encoding') || '').toLowerCase().includes('gzip');
+            if (isGzip && typeof DecompressionStream !== 'undefined') {
+                rawStream = rawStream.pipeThrough(new DecompressionStream('gzip'));
                 estimatedTotalBytes = 0;
+            } else if (isGzip) {
+                console.warn("[Playback] Browser does not support DecompressionStream for gzip");
             }
 
-            const reader = response.body.getReader();
+            const reader = rawStream.getReader();
             let receivedLength = 0;
             const decoder = new TextDecoder("utf-8");
             let partialLine = "";

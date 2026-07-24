@@ -3039,7 +3039,9 @@ class BrainNavDroneEnv(AEPPODroneEnv):
                     continue
                 visible = True
                 if child.IsA(UsdGeom.Imageable):
-                    visible = child.GetVisibilityAttr().Get() != "invisible"
+                    img_api = UsdGeom.Imageable(child)
+                    if img_api.GetVisibilityAttr().IsValid():
+                        visible = img_api.GetVisibilityAttr().Get() != "invisible"
                 active_roots.append(
                     f"{child.GetName()}(active={child.IsActive()},visible={visible})"
                 )

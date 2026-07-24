@@ -2302,9 +2302,10 @@ class RealSlamDroneEnv(BrainNavDroneEnv):
     def step(self, action):
         obs, rewards, terminated, truncated, info = super().step(action)
 
-        self.slam_state = self._brain.state
-        self.active_frontier = self._brain.active_frontier
-        self.astar_path_world = self._brain.astar_path_world
+        self.slam_state = getattr(self._brain, "state", "EXPLORE")
+        self.active_frontier = getattr(self._brain, "active_frontier", None)
+        self.astar_path_world = getattr(self._brain, "astar_path_world", [])
+
 
         return obs, rewards, terminated, truncated, info
 
