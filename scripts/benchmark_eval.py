@@ -33,7 +33,6 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="A/B Benchmark Evaluation for Search and Rescue Drone.")
 parser.add_argument("--num_runs", type=int, default=1, help="Number of benchmark runs (default: 1 for pilot test).")
-parser.add_argument("--scan_mode", action="store_true", default=False, help="Enable active 360-degree SCAN mode at waypoints.")
 parser.add_argument("--task", type=str, default="Brain-Nav-Drone-Direct-v0", help="Task name.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to PPO checkpoint (.pt).")
 parser.add_argument("--seed_start", type=int, default=1000, help="Starting random seed.")
@@ -177,7 +176,9 @@ def main():
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        print(f"\n--- Run {run_idx + 1}/{args_cli.num_runs} (Seed: {seed}) ---")
+        print(f"\n==================================================")
+        print(f"▶ STARTING RUN {run_idx + 1}/{args_cli.num_runs} (Seed: {seed})")
+        print(f"==================================================")
 
         # Reset env
         env.unwrapped.seed(seed)
@@ -221,6 +222,7 @@ def main():
         all_detected_time = None
         collision_occurred = False
         mission_completed = False
+        wp4_reached_step = None
 
         # Flight Telemetry recorder
         telemetry = None
@@ -254,9 +256,53 @@ def main():
                     if first_detection_time is None:
                         first_detection_time = round(timestep * dt, 2)
                     for idx_d in range(det_count):
-                        detected_victims_set.add(idx_d)
+                        if idx_d not in detected_victims_set:
+                            print(f"  🔍 [VICTIM DETECTED] Victim #{idx_d + 1} found at step {timestep} (Time: {timestep * dt:.1f}s)!")
+                            detected_victims_set.add(idx_d)
                     if len(detected_victims_set) == total_victims and all_detected_time is None:
                         all_detected_time = round(timestep * dt, 2)
+                        print(f"  🎉 [ALL VICTIMS FOUND!] All 5 victims detected at step {timestep} (Time: {timestep * dt:.1f}s)!")
+
+                # Check corridor 4th waypoint arrival + 200 steps buffer
+                forced_active = getattr(env.unwrapped, "_forced_corridor_route_active", False)
+                forced_idx = int(getattr(env.unwrapped, "_forced_corridor_route_idx", 0))
+                d_pos = env.unwrapped._robot.data.root_pos_w[0] - env.unwrapped._terrain.env_origins[0]
+                dx, dy = float(d_pos[0].item()), float(d_pos[1].item())
+                dist_to_wp4 = math.hypot(dx - (-6.0), dy - (-21.5))
+
+                if wp4_reached_step is None:
+                    if (forced_active and forced_idx >= 3 and dist_to_wp4 < 1.5) or (dist_to_wp4 < 1.2):
+                        wp4_reached_step = timestep
+                        print(f"  🏁 Reached 4th Corridor Waypoint on step {timestep} (Time: {timestep * dt:.1f}s)! Will stop in 200 steps.")
+
+                if wp4_reached_step is not None and timestep >= wp4_reached_step + 200:
+                    mission_completed = True
+                    print(f"  🛑 Stopping run: 200 steps completed after reaching 4th Corridor Waypoint (step {timestep}, Time: {timestep * dt:.1f}s)!")
+                    break
+
+                # Periodic heartbeat progress log every 200 steps
+                if timestep > 0 and timestep % 200 == 0:
+                    if dy > -2.5:
+                        room_name = "Room 1"
+                    elif dy > -8.5:
+                        room_name = "Room 2"
+                    elif dy > -16.5:
+                        room_name = "Room 3"
+                    else:
+                        room_name = "Corridor/Room 4"
+
+                    brain = getattr(env.unwrapped, "_brain", None)
+                    visited_cells, total_cells = (0, 0)
+                    if brain and hasattr(brain, "coverage_stats"):
+                        visited_cells, total_cells = brain.coverage_stats()
+                    cov_pct = (visited_cells / max(total_cells, 1)) * 100.0
+
+                    elapsed_wall = time.time() - start_wall_time
+                    sim_time = timestep * dt
+                    speed = sim_time / max(elapsed_wall, 0.01)
+                    wp_str = f"Corridor WP {forced_idx + 1}/4" if forced_active else "Free SLAM"
+
+                    print(f"  ⏱️  [Run {run_idx + 1}/{args_cli.num_runs} | Step {timestep:4d}/{args_cli.max_steps}] Time: {sim_time:5.1f}s ({speed:.1f}x) | Pos: ({dx:5.2f}, {dy:5.2f}) [{room_name}] | Found: {det_count}/5 | Coverage: {cov_pct:4.1f}% | Mode: {wp_str}")
 
                 # Check SLAM state and mission completion
                 brain = getattr(env.unwrapped, "_brain", None)
@@ -300,7 +346,6 @@ def main():
         run_record = {
             "run_id": f"run_{run_idx + 1:03d}",
             "seed": seed,
-            "scan_mode": args_cli.scan_mode,
             "victim_positions": victim_positions,
             "total_victims": total_victims,
             "detected_count": det_count_final,
@@ -321,8 +366,22 @@ def main():
         with open(jsonl_path, "a", encoding="utf-8") as f_jsonl:
             f_jsonl.write(json.dumps(run_record) + "\n")
 
-        print(f"  • Result: Victims Found={det_count_final}/5 | Full={full_detection} | Collided={collision_occurred} | Completed={mission_completed}")
-        print(f"  • Speed: {sim_duration_s}s sim calculated in {elapsed_wall_time}s wall time ({sim_duration_s / max(elapsed_wall_time, 0.01):.1f}x speed)")
+        # Formatted Run Summary Card
+        status_label = "✅ SUCCESS" if successful_rescue else ("❌ COLLISION" if collision_occurred else "⏱️ ENDED")
+        print(f"\n  +-------------------------------------------------------------+")
+        print(f"  |  📊 RUN {run_idx + 1}/{args_cli.num_runs} SUMMARY ({status_label})")
+        print(f"  +-------------------------------------------------------------+")
+        print(f"  |  • Steps Taken:       {timestep} / {args_cli.max_steps}")
+        print(f"  |  • Sim Duration:      {sim_duration_s:.1f}s (Wall: {elapsed_wall_time:.1f}s @ {sim_duration_s / max(elapsed_wall_time, 0.01):.1f}x speed)")
+        print(f"  |  • Victims Found:     {det_count_final}/5 ({'100%' if full_detection else f'{(det_count_final/5)*100:.0f}%'})")
+        if first_detection_time:
+            print(f"  |  • First Victim Time: {first_detection_time:.1f}s")
+        if all_detected_time:
+            print(f"  |  • All Victims Time:   {all_detected_time:.1f}s")
+        success_so_far = sum(1 for r in all_run_metrics if r['successful_rescue_mission'])
+        total_so_far = len(all_run_metrics)
+        print(f"  |  • Cumulative Success: {success_so_far}/{total_so_far} runs ({success_so_far / total_so_far:.1%})")
+        print(f"  +-------------------------------------------------------------+\n")
 
     # Generate summary JSON
     total_runs = len(all_run_metrics)
