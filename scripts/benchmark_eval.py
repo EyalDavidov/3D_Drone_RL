@@ -115,6 +115,8 @@ def sample_5_room_victims(env, rng) -> list[tuple[float, float, float]]:
             too_close = any(math.hypot(x - px, y - py) < 1.0 for px, py, _ in existing)
             if too_close:
                 continue
+            if hasattr(env, "_is_local_xy_walkable") and not env._is_local_xy_walkable(x, y):
+                continue
             return (round(x, 3), round(y, 3), round(floor_z, 3))
         # Fallback to center if 100 random tries failed
         cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
@@ -149,11 +151,17 @@ def main():
     # Parse config
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=1, use_fabric=True)
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    env_cfg.episode_length_s = 120.0
     env_cfg.initial_curriculum_level = 5
     env_cfg.debug_vis = False
     env_cfg.show_ae_images = False
     env_cfg.spawn_person = True
     env_cfg.yolo_show_opencv = False
+    env_cfg.brain_use_sequential_spawns = True
+    env_cfg.brain_preserve_mission_on_crash = True
+    env_cfg.brain_crash_respawn_in_place = False
+    env_cfg.brain_forced_corridor_route_coverage = 0.60
+    env_cfg.yolo_person_conf_threshold = 0.70
     env_cfg.navigator_checkpoint_path = resolve_navigator_checkpoint(
         args_cli.checkpoint or env_cfg.navigator_checkpoint_path
     )
@@ -180,34 +188,66 @@ def main():
         print(f"▶ STARTING RUN {run_idx + 1}/{args_cli.num_runs} (Seed: {seed})")
         print(f"==================================================")
 
-        # Reset env
-        env.unwrapped.seed(seed)
-        env.reset()
+        with torch.inference_mode():
+            # Step 1: Clear environment crash & stuck counters + reset Brain mission BEFORE env.reset()
+            env.unwrapped._segment_crash_counts = {}
+            env.unwrapped._stuck_step_count = 0
+            brain = getattr(env.unwrapped, "_brain", None)
+            if brain is not None and hasattr(brain, "reset_mission_from_start"):
+                brain.reset_mission_from_start()
 
-        # Sample and spawn 5 victims in rooms 1-4
-        victim_positions = sample_5_room_victims(env.unwrapped, rng)
-        env.unwrapped._hide_map_default_person()
-        env.unwrapped._hide_static_rescue_persons_for_dynamic_spawn()
-        env.unwrapped._clear_dynamic_spawned_persons()
-        
-        prims = []
-        for i, pos in enumerate(victim_positions):
-            name = f"DynamicBenchmark_{i}"
-            prim = env.unwrapped._spawn_rescue_person_wrapper(name, pos, yaw_deg=90.0)
-            if not env.unwrapped._align_person_scale_to_static_template(prim):
-                env.unwrapped._queue_person_scale_fix(prim)
-            prims.append(prim)
-            
-        env.unwrapped._dynamic_spawn_prims = prims
-        env.unwrapped.spawned_targets_local = victim_positions
-        env.unwrapped.dynamic_spawn_active = True
-        
-        perception = getattr(env.unwrapped, "_perception", None)
-        if perception is not None:
-            perception._rescue_person_slots = env.unwrapped._build_dynamic_spawn_log_slots(victim_positions)
-            perception._detection_log = []
-            perception._person_best_conf = {}
-            perception.frame_confirmed_persons = []
+            # Step 2: Reset env (places drone cleanly at Room 1 spawn (0,0))
+            env.unwrapped.seed(seed)
+            env.reset()
+
+            # Step 3: Fully reset 3D SLAM Brain & Mapper for a 100% clean slate
+            brain = getattr(env.unwrapped, "_brain", None)
+            if brain is not None:
+                if hasattr(brain, "reset_mission_from_start"):
+                    brain.reset_mission_from_start()
+                if hasattr(brain, "reset_coverage"):
+                    brain.reset_coverage()
+                brain.state = "EXPLORE"
+                brain.blacklisted_frontiers = []
+                brain.mission_finished = False
+                brain._forced_corridor_route_active = False
+                brain._forced_corridor_route_idx = 0
+                brain._forced_corridor_route_logged = False
+                brain._mission_assist_active = False
+                brain._mission_assist_idx = 0
+                brain._corridor_context_ticks = 0
+                if hasattr(brain, "mapper") and brain.mapper is not None:
+                    brain.mapper.reset()
+
+            mapper = getattr(env.unwrapped, "mapper", None)
+            if mapper is not None and hasattr(mapper, "reset"):
+                mapper.reset()
+
+            # Step 3: Spawn 5 victims in rooms 1-4
+            victim_positions = sample_5_room_victims(env.unwrapped, rng)
+            env.unwrapped._hide_map_default_person()
+            env.unwrapped._hide_static_rescue_persons_for_dynamic_spawn()
+            env.unwrapped._clear_dynamic_spawned_persons()
+
+            prims = []
+            for i, pos in enumerate(victim_positions):
+                name = f"DynamicBenchmark_{i}"
+                prim = env.unwrapped._spawn_rescue_person_wrapper(name, pos, yaw_deg=90.0)
+                if not env.unwrapped._align_person_scale_to_static_template(prim):
+                    env.unwrapped._queue_person_scale_fix(prim)
+                prims.append(prim)
+
+            env.unwrapped._dynamic_spawn_prims = prims
+            env.unwrapped.spawned_targets_local = victim_positions
+            env.unwrapped.dynamic_spawn_active = True
+
+            # Step 4: Reset perception logs
+            perception = getattr(env.unwrapped, "_perception", None)
+            if perception is not None:
+                perception._rescue_person_slots = env.unwrapped._build_dynamic_spawn_log_slots(victim_positions)
+                perception._detection_log = []
+                perception._person_best_conf = {}
+                perception.frame_confirmed_persons = []
 
         print(f"  • Placed 5 Victims: {victim_positions}")
 
@@ -223,6 +263,13 @@ def main():
         collision_occurred = False
         mission_completed = False
         wp4_reached_step = None
+        num_collision_resets = 0
+
+        # Warmup: run 10 silent physics steps so drone settles at Room 1 spawn
+        # (root_pos_w holds USD default pos until first step runs)
+        with torch.inference_mode():
+            for _ in range(10):
+                env.step(dummy_action)
 
         # Flight Telemetry recorder
         telemetry = None
@@ -263,22 +310,9 @@ def main():
                         all_detected_time = round(timestep * dt, 2)
                         print(f"  🎉 [ALL VICTIMS FOUND!] All 5 victims detected at step {timestep} (Time: {timestep * dt:.1f}s)!")
 
-                # Check corridor 4th waypoint arrival + 200 steps buffer
-                forced_active = getattr(env.unwrapped, "_forced_corridor_route_active", False)
-                forced_idx = int(getattr(env.unwrapped, "_forced_corridor_route_idx", 0))
+                # Track drone position for heartbeat log (no early stop — full max_steps run)
                 d_pos = env.unwrapped._robot.data.root_pos_w[0] - env.unwrapped._terrain.env_origins[0]
                 dx, dy = float(d_pos[0].item()), float(d_pos[1].item())
-                dist_to_wp4 = math.hypot(dx - (-6.0), dy - (-21.5))
-
-                if wp4_reached_step is None:
-                    if (forced_active and forced_idx >= 3 and dist_to_wp4 < 1.5) or (dist_to_wp4 < 1.2):
-                        wp4_reached_step = timestep
-                        print(f"  🏁 Reached 4th Corridor Waypoint on step {timestep} (Time: {timestep * dt:.1f}s)! Will stop in 200 steps.")
-
-                if wp4_reached_step is not None and timestep >= wp4_reached_step + 200:
-                    mission_completed = True
-                    print(f"  🛑 Stopping run: 200 steps completed after reaching 4th Corridor Waypoint (step {timestep}, Time: {timestep * dt:.1f}s)!")
-                    break
 
                 # Periodic heartbeat progress log every 200 steps
                 if timestep > 0 and timestep % 200 == 0:
@@ -300,34 +334,21 @@ def main():
                     elapsed_wall = time.time() - start_wall_time
                     sim_time = timestep * dt
                     speed = sim_time / max(elapsed_wall, 0.01)
+                    forced_active = getattr(env.unwrapped, "_forced_corridor_route_active", False)
+                    forced_idx = int(getattr(env.unwrapped, "_forced_corridor_route_idx", 0))
                     wp_str = f"Corridor WP {forced_idx + 1}/4" if forced_active else "Free SLAM"
 
                     print(f"  ⏱️  [Run {run_idx + 1}/{args_cli.num_runs} | Step {timestep:4d}/{args_cli.max_steps}] Time: {sim_time:5.1f}s ({speed:.1f}x) | Pos: ({dx:5.2f}, {dy:5.2f}) [{room_name}] | Found: {det_count}/5 | Coverage: {cov_pct:4.1f}% | Mode: {wp_str}")
 
                 # Check SLAM state and mission completion
                 brain = getattr(env.unwrapped, "_brain", None)
-                slam_state = getattr(brain, "state", "EXPLORE") if brain else "EXPLORE"
-
-                if slam_state == "COMPLETE" or getattr(brain, "mission_finished", False):
+                if brain and getattr(brain, "mission_finished", False):
                     mission_completed = True
-                    print(f"  ✨ Mission Complete on step {timestep} (Time: {timestep * dt:.1f}s)!")
-                    break
 
-                # Also check dynamic spawn finish condition (all victims + high coverage)
-                visited, total = (0, 0)
-                if brain and hasattr(brain, "coverage_stats"):
-                    visited, total = brain.coverage_stats()
-                coverage_pct = (visited / max(total, 1)) * 100.0
-                if total_victims > 0 and det_count >= total_victims and coverage_pct >= 95.0:
-                    mission_completed = True
-                    print(f"  ✨ All victims detected ({det_count}/{total_victims}) & Coverage {coverage_pct:.1f}% reached!")
-                    break
-
-                # Check crash / termination
+                # Check crash / termination (log only, SLAM mission preserved, run continues)
                 if dones[0].item():
                     collision_occurred = True
-                    print(f"  ❌ Collision / Reset on step {timestep} (Time: {timestep * dt:.1f}s)")
-                    break
+                    print(f"  ❌ Collision / Safe Respawn at step {timestep} (Time: {timestep * dt:.1f}s) → Preserving SLAM mission, continuing run...")
 
             timestep += 1
 
@@ -363,6 +384,7 @@ def main():
         all_run_metrics.append(run_record)
 
         # Write record line to JSONL immediately
+        os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
         with open(jsonl_path, "a", encoding="utf-8") as f_jsonl:
             f_jsonl.write(json.dumps(run_record) + "\n")
 

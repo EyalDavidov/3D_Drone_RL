@@ -189,7 +189,7 @@ class SACDroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
         """Convert high-level SAC navigation actions to low-level motor commands."""
-        self._actions = actions.clone().clamp(-1.0, 1.0)
+        self._actions = actions.clone().detach().clamp(-1.0, 1.0)
 
         # =========================================================================
         # CURRICULUM LEARNING (Toggle between Phase 1 and Phase 2)
@@ -502,6 +502,20 @@ class SACDroneEnv(DirectRLEnv):
         self.extras["log"]["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"]["Metrics/final_distance_to_goal"] = final_dist.item()
         self.extras["log"]["Metrics/episode_length"] = torch.mean(self.episode_length_buf[env_ids].float()).item()
+
+        # Clone & detach persistent state tensors to allow safe in-place updates during reset in InferenceMode
+        if hasattr(self, "_actions") and self._actions is not None:
+            self._actions = self._actions.clone().detach()
+        if hasattr(self, "_previous_actions") and self._previous_actions is not None:
+            self._previous_actions = self._previous_actions.clone().detach()
+        if hasattr(self, "_desired_pos_w") and self._desired_pos_w is not None:
+            self._desired_pos_w = self._desired_pos_w.clone().detach()
+        if hasattr(self, "_desired_vel_b") and self._desired_vel_b is not None:
+            self._desired_vel_b = self._desired_vel_b.clone().detach()
+        if hasattr(self, "_target_yaw") and self._target_yaw is not None:
+            self._target_yaw = self._target_yaw.clone().detach()
+        if hasattr(self, "_prev_dist_to_goal") and self._prev_dist_to_goal is not None:
+            self._prev_dist_to_goal = self._prev_dist_to_goal.clone().detach()
 
         # --- Reset robot ---
         self._robot.reset(env_ids)

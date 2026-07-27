@@ -48,6 +48,11 @@ class OccupancyGridMapper:
         self.unknown_gain_radius_cells = max(8, int(round(6.0 / self.cell_size)))
         self.unknown_gain_cap = 600
 
+    def reset(self):
+        """Fully reset log-odds grid and sticky wall mask for a clean slate."""
+        self.grid_log_odds.fill(0.0)
+        self._sticky_wall_mask.fill(0)
+
     def world_to_grid(self, x, y):
         """Convert world coordinates (meters) to grid indices (row, col)."""
         col = int(np.floor((x - self.min_x) / self.cell_size))

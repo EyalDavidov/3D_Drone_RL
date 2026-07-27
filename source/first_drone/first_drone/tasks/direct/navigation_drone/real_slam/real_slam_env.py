@@ -195,10 +195,17 @@ class SlamBrainModule(BrainModule):
         self._start_pos_xy = None
         self.visited_mask = None  # fresh trajectory on a full restart
         self._prev_stamp_xy = None
-        self._prev_pos_xy = None
-        self._travel_dir = None
         self._hold_log_ticks = 0
         self._frontier_lock_ticks = 0
+        self.mission_finished = False
+        self._forced_corridor_route_active = False
+        self._forced_corridor_route_idx = 0
+        self._forced_corridor_route_logged = False
+        self._mission_assist_active = False
+        self._mission_assist_idx = 0
+        self._corridor_context_ticks = 0
+        if hasattr(self, "mapper") and self.mapper is not None:
+            self.mapper.reset()
 
     def capture_mission_snapshot(self):
         # Decouple from parent sequential checks, always create a valid snapshot dictionary

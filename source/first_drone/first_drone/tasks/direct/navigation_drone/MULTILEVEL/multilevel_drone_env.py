@@ -293,8 +293,8 @@ class MultiLevelDroneEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
         """Convert high-level navigation actions to low-level motor commands."""
-        self._previous_actions = self._actions.clone()
-        self._actions = actions.clone().clamp(-1.0, 1.0)
+        self._previous_actions = self._actions.clone().detach()
+        self._actions = actions.clone().detach().clamp(-1.0, 1.0)
 
         # 6-DOF velocity commands
         self._desired_vel_b[:, 0] = self._actions[:, 0] * self.cfg.vel_limit[0]
@@ -615,6 +615,20 @@ class MultiLevelDroneEnv(DirectRLEnv):
         self.extras["log"]["Metrics/total_steps"] = float(self.common_step_counter)
 
 
+
+        # Clone & detach persistent state tensors to allow safe in-place updates during reset in InferenceMode
+        if hasattr(self, "_actions") and self._actions is not None:
+            self._actions = self._actions.clone().detach()
+        if hasattr(self, "_previous_actions") and self._previous_actions is not None:
+            self._previous_actions = self._previous_actions.clone().detach()
+        if hasattr(self, "_desired_pos_w") and self._desired_pos_w is not None:
+            self._desired_pos_w = self._desired_pos_w.clone().detach()
+        if hasattr(self, "_desired_vel_b") and self._desired_vel_b is not None:
+            self._desired_vel_b = self._desired_vel_b.clone().detach()
+        if hasattr(self, "_target_yaw") and self._target_yaw is not None:
+            self._target_yaw = self._target_yaw.clone().detach()
+        if hasattr(self, "_prev_dist_to_goal") and self._prev_dist_to_goal is not None:
+            self._prev_dist_to_goal = self._prev_dist_to_goal.clone().detach()
 
         # Reset robot
         self._robot.reset(env_ids)

@@ -2087,6 +2087,20 @@ class AEPPODroneEnv(DirectRLEnv):
         if hasattr(self, "_env0_log_values"):
             self.extras["log"].update(self._env0_log_values)
 
+        # Clone & detach persistent state tensors to allow safe in-place updates during reset in InferenceMode
+        if hasattr(self, "_actions") and self._actions is not None:
+            self._actions = self._actions.clone().detach()
+        if hasattr(self, "_previous_actions") and self._previous_actions is not None:
+            self._previous_actions = self._previous_actions.clone().detach()
+        if hasattr(self, "_desired_pos_w") and self._desired_pos_w is not None:
+            self._desired_pos_w = self._desired_pos_w.clone().detach()
+        if hasattr(self, "_desired_vel_b") and self._desired_vel_b is not None:
+            self._desired_vel_b = self._desired_vel_b.clone().detach()
+        if hasattr(self, "_target_yaw") and self._target_yaw is not None:
+            self._target_yaw = self._target_yaw.clone().detach()
+        if hasattr(self, "_prev_dist_to_goal") and self._prev_dist_to_goal is not None:
+            self._prev_dist_to_goal = self._prev_dist_to_goal.clone().detach()
+
         # Reset robot
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
